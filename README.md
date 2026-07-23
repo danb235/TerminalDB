@@ -61,7 +61,9 @@ The selected model is used for new terminal conversations.
 
 The bottom status bar displays the selected account and subscription as static
 identity text on the left. The five-hour, seven-day, and separate Fable 5
-weekly usage meters are right-aligned against the opposite edge. Usage
+weekly usage meters are right-aligned against the opposite edge. The 5-hour and
+7-day meters include their next reset date and time when Anthropic reports one;
+an em dash indicates that no reset is currently scheduled or reported. Usage
 refreshes every five minutes from Anthropic's OAuth usage service without
 making a model request. The access token is read from the selected profile's
 macOS Keychain item into memory and is never written by TerminalDB. Because

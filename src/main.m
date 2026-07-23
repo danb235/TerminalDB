@@ -366,7 +366,7 @@ static int TerminalDBExitStatus = 0;
     [self installApplicationMenu];
     BOOL backgroundTabQA = [NSProcessInfo.processInfo.arguments
         containsObject:@"--background-tab-qa"];
-    if (self.apiConfiguration.hasAPIKey && !backgroundTabQA) {
+    if (!backgroundTabQA && self.apiConfiguration.hasAPIKey) {
         [self.apiConfiguration
             refreshModelsWithCompletion:^(
                 NSArray<NSDictionary *> *models, NSError *error) {

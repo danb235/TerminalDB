@@ -81,10 +81,12 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
 - (void)layout {
     [super layout];
     CGFloat inset = 10;
-    CGFloat gap = 16;
+    CGFloat gap = 12;
     CGFloat availableWidth = MAX(0, NSWidth(self.bounds) - inset * 2);
-    CGFloat usageWidth = MIN(availableWidth * 0.62,
-                             MAX(300, self.usageLabel.intrinsicContentSize.width));
+    CGFloat usageWidth = MIN(availableWidth * 0.64,
+                             MAX(300,
+                                 self.usageLabel.intrinsicContentSize.width +
+                                     24));
     CGFloat profileWidth = MAX(0, availableWidth - usageWidth - gap);
     self.profileLabel.frame =
         NSMakeRect(inset, 4, profileWidth, NSHeight(self.bounds) - 8);
@@ -358,26 +360,31 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
     [styled appendAttributedString:[[NSAttributedString alloc]
         initWithString:@"Usage  " attributes:muted]];
     if (fivePercent != nil) {
-        [styled appendAttributedString:[self usageSegment:@"5h"
-                                                 percent:fivePercent.doubleValue]];
+        [styled appendAttributedString:
+            [self usageWindowSegment:@"5h"
+                             percent:fivePercent.doubleValue
+                              window:fiveHour]];
     }
     if (weekPercent != nil) {
         if (fivePercent != nil) {
             [styled appendAttributedString:[[NSAttributedString alloc]
-                initWithString:@"  ·  " attributes:muted]];
+                initWithString:@" · " attributes:muted]];
         }
-        [styled appendAttributedString:[self usageSegment:@"7d"
-                                                 percent:weekPercent.doubleValue]];
+        [styled appendAttributedString:
+            [self usageWindowSegment:@"7d"
+                             percent:weekPercent.doubleValue
+                              window:sevenDay]];
     }
     if (fablePercent != nil) {
         if (fivePercent != nil || weekPercent != nil) {
             [styled appendAttributedString:[[NSAttributedString alloc]
-                initWithString:@"  ·  " attributes:muted]];
+                initWithString:@" · " attributes:muted]];
         }
         [styled appendAttributedString:[self usageSegment:@"F"
                                                  percent:fablePercent.doubleValue]];
     }
     self.usageLabel.attributedStringValue = styled;
+    [self setNeedsLayout:YES];
 
     NSMutableArray<NSString *> *details = [NSMutableArray array];
     [self appendResetDescription:@"5-hour" window:fiveHour to:details];
@@ -626,10 +633,16 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
     };
     NSDictionary *normalized = [self normalizedStatusFromUsage:sample];
     NSDictionary *limits = normalized[@"rate_limits"];
+    NSNumber *fiveHourReset = limits[@"five_hour"][@"resets_at"];
+    NSNumber *sevenDayReset = limits[@"seven_day"][@"resets_at"];
     return [limits[@"five_hour"][@"used_percentage"] isEqual:@12] &&
+        [fiveHourReset isKindOfClass:NSNumber.class] &&
         [limits[@"seven_day"][@"used_percentage"] isEqual:@34] &&
+        [sevenDayReset isKindOfClass:NSNumber.class] &&
         [limits[@"fable_five"][@"used_percentage"] isEqual:@56] &&
-        [limits[@"fable_five"][@"resets_at"] isKindOfClass:NSNumber.class];
+        [limits[@"fable_five"][@"resets_at"] isKindOfClass:NSNumber.class] &&
+        [self compactResetDateTimeFromTimestamp:fiveHourReset].length > 0 &&
+        [self compactResetDateTimeFromTimestamp:sevenDayReset].length > 0;
 }
 
 + (nullable NSNumber *)timestampFromUsageResetValue:(id)value {
@@ -663,18 +676,50 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
             }];
 }
 
++ (nullable NSString *)compactResetDateTimeFromTimestamp:
+    (nullable NSNumber *)timestamp {
+    if (![timestamp isKindOfClass:NSNumber.class]) return nil;
+    NSDate *date = [NSDate dateWithTimeIntervalSince1970:timestamp.doubleValue];
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    [formatter setLocalizedDateFormatFromTemplate:@"Mdjmm"];
+    return [formatter stringFromDate:date];
+}
+
+- (NSAttributedString *)usageWindowSegment:(NSString *)label
+                                   percent:(double)percent
+                                    window:(NSDictionary *)window {
+    NSMutableAttributedString *segment =
+        [[self usageSegment:label percent:percent] mutableCopy];
+    NSNumber *timestamp = [window[@"resets_at"] isKindOfClass:NSNumber.class]
+        ? window[@"resets_at"]
+        : nil;
+    NSString *resetDateTime =
+        [ClaudeStatusBar compactResetDateTimeFromTimestamp:timestamp] ?: @"—";
+    [segment appendAttributedString:[[NSAttributedString alloc]
+        initWithString:[NSString stringWithFormat:@" ↻ %@", resetDateTime]
+            attributes:@{
+                NSFontAttributeName : self.usageLabel.font,
+                NSForegroundColorAttributeName :
+                    self.theme.statusBarActiveForeground,
+            }]];
+    return segment;
+}
+
 - (void)appendResetDescription:(NSString *)label
                         window:(NSDictionary *)window
                             to:(NSMutableArray<NSString *> *)descriptions {
+    if (window == nil) return;
     NSNumber *timestamp = [window[@"resets_at"] isKindOfClass:NSNumber.class]
         ? window[@"resets_at"] : nil;
-    if (timestamp == nil) return;
-    NSDate *date = [NSDate dateWithTimeIntervalSince1970:timestamp.doubleValue];
-    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
-    formatter.dateStyle = NSDateFormatterShortStyle;
-    formatter.timeStyle = NSDateFormatterShortStyle;
+    if (timestamp == nil) {
+        [descriptions addObject:[NSString stringWithFormat:
+            @"%@ reset is not currently reported", label]];
+        return;
+    }
+    NSString *dateTime =
+        [ClaudeStatusBar compactResetDateTimeFromTimestamp:timestamp];
     [descriptions addObject:[NSString stringWithFormat:@"%@ resets %@",
-        label, [formatter stringFromDate:date]]];
+        label, dateTime]];
 }
 
 @end
