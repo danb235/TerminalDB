@@ -43,6 +43,14 @@ paste behavior; it deliberately does not press Return, so the user can review
 or edit the command before executing it. Non-shell code samples are never made
 runnable. Conversation context is retained independently in each tab.
 
+The response panel is also a conversation. Use the follow-up field to refine a
+command, ask Claude to explain a choice, or continue investigating without
+losing the earlier turns. Closing the panel or inserting a command preserves
+that tab's context, and the next natural-language request reopens the same
+transcript. Choose **New conversation** when the task changes; after
+confirmation, TerminalDB clears only that tab's AI context. A newly opened
+terminal tab always starts with fresh context.
+
 Open **TerminalDB → Claude API Settings…** (Command-,) to add an Anthropic API
 key. The key is stored only as a generic password in macOS Keychain. It is not
 written to project files, user defaults, logs, or generated shell integration.

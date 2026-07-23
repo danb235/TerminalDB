@@ -339,6 +339,7 @@ static int TerminalDBExitStatus = 0;
 @property(nonatomic, strong, nullable) ClaudeAPIClient *assistantClient;
 @property(nonatomic, strong) NSMutableArray<NSDictionary *> *assistantMessages;
 @property(nonatomic, copy) NSString *assistantResponse;
+@property(nonatomic, copy) NSString *assistantDirectory;
 @property(nonatomic, copy, nullable) NSString *claudeExecutable;
 @property(nonatomic, copy) NSString *windowProfilePath;
 @property(nonatomic, copy) NSString *windowRuntimeDirectory;
@@ -847,6 +848,7 @@ static int TerminalDBExitStatus = 0;
     self.followsOutput = YES;
     self.assistantMessages = [NSMutableArray array];
     self.assistantResponse = @"";
+    self.assistantDirectory = @"";
     self.defaultBackground = self.theme.terminalBackground;
     self.defaultForeground = self.theme.terminalForeground;
     self.ansiColors = self.theme.ansiColors;
@@ -1572,6 +1574,12 @@ static int TerminalDBExitStatus = 0;
 
 - (void)beginAssistantRequestForPrompt:(NSString *)prompt
                              directory:(NSString *)directory {
+    NSString *trimmedPrompt = [prompt
+        stringByTrimmingCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (trimmedPrompt.length == 0 || self.assistantClient != nil) return;
+    if (directory.length > 0) self.assistantDirectory = directory;
+
     NSString *apiKey = self.apiConfiguration.apiKey;
     NSString *model = self.apiConfiguration.selectedModelID;
     self.assistantView.hidden = NO;
@@ -1580,8 +1588,20 @@ static int TerminalDBExitStatus = 0;
                              relativeTo:nil];
     [self layoutAssistantView];
 
+    NSDictionary *userMessage = @{
+        @"role" : @"user",
+        @"content" : trimmedPrompt,
+    };
+    [self.assistantMessages addObject:userMessage];
+    while (self.assistantMessages.count > 24 &&
+           self.assistantMessages.count >= 2) {
+        [self.assistantMessages removeObjectsInRange:NSMakeRange(0, 2)];
+    }
+    NSArray<NSDictionary *> *messages = [self.assistantMessages copy];
+
     if (apiKey.length == 0 || model.length == 0) {
-        [self.assistantView beginWithModelName:@"Not configured"];
+        [self.assistantView beginWithModelName:@"Not configured"
+                                      messages:messages];
         [self.assistantView
             showError:
                 apiKey.length == 0
@@ -1598,19 +1618,9 @@ static int TerminalDBExitStatus = 0;
     self.assistantResponse = @"";
     NSString *modelName =
         [self.apiConfiguration displayNameForModelID:model];
-    [self.assistantView beginWithModelName:modelName];
-
-    NSDictionary *userMessage = @{
-        @"role" : @"user",
-        @"content" : prompt,
-    };
-    [self.assistantMessages addObject:userMessage];
-    while (self.assistantMessages.count > 12) {
-        [self.assistantMessages removeObjectAtIndex:0];
-    }
-    NSArray<NSDictionary *> *messages = [self.assistantMessages copy];
+    [self.assistantView beginWithModelName:modelName messages:messages];
     NSString *system =
-        [self assistantSystemPromptForDirectory:directory];
+        [self assistantSystemPromptForDirectory:self.assistantDirectory];
 
     __block ClaudeAPIClient *client =
         [[ClaudeAPIClient alloc] initWithAPIKey:apiKey model:model];
@@ -1655,6 +1665,51 @@ static int TerminalDBExitStatus = 0;
     self.terminalView.inputEnabled = YES;
     [self.window makeFirstResponder:self.terminalView];
     [self.terminalView pasteString:command];
+}
+
+- (void)claudeAssistantView:(ClaudeAssistantView *)view
+          didSubmitFollowUp:(NSString *)prompt {
+    (void)view;
+    [self beginAssistantRequestForPrompt:prompt
+                              directory:self.assistantDirectory];
+}
+
+- (void)resetAssistantConversation {
+    ClaudeAPIClient *client = self.assistantClient;
+    self.assistantClient = nil;
+    [client cancel];
+    [self.assistantMessages removeAllObjects];
+    self.assistantResponse = @"";
+    self.terminalView.inputEnabled = YES;
+    NSString *model = self.apiConfiguration.selectedModelID;
+    NSString *modelName = model.length > 0
+        ? [self.apiConfiguration displayNameForModelID:model]
+        : @"Not configured";
+    [self.assistantView resetConversationWithModelName:modelName];
+}
+
+- (void)claudeAssistantViewDidRequestNewConversation:
+    (ClaudeAssistantView *)view {
+    (void)view;
+    if (self.assistantMessages.count == 0 &&
+        self.assistantResponse.length == 0) {
+        [self resetAssistantConversation];
+        return;
+    }
+
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Start a new conversation?";
+    alert.informativeText =
+        @"This clears Claude’s conversation context for this terminal tab. "
+         "Your terminal session and command history are not changed.";
+    [alert addButtonWithTitle:@"New conversation"];
+    [alert addButtonWithTitle:@"Keep current"];
+    [alert beginSheetModalForWindow:self.window
+                 completionHandler:^(NSModalResponse response) {
+        if (response == NSAlertFirstButtonReturn) {
+            [self resetAssistantConversation];
+        }
+    }];
 }
 
 - (void)claudeAssistantViewDidRequestClose:(ClaudeAssistantView *)view {
@@ -2869,6 +2924,47 @@ static int TerminalDBExitStatus = 0;
         failures++;
     }
 
+    ClaudeAssistantView *conversationView = [[ClaudeAssistantView alloc]
+        initWithFrame:NSMakeRect(0, 0, 760, 340)
+                theme:theme];
+    [conversationView beginWithModelName:@"Test model"
+                                messages:@[
+        @{@"role" : @"user", @"content" : @"Find JPEG files"},
+        @{@"role" : @"assistant", @"content" : @"Use `find`."},
+        @{@"role" : @"user", @"content" : @"Make it case-insensitive"},
+    ]];
+    [conversationView appendResponseText:
+        @"Try this:\n```sh\nfind . -iname '*.jpg'\n```"];
+    [conversationView finish];
+    NSTextView *conversationTextView =
+        [conversationView valueForKey:@"responseTextView"];
+    NSString *conversationText = conversationTextView.string;
+    NSTextField *followUpField =
+        [conversationView valueForKey:@"followUpField"];
+    BOOL hasNewConversationButton = NO;
+    for (NSView *subview in conversationView.subviews) {
+        if ([subview isKindOfClass:NSButton.class] &&
+            [((NSButton *)subview).title
+                isEqualToString:@"New conversation"]) {
+            hasNewConversationButton = YES;
+            break;
+        }
+    }
+    if ([conversationText rangeOfString:@"You\nFind JPEG files"].location ==
+            NSNotFound ||
+        [conversationText rangeOfString:@"Claude\nUse `find`."].location ==
+            NSNotFound ||
+        [conversationText
+            rangeOfString:@"You\nMake it case-insensitive"].location ==
+            NSNotFound ||
+        [conversationText
+            rangeOfString:@"Claude\nTry this:"].location == NSNotFound ||
+        !followUpField.enabled ||
+        !hasNewConversationButton) {
+        fprintf(stderr, "FAIL assistant conversation transcript\n");
+        failures++;
+    }
+
     int sockets[2] = {-1, -1};
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0) {
         TerminalView *input =
@@ -3115,7 +3211,7 @@ static int TerminalDBExitStatus = 0;
     }
 
     if (failures == 0) {
-        fprintf(stdout, "TerminalDB terminal self-tests: 23 passed\n");
+        fprintf(stdout, "TerminalDB terminal self-tests: 24 passed\n");
         return YES;
     }
     fprintf(stderr, "TerminalDB terminal self-tests: %lu failed\n",

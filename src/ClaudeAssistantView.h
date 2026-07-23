@@ -9,6 +9,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)claudeAssistantView:(ClaudeAssistantView *)view
        didChooseRunCommand:(NSString *)command;
+- (void)claudeAssistantView:(ClaudeAssistantView *)view
+          didSubmitFollowUp:(NSString *)prompt;
+- (void)claudeAssistantViewDidRequestNewConversation:
+    (ClaudeAssistantView *)view;
 - (void)claudeAssistantViewDidRequestClose:(ClaudeAssistantView *)view;
 - (void)claudeAssistantViewDidRequestSettings:(ClaudeAssistantView *)view;
 
@@ -19,7 +23,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, weak, nullable) id<ClaudeAssistantViewDelegate> delegate;
 
 - (instancetype)initWithFrame:(NSRect)frame theme:(TerminalTheme *)theme;
-- (void)beginWithModelName:(NSString *)modelName;
+- (void)beginWithModelName:(NSString *)modelName
+                  messages:(NSArray<NSDictionary *> *)messages;
+- (void)resetConversationWithModelName:(NSString *)modelName;
 - (void)appendResponseText:(NSString *)text;
 - (void)finish;
 - (void)showError:(NSString *)message settingsAvailable:(BOOL)settingsAvailable;

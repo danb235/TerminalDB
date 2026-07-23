@@ -15,9 +15,13 @@
 @property(nonatomic, strong) NSTextField *statusLabel;
 @property(nonatomic, strong) NSProgressIndicator *progress;
 @property(nonatomic, strong) NSButton *closeButton;
+@property(nonatomic, strong) NSButton *startConversationButton;
 @property(nonatomic, strong) NSButton *settingsButton;
 @property(nonatomic, strong) NSScrollView *responseScrollView;
 @property(nonatomic, strong) NSTextView *responseTextView;
+@property(nonatomic, strong) NSTextField *followUpField;
+@property(nonatomic, strong) NSButton *sendButton;
+@property(nonatomic, copy) NSArray<NSDictionary *> *conversationMessages;
 @property(nonatomic, copy) NSString *response;
 @property(nonatomic, copy) NSArray<NSButton *> *commandButtons;
 @end
@@ -28,6 +32,7 @@
     self = [super initWithFrame:frame];
     if (self == nil) return nil;
     _theme = theme;
+    _conversationMessages = @[];
     _response = @"";
     _commandButtons = @[];
     self.wantsLayer = YES;
@@ -60,6 +65,16 @@
     _closeButton.toolTip = @"Dismiss";
     [self addSubview:_closeButton];
 
+    _startConversationButton = [[NSButton alloc] initWithFrame:NSZeroRect];
+    _startConversationButton.title = @"New conversation";
+    _startConversationButton.bezelStyle = NSBezelStyleRounded;
+    _startConversationButton.controlSize = NSControlSizeSmall;
+    _startConversationButton.target = self;
+    _startConversationButton.action = @selector(newConversationSelected:);
+    _startConversationButton.toolTip =
+        @"Clear this tab’s Claude context and start fresh.";
+    [self addSubview:_startConversationButton];
+
     _settingsButton = [[NSButton alloc] initWithFrame:NSZeroRect];
     _settingsButton.title = @"Open Settings";
     _settingsButton.bezelStyle = NSBezelStyleRounded;
@@ -84,6 +99,25 @@
     _responseTextView.autoresizingMask = NSViewWidthSizable;
     _responseScrollView.documentView = _responseTextView;
     [self addSubview:_responseScrollView];
+
+    _followUpField = [[NSTextField alloc] initWithFrame:NSZeroRect];
+    _followUpField.placeholderString =
+        @"Ask a follow-up or refine the command…";
+    _followUpField.font =
+        [NSFont systemFontOfSize:12 weight:NSFontWeightRegular];
+    _followUpField.target = self;
+    _followUpField.action = @selector(submitFollowUp:);
+    _followUpField.toolTip =
+        @"This message continues the conversation in this terminal tab.";
+    [self addSubview:_followUpField];
+
+    _sendButton = [[NSButton alloc] initWithFrame:NSZeroRect];
+    _sendButton.title = @"Send";
+    _sendButton.bezelStyle = NSBezelStyleRounded;
+    _sendButton.keyEquivalent = @"\r";
+    _sendButton.target = self;
+    _sendButton.action = @selector(submitFollowUp:);
+    [self addSubview:_sendButton];
     return self;
 }
 
@@ -121,16 +155,20 @@
     const CGFloat headerHeight = 24;
     self.progress.frame = NSMakeRect(padding, 13, 16, 16);
     self.titleLabel.frame =
-        NSMakeRect(padding + 24, 10, self.bounds.size.width - 120, 20);
+        NSMakeRect(padding + 24, 10, self.bounds.size.width - 250, 20);
+    self.startConversationButton.frame =
+        NSMakeRect(self.bounds.size.width - 194, 7, 146, 26);
     self.closeButton.frame =
         NSMakeRect(self.bounds.size.width - 40, 7, 28, 26);
     self.statusLabel.frame =
         NSMakeRect(padding, 38, self.bounds.size.width - padding * 2, 18);
 
-    CGFloat buttonHeight = self.commandButtons.count > 0 ||
-        !self.settingsButton.hidden ? 38 : 0;
+    CGFloat commandRowHeight = self.commandButtons.count > 0 ||
+        !self.settingsButton.hidden ? 36 : 0;
+    CGFloat composerHeight = 34;
     CGFloat responseTop = headerHeight + 36;
-    CGFloat responseBottom = padding + buttonHeight;
+    CGFloat responseBottom =
+        padding + composerHeight + commandRowHeight + 6;
     self.responseScrollView.frame =
         NSMakeRect(padding,
                    responseTop,
@@ -138,8 +176,21 @@
                    MAX(44, self.bounds.size.height -
                        responseTop - responseBottom));
 
+    CGFloat composerY = self.bounds.size.height - padding - 28;
+    CGFloat sendWidth = 74;
+    self.sendButton.frame =
+        NSMakeRect(self.bounds.size.width - padding - sendWidth,
+                   composerY,
+                   sendWidth,
+                   28);
+    self.followUpField.frame =
+        NSMakeRect(padding,
+                   composerY,
+                   self.bounds.size.width - padding * 3 - sendWidth,
+                   28);
+
     CGFloat x = padding;
-    CGFloat y = self.bounds.size.height - padding - 28;
+    CGFloat y = composerY - commandRowHeight;
     for (NSButton *button in self.commandButtons) {
         button.frame = NSMakeRect(x, y, 124, 28);
         x += 132;
@@ -149,16 +200,40 @@
     }
 }
 
-- (void)beginWithModelName:(NSString *)modelName {
+- (void)beginWithModelName:(NSString *)modelName
+                  messages:(NSArray<NSDictionary *> *)messages {
+    self.conversationMessages = [messages copy] ?: @[];
     self.response = @"";
     self.titleLabel.stringValue =
         [NSString stringWithFormat:@"Claude · %@", modelName];
     self.statusLabel.stringValue = @"Working…";
     self.statusLabel.textColor = self.theme.statusBarActiveForeground;
     self.settingsButton.hidden = YES;
+    self.followUpField.enabled = NO;
+    self.sendButton.enabled = NO;
     [self removeCommandButtons];
     [self.progress startAnimation:nil];
     [self renderResponse];
+}
+
+- (void)resetConversationWithModelName:(NSString *)modelName {
+    self.conversationMessages = @[];
+    self.response = @"";
+    self.titleLabel.stringValue =
+        [NSString stringWithFormat:@"Claude · %@", modelName];
+    self.statusLabel.stringValue = @"New conversation";
+    self.statusLabel.textColor = self.theme.statusBarActiveForeground;
+    self.settingsButton.hidden = YES;
+    self.followUpField.stringValue = @"";
+    self.followUpField.enabled = YES;
+    self.sendButton.enabled = YES;
+    [self.progress stopAnimation:nil];
+    [self removeCommandButtons];
+    [self renderResponse];
+    [self setNeedsLayout:YES];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.window makeFirstResponder:self.followUpField];
+    });
 }
 
 - (void)appendResponseText:(NSString *)text {
@@ -171,9 +246,14 @@
 - (void)finish {
     [self.progress stopAnimation:nil];
     self.statusLabel.stringValue = @"Review any command before running it.";
+    self.followUpField.enabled = YES;
+    self.sendButton.enabled = YES;
     [self installCommandButtons:
         [ClaudeAssistantView commandsFromMarkdown:self.response]];
     [self renderResponse];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.window makeFirstResponder:self.followUpField];
+    });
 }
 
 - (void)showError:(NSString *)message
@@ -183,14 +263,16 @@
     self.statusLabel.stringValue = @"Couldn’t complete the request";
     self.statusLabel.textColor = self.theme.ansiColors[1];
     self.settingsButton.hidden = !settingsAvailable;
+    self.followUpField.enabled = YES;
+    self.sendButton.enabled = YES;
     [self removeCommandButtons];
     [self renderResponse];
     [self setNeedsLayout:YES];
 }
 
-- (void)renderResponse {
-    NSMutableAttributedString *rendered =
-        [[NSMutableAttributedString alloc] init];
+- (void)appendContent:(NSString *)content
+                 role:(NSString *)role
+                   to:(NSMutableAttributedString *)rendered {
     NSDictionary *base = @{
         NSFontAttributeName :
             [NSFont systemFontOfSize:13 weight:NSFontWeightRegular],
@@ -205,10 +287,20 @@
         NSBackgroundColorAttributeName :
             [self.theme.terminalBackground colorWithAlphaComponent:0.9],
     };
+    BOOL assistant = [role isEqualToString:@"assistant"];
+    NSDictionary *heading = @{
+        NSFontAttributeName :
+            [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold],
+        NSForegroundColorAttributeName :
+            assistant ? self.theme.ansiColors[2] : self.theme.ansiColors[6],
+    };
+    [rendered appendAttributedString:[[NSAttributedString alloc]
+        initWithString:assistant ? @"Claude\n" : @"You\n"
+            attributes:heading]];
 
     __block BOOL inCode = NO;
     NSArray<NSString *> *lines =
-        [self.response componentsSeparatedByString:@"\n"];
+        [content componentsSeparatedByString:@"\n"];
     for (NSUInteger index = 0; index < lines.count; index++) {
         NSString *line = lines[index];
         if ([line hasPrefix:@"```"]) {
@@ -226,6 +318,49 @@
             [rendered appendAttributedString:[[NSAttributedString alloc]
                 initWithString:@"\n" attributes:inCode ? code : base]];
         }
+    }
+}
+
+- (void)renderResponse {
+    NSMutableAttributedString *rendered =
+        [[NSMutableAttributedString alloc] init];
+    NSDictionary *separator = @{
+        NSFontAttributeName : [NSFont systemFontOfSize:6],
+    };
+    for (NSDictionary *message in self.conversationMessages) {
+        NSString *role = [message[@"role"] isKindOfClass:NSString.class]
+            ? message[@"role"]
+            : @"assistant";
+        NSString *content =
+            [message[@"content"] isKindOfClass:NSString.class]
+                ? message[@"content"]
+                : @"";
+        if (content.length == 0) continue;
+        if (rendered.length > 0) {
+            [rendered appendAttributedString:[[NSAttributedString alloc]
+                initWithString:@"\n\n" attributes:separator]];
+        }
+        [self appendContent:content role:role to:rendered];
+    }
+    if (self.response.length > 0) {
+        if (rendered.length > 0) {
+            [rendered appendAttributedString:[[NSAttributedString alloc]
+                initWithString:@"\n\n" attributes:separator]];
+        }
+        [self appendContent:self.response role:@"assistant" to:rendered];
+    }
+    if (rendered.length == 0) {
+        NSDictionary *empty = @{
+            NSFontAttributeName :
+                [NSFont systemFontOfSize:13 weight:NSFontWeightRegular],
+            NSForegroundColorAttributeName :
+                self.theme.statusBarActiveForeground,
+        };
+        [rendered appendAttributedString:[[NSAttributedString alloc]
+            initWithString:
+                @"Ask Claude to help inspect the system, explain a command, "
+                 "or refine a command before you run it."
+                attributes:empty]];
     }
     [self.responseTextView.textStorage setAttributedString:rendered];
     [self.responseTextView scrollRangeToVisible:
@@ -318,6 +453,21 @@
         [self.delegate claudeAssistantView:self
                       didChooseRunCommand:command];
     }
+}
+
+- (void)submitFollowUp:(id)sender {
+    (void)sender;
+    NSString *prompt = [self.followUpField.stringValue
+        stringByTrimmingCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (prompt.length == 0 || !self.followUpField.enabled) return;
+    self.followUpField.stringValue = @"";
+    [self.delegate claudeAssistantView:self didSubmitFollowUp:prompt];
+}
+
+- (void)newConversationSelected:(id)sender {
+    (void)sender;
+    [self.delegate claudeAssistantViewDidRequestNewConversation:self];
 }
 
 - (void)closeSelected:(id)sender {
