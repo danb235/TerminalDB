@@ -206,6 +206,56 @@ static NSString *const ClaudeProfileStoreErrorDomain =
     return profile;
 }
 
+- (BOOL)removeProfile:(ClaudeProfile *)profile error:(NSError **)error {
+    ClaudeProfile *managed =
+        [self profileWithIdentifier:profile.identifier];
+    if (managed == nil) {
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:ClaudeProfileStoreErrorDomain
+                                         code:3
+                                     userInfo:@{
+                NSLocalizedDescriptionKey :
+                    @"This Claude Code account is no longer in TerminalDB.",
+            }];
+        }
+        return NO;
+    }
+
+    NSFileManager *files = NSFileManager.defaultManager;
+    if ([files fileExistsAtPath:managed.profileDirectory] &&
+        ![files removeItemAtPath:managed.profileDirectory error:error]) {
+        return NO;
+    }
+
+    NSMutableArray<ClaudeProfile *> *remaining =
+        [self.profiles mutableCopy];
+    [remaining removeObject:managed];
+    self.profiles = remaining;
+    if ([self.lastSelectedProfile.identifier
+            isEqualToString:managed.identifier]) {
+        self.lastSelectedProfile = self.profiles.firstObject;
+    }
+    [self saveProfiles];
+    [self notifyProfilesChanged];
+
+    // Claude Code stores the credential separately from its configuration
+    // directory. Remove that now-unused item without ever reading its value.
+    NSTask *keychainCleanup = [[NSTask alloc] init];
+    keychainCleanup.executableURL =
+        [NSURL fileURLWithPath:@"/usr/bin/security"];
+    keychainCleanup.arguments = @[
+        @"delete-generic-password",
+        @"-s",
+        managed.keychainService,
+    ];
+    keychainCleanup.standardOutput = [NSFileHandle fileHandleWithNullDevice];
+    keychainCleanup.standardError = [NSFileHandle fileHandleWithNullDevice];
+    if ([keychainCleanup launchAndReturnError:nil]) {
+        [keychainCleanup waitUntilExit];
+    }
+    return YES;
+}
+
 - (void)setLastSelectedProfile:(ClaudeProfile *)profile {
     _lastSelectedProfile = profile;
     [self saveProfiles];

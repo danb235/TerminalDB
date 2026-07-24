@@ -27,6 +27,7 @@ extern NSNotificationName const ClaudeProfilesDidChangeNotification;
 - (nullable ClaudeProfile *)profileWithIdentifier:(NSString *)identifier;
 - (nullable ClaudeProfile *)createProfileWithLabel:(NSString *)label
                                              error:(NSError **)error;
+- (BOOL)removeProfile:(ClaudeProfile *)profile error:(NSError **)error;
 - (void)setLastSelectedProfile:(nullable ClaudeProfile *)profile;
 - (void)updateProfile:(ClaudeProfile *)profile
                 email:(nullable NSString *)email

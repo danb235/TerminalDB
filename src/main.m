@@ -200,6 +200,14 @@ static int TerminalDBExitStatus = 0;
     [self sendUserBytes:data.bytes length:data.length];
 }
 
+- (void)paste:(id)sender {
+    (void)sender;
+    NSString *paste =
+        [NSPasteboard.generalPasteboard
+            stringForType:NSPasteboardTypeString];
+    [self pasteString:paste];
+}
+
 - (void)keyDown:(NSEvent *)event {
     NSEventModifierFlags modifiers =
         event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
@@ -402,6 +410,7 @@ static int TerminalDBExitStatus = 0;
 @property(nonatomic, weak, nullable) AppDelegate *owner;
 @property(nonatomic, strong) NSMutableArray<AppDelegate *> *windowControllers;
 @property(nonatomic, strong) NSMenu *claudeMenu;
+@property(nonatomic, strong) NSMenu *viewMenu;
 @property(nonatomic, strong) ClaudeProfileManager *profileManager;
 @property(nonatomic, strong) ClaudeAPIConfiguration *apiConfiguration;
 @property(nonatomic, strong, nullable)
@@ -522,51 +531,154 @@ static int TerminalDBExitStatus = 0;
                                                              action:nil
                                                       keyEquivalent:@""];
     NSMenu *applicationMenu = [[NSMenu alloc] initWithTitle:@"TerminalDB"];
+    NSMenuItem *about =
+        [applicationMenu addItemWithTitle:@"About TerminalDB"
+                                   action:@selector(orderFrontStandardAboutPanel:)
+                            keyEquivalent:@""];
+    about.target = NSApp;
+    [applicationMenu addItem:NSMenuItem.separatorItem];
     NSMenuItem *settings =
-        [applicationMenu addItemWithTitle:@"Claude API Settings…"
+        [applicationMenu addItemWithTitle:@"Settings…"
                                    action:@selector(showClaudeAPISettings:)
                             keyEquivalent:@","];
     settings.target = self;
     [applicationMenu addItem:NSMenuItem.separatorItem];
-    [applicationMenu addItemWithTitle:@"Quit TerminalDB"
-                               action:@selector(terminate:)
-                        keyEquivalent:@"q"];
+
+    NSMenuItem *services =
+        [applicationMenu addItemWithTitle:@"Services"
+                                   action:nil
+                            keyEquivalent:@""];
+    NSMenu *servicesMenu = [[NSMenu alloc] initWithTitle:@"Services"];
+    services.submenu = servicesMenu;
+    NSApp.servicesMenu = servicesMenu;
+    [applicationMenu addItem:NSMenuItem.separatorItem];
+
+    NSMenuItem *hide =
+        [applicationMenu addItemWithTitle:@"Hide TerminalDB"
+                                   action:@selector(hide:)
+                            keyEquivalent:@"h"];
+    hide.target = NSApp;
+    NSMenuItem *hideOthers =
+        [applicationMenu addItemWithTitle:@"Hide Others"
+                                   action:@selector(hideOtherApplications:)
+                            keyEquivalent:@"h"];
+    hideOthers.target = NSApp;
+    hideOthers.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagOption;
+    NSMenuItem *showAll =
+        [applicationMenu addItemWithTitle:@"Show All"
+                                   action:@selector(unhideAllApplications:)
+                            keyEquivalent:@""];
+    showAll.target = NSApp;
+    [applicationMenu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *quit =
+        [applicationMenu addItemWithTitle:@"Quit TerminalDB"
+                                   action:@selector(terminate:)
+                            keyEquivalent:@"q"];
+    quit.target = NSApp;
     applicationItem.submenu = applicationMenu;
     [mainMenu addItem:applicationItem];
 
-    NSMenuItem *fileItem = [[NSMenuItem alloc] initWithTitle:@"File"
-                                                      action:nil
-                                               keyEquivalent:@""];
-    NSMenu *fileMenu = [[NSMenu alloc] initWithTitle:@"File"];
-    NSMenuItem *newTab = [fileMenu addItemWithTitle:@"New Tab"
-                                            action:@selector(newTerminalTab:)
-                                     keyEquivalent:@"t"];
-    newTab.target = self;
-    NSMenuItem *newWindow = [fileMenu addItemWithTitle:@"New Window"
+    NSMenuItem *shellItem = [[NSMenuItem alloc] initWithTitle:@"Shell"
+                                                       action:nil
+                                                keyEquivalent:@""];
+    NSMenu *shellMenu = [[NSMenu alloc] initWithTitle:@"Shell"];
+    NSMenuItem *newWindow = [shellMenu addItemWithTitle:@"New Window"
                                                action:@selector(newTerminalWindow:)
                                         keyEquivalent:@"n"];
     newWindow.target = self;
-    [fileMenu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *newTab = [shellMenu addItemWithTitle:@"New Tab"
+                                             action:@selector(newTerminalTab:)
+                                      keyEquivalent:@"t"];
+    newTab.target = self;
+    [shellMenu addItem:NSMenuItem.separatorItem];
     NSMenuItem *closeTab =
-        [fileMenu addItemWithTitle:@"Close Tab"
-                            action:@selector(closeTerminalWindow:)
-                     keyEquivalent:@"w"];
+        [shellMenu addItemWithTitle:@"Close Tab"
+                             action:@selector(closeTerminalWindow:)
+                      keyEquivalent:@"w"];
     closeTab.target = self;
-    fileItem.submenu = fileMenu;
-    [mainMenu addItem:fileItem];
+    NSMenuItem *closeWindow =
+        [shellMenu addItemWithTitle:@"Close Window"
+                             action:@selector(closeTerminalTabGroup:)
+                      keyEquivalent:@"w"];
+    closeWindow.target = self;
+    closeWindow.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [shellMenu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *clear =
+        [shellMenu addItemWithTitle:@"Clear Scrollback"
+                             action:@selector(clearTerminalScrollbackFromMenu:)
+                      keyEquivalent:@"k"];
+    clear.target = self;
+    shellItem.submenu = shellMenu;
+    [mainMenu addItem:shellItem];
 
-    NSMenuItem *claudeItem = [[NSMenuItem alloc] initWithTitle:@"Claude"
-                                                        action:nil
-                                                 keyEquivalent:@""];
-    self.claudeMenu = [[NSMenu alloc] initWithTitle:@"Claude"];
-    self.claudeMenu.delegate = self;
-    NSMenuItem *initialChatToggle = [self.claudeMenu
+    NSMenuItem *editItem = [[NSMenuItem alloc] initWithTitle:@"Edit"
+                                                      action:nil
+                                               keyEquivalent:@""];
+    NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
+    [editMenu addItemWithTitle:@"Undo"
+                        action:@selector(undo:)
+                 keyEquivalent:@"z"];
+    NSMenuItem *redo =
+        [editMenu addItemWithTitle:@"Redo"
+                            action:@selector(redo:)
+                     keyEquivalent:@"z"];
+    redo.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [editMenu addItem:NSMenuItem.separatorItem];
+    [editMenu addItemWithTitle:@"Cut"
+                        action:@selector(cut:)
+                 keyEquivalent:@"x"];
+    [editMenu addItemWithTitle:@"Copy"
+                        action:@selector(copy:)
+                 keyEquivalent:@"c"];
+    [editMenu addItemWithTitle:@"Paste"
+                        action:@selector(paste:)
+                 keyEquivalent:@"v"];
+    [editMenu addItem:NSMenuItem.separatorItem];
+    [editMenu addItemWithTitle:@"Select All"
+                        action:@selector(selectAll:)
+                 keyEquivalent:@"a"];
+    editItem.submenu = editMenu;
+    [mainMenu addItem:editItem];
+
+    NSMenuItem *viewItem = [[NSMenuItem alloc] initWithTitle:@"View"
+                                                      action:nil
+                                               keyEquivalent:@""];
+    self.viewMenu = [[NSMenu alloc] initWithTitle:@"View"];
+    self.viewMenu.delegate = self;
+    NSMenuItem *initialChatToggle = [self.viewMenu
         addItemWithTitle:@"Show AI Chat"
                   action:@selector(toggleAIChatFromMenu:)
            keyEquivalent:@"l"];
     initialChatToggle.target = self;
     initialChatToggle.keyEquivalentModifierMask =
         NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [self.viewMenu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *increaseText = [self.viewMenu
+        addItemWithTitle:@"Increase Text Size"
+                  action:@selector(increaseTerminalTextSize:)
+           keyEquivalent:@"+"];
+    increaseText.target = self;
+    NSMenuItem *decreaseText = [self.viewMenu
+        addItemWithTitle:@"Decrease Text Size"
+                  action:@selector(decreaseTerminalTextSize:)
+           keyEquivalent:@"-"];
+    decreaseText.target = self;
+    NSMenuItem *resetText = [self.viewMenu
+        addItemWithTitle:@"Reset Text Size"
+                  action:@selector(resetTerminalTextSize:)
+           keyEquivalent:@"0"];
+    resetText.target = self;
+    viewItem.submenu = self.viewMenu;
+    [mainMenu addItem:viewItem];
+
+    NSMenuItem *claudeItem = [[NSMenuItem alloc] initWithTitle:@"Claude"
+                                                        action:nil
+                                                 keyEquivalent:@""];
+    self.claudeMenu = [[NSMenu alloc] initWithTitle:@"Claude"];
+    self.claudeMenu.delegate = self;
     claudeItem.submenu = self.claudeMenu;
     [mainMenu addItem:claudeItem];
 
@@ -574,23 +686,32 @@ static int TerminalDBExitStatus = 0;
                                                         action:nil
                                                  keyEquivalent:@""];
     NSMenu *windowMenu = [[NSMenu alloc] initWithTitle:@"Window"];
-    NSMenuItem *previousTab =
-        [windowMenu addItemWithTitle:@"Select Previous Tab"
-                              action:@selector(selectPreviousTerminalTab:)
-                       keyEquivalent:@"["];
-    previousTab.target = self;
-    previousTab.keyEquivalentModifierMask =
-        NSEventModifierFlagCommand | NSEventModifierFlagShift;
-    NSMenuItem *nextTab =
-        [windowMenu addItemWithTitle:@"Select Next Tab"
-                              action:@selector(selectNextTerminalTab:)
-                       keyEquivalent:@"]"];
-    nextTab.target = self;
-    nextTab.keyEquivalentModifierMask =
-        NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [windowMenu addItemWithTitle:@"Minimize"
+                          action:@selector(performMiniaturize:)
+                   keyEquivalent:@"m"];
+    [windowMenu addItemWithTitle:@"Zoom"
+                          action:@selector(performZoom:)
+                   keyEquivalent:@""];
+    [windowMenu addItem:NSMenuItem.separatorItem];
+    [windowMenu addItemWithTitle:@"Bring All to Front"
+                          action:@selector(arrangeInFront:)
+                   keyEquivalent:@""];
     windowItem.submenu = windowMenu;
     [mainMenu addItem:windowItem];
     NSApp.windowsMenu = windowMenu;
+
+    NSMenuItem *helpItem = [[NSMenuItem alloc] initWithTitle:@"Help"
+                                                      action:nil
+                                               keyEquivalent:@""];
+    NSMenu *helpMenu = [[NSMenu alloc] initWithTitle:@"Help"];
+    NSMenuItem *help =
+        [helpMenu addItemWithTitle:@"TerminalDB Help"
+                            action:@selector(showTerminalDBHelp:)
+                     keyEquivalent:@"?"];
+    help.target = self;
+    helpItem.submenu = helpMenu;
+    [mainMenu addItem:helpItem];
+
     NSApp.mainMenu = mainMenu;
 }
 
@@ -624,63 +745,114 @@ static int TerminalDBExitStatus = 0;
 }
 
 - (NSString *)claudeMenuTitleForProfile:(ClaudeProfile *)profile {
-    NSMutableArray<NSString *> *parts =
-        [NSMutableArray arrayWithObject:profile.label];
-    if (profile.email.length > 0) [parts addObject:profile.email];
     if (profile.subscriptionType.length > 0) {
-        [parts addObject:profile.subscriptionType.capitalizedString];
+        return [NSString stringWithFormat:@"%@ (%@)",
+            profile.label, profile.subscriptionType.capitalizedString];
     }
-    return [parts componentsJoinedByString:@"  —  "];
+    return profile.label;
 }
 
 - (void)menuNeedsUpdate:(NSMenu *)menu {
     AppDelegate *root = [self rootController];
+    AppDelegate *controller = [root activeTerminalController];
+    if (menu == root.viewMenu) {
+        for (NSMenuItem *item in menu.itemArray) {
+            if (item.action != @selector(toggleAIChatFromMenu:)) continue;
+            item.title = controller.assistantView.hidden
+                ? @"Show AI Chat"
+                : @"Hide AI Chat";
+            item.enabled = controller != nil;
+            break;
+        }
+        return;
+    }
     if (menu != root.claudeMenu) return;
     [menu removeAllItems];
-
-    AppDelegate *controller = [root activeTerminalController];
-    NSMenuItem *toggleChat = [[NSMenuItem alloc]
-        initWithTitle:controller.assistantView.hidden
-            ? @"Show AI Chat"
-            : @"Hide AI Chat"
-               action:@selector(toggleAIChatFromMenu:)
-        keyEquivalent:@"l"];
-    toggleChat.target = root;
-    toggleChat.keyEquivalentModifierMask =
-        NSEventModifierFlagCommand | NSEventModifierFlagShift;
-    [menu addItem:toggleChat];
 
     NSMenuItem *newChat = [[NSMenuItem alloc]
         initWithTitle:@"New AI Chat"
                action:@selector(newAIChatFromMenu:)
         keyEquivalent:@""];
     newChat.target = root;
+    newChat.enabled = controller != nil;
     [menu addItem:newChat];
 
+    NSString *selectedModelID = root.apiConfiguration.selectedModelID;
+    NSString *selectedModelName = selectedModelID.length > 0
+        ? [root.apiConfiguration displayNameForModelID:selectedModelID]
+        : nil;
+    NSMenuItem *modelParent = [[NSMenuItem alloc]
+        initWithTitle:selectedModelName.length > 0
+            ? [NSString stringWithFormat:@"AI Chat Model: %@",
+                selectedModelName]
+            : @"AI Chat Model"
+               action:nil
+        keyEquivalent:@""];
+    NSMenu *modelMenu = [[NSMenu alloc] initWithTitle:@"AI Chat Model"];
+    NSArray<NSDictionary *> *models = root.apiConfiguration.models;
+    if (models.count == 0) {
+        NSMenuItem *empty = [[NSMenuItem alloc]
+            initWithTitle:root.apiConfiguration.hasAPIKey
+                ? @"No Models Loaded"
+                : @"Add an API Key in Settings"
+                   action:nil
+            keyEquivalent:@""];
+        empty.enabled = NO;
+        [modelMenu addItem:empty];
+    } else {
+        for (NSDictionary *model in models) {
+            NSString *identifier =
+                [model[@"id"] isKindOfClass:NSString.class]
+                    ? model[@"id"] : nil;
+            if (identifier.length == 0) continue;
+            NSString *displayName =
+                [model[@"display_name"] isKindOfClass:NSString.class]
+                    ? model[@"display_name"] : identifier;
+            NSMenuItem *item = [[NSMenuItem alloc]
+                initWithTitle:displayName
+                       action:@selector(selectAIChatModelFromMenu:)
+                keyEquivalent:@""];
+            item.target = root;
+            item.representedObject = identifier;
+            item.state = [identifier isEqualToString:selectedModelID]
+                ? NSControlStateValueOn : NSControlStateValueOff;
+            [modelMenu addItem:item];
+        }
+    }
+    [modelMenu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *refreshModels = [[NSMenuItem alloc]
+        initWithTitle:@"Refresh Available Models"
+               action:@selector(refreshAIChatModelsFromMenu:)
+        keyEquivalent:@""];
+    refreshModels.target = root;
+    refreshModels.enabled = root.apiConfiguration.hasAPIKey;
+    [modelMenu addItem:refreshModels];
+    modelParent.submenu = modelMenu;
+    [menu addItem:modelParent];
+
     NSMenuItem *apiSettings = [[NSMenuItem alloc]
-        initWithTitle:@"Claude API Settings…"
+        initWithTitle:@"AI Chat Settings…"
                action:@selector(showClaudeAPISettings:)
-        keyEquivalent:@","];
+        keyEquivalent:@""];
     apiSettings.target = root;
     [menu addItem:apiSettings];
     [menu addItem:NSMenuItem.separatorItem];
 
     ClaudeProfile *selected = controller.selectedProfile;
-    NSMenuItem *heading = [[NSMenuItem alloc]
-        initWithTitle:@"Account for Current Tab"
+    NSMenuItem *accountParent = [[NSMenuItem alloc]
+        initWithTitle:@"Claude Code Account for This Tab"
                action:nil
         keyEquivalent:@""];
-    heading.enabled = NO;
-    [menu addItem:heading];
-
+    NSMenu *accountMenu = [[NSMenu alloc]
+        initWithTitle:@"Claude Code Account for This Tab"];
     NSArray<ClaudeProfile *> *profiles = root.profileManager.profiles;
     if (profiles.count == 0) {
         NSMenuItem *empty = [[NSMenuItem alloc]
-            initWithTitle:@"No Claude Accounts"
+            initWithTitle:@"No Claude Code Accounts"
                    action:nil
             keyEquivalent:@""];
         empty.enabled = NO;
-        [menu addItem:empty];
+        [accountMenu addItem:empty];
     } else {
         for (ClaudeProfile *profile in profiles) {
             NSMenuItem *item = [[NSMenuItem alloc]
@@ -693,18 +865,18 @@ static int TerminalDBExitStatus = 0;
                 isEqualToString:selected.identifier]
                     ? NSControlStateValueOn
                     : NSControlStateValueOff;
-            [menu addItem:item];
+            [accountMenu addItem:item];
         }
     }
 
-    [menu addItem:NSMenuItem.separatorItem];
+    [accountMenu addItem:NSMenuItem.separatorItem];
     NSMenuItem *addAccount = [[NSMenuItem alloc]
-        initWithTitle:@"Add Claude Account…"
+        initWithTitle:@"Add Claude Code Account…"
                action:@selector(addClaudeProfileFromMenu:)
         keyEquivalent:@""];
     addAccount.target = root;
     addAccount.enabled = profiles.count < 3 && controller != nil;
-    [menu addItem:addAccount];
+    [accountMenu addItem:addAccount];
 
     if (selected != nil && controller != nil) {
         if (!controller.claudeStatusBar.accountStatusKnown) {
@@ -713,7 +885,7 @@ static int TerminalDBExitStatus = 0;
                        action:nil
                 keyEquivalent:@""];
             checking.enabled = NO;
-            [menu addItem:checking];
+            [accountMenu addItem:checking];
         } else if (!controller.claudeStatusBar.accountIsLoggedIn) {
             NSMenuItem *signIn = [[NSMenuItem alloc]
                 initWithTitle:[NSString stringWithFormat:@"Sign In to %@…",
@@ -721,18 +893,26 @@ static int TerminalDBExitStatus = 0;
                        action:@selector(loginClaudeProfileFromMenu:)
                 keyEquivalent:@""];
             signIn.target = root;
-            [menu addItem:signIn];
+            [accountMenu addItem:signIn];
         }
+        [accountMenu addItem:NSMenuItem.separatorItem];
+        NSMenuItem *remove = [[NSMenuItem alloc]
+            initWithTitle:[NSString stringWithFormat:
+                @"Remove “%@” from TerminalDB…", selected.label]
+                   action:@selector(removeClaudeProfileFromMenu:)
+            keyEquivalent:@""];
+        remove.target = root;
+        [accountMenu addItem:remove];
     }
+    accountParent.submenu = accountMenu;
+    [menu addItem:accountParent];
 
     [menu addItem:NSMenuItem.separatorItem];
     NSMenuItem *refresh = [[NSMenuItem alloc]
-        initWithTitle:@"Refresh Usage"
+        initWithTitle:@"Refresh Claude Code Usage"
                action:@selector(refreshClaudeUsageFromMenu:)
-        keyEquivalent:@"r"];
+        keyEquivalent:@""];
     refresh.target = root;
-    refresh.keyEquivalentModifierMask =
-        NSEventModifierFlagCommand | NSEventModifierFlagOption;
     refresh.enabled = selected != nil && controller != nil;
     [menu addItem:refresh];
 }
@@ -775,9 +955,190 @@ static int TerminalDBExitStatus = 0;
     [controller.claudeStatusBar refreshNow];
 }
 
+- (void)selectAIChatModelFromMenu:(NSMenuItem *)sender {
+    NSString *identifier =
+        [sender.representedObject isKindOfClass:NSString.class]
+            ? sender.representedObject : nil;
+    if (identifier.length == 0) return;
+    [[[self rootController] apiConfiguration] selectModelID:identifier];
+}
+
+- (void)refreshAIChatModelsFromMenu:(id)sender {
+    (void)sender;
+    AppDelegate *root = [self rootController];
+    [root.apiConfiguration
+        refreshModelsWithCompletion:^(NSArray<NSDictionary *> *models,
+                                      NSError *error) {
+        (void)models;
+        if (error == nil) return;
+        NSAlert *alert = [NSAlert alertWithError:error];
+        [alert runModal];
+    }];
+}
+
+- (void)removeClaudeProfileFromMenu:(id)sender {
+    (void)sender;
+    AppDelegate *root = [self rootController];
+    AppDelegate *active = [root activeTerminalController];
+    ClaudeProfile *profile = active.selectedProfile;
+    if (profile == nil) return;
+
+    for (AppDelegate *controller in root.windowControllers) {
+        if (![controller.selectedProfile.identifier
+                isEqualToString:profile.identifier]) {
+            continue;
+        }
+        pid_t foregroundProcessGroup =
+            controller.pty >= 0 ? tcgetpgrp(controller.pty) : -1;
+        if (foregroundProcessGroup > 0 &&
+            foregroundProcessGroup != controller.shellPid) {
+            NSAlert *busy = [[NSAlert alloc] init];
+            busy.messageText = @"Finish the current command first";
+            busy.informativeText = [NSString stringWithFormat:
+                @"A tab using “%@” still has a command running. Finish that "
+                 "command before removing the account from TerminalDB.",
+                profile.label];
+            [busy runModal];
+            return;
+        }
+    }
+
+    NSAlert *confirmation = [[NSAlert alloc] init];
+    confirmation.messageText = [NSString stringWithFormat:
+        @"Remove “%@” from TerminalDB?", profile.label];
+    confirmation.informativeText =
+        @"This permanently removes the local TerminalDB profile, its Claude "
+         "Code configuration, and its stored credential from this Mac. It "
+         "does not cancel or modify the Claude subscription itself.";
+    [confirmation addButtonWithTitle:@"Remove Account"];
+    [confirmation addButtonWithTitle:@"Cancel"];
+    confirmation.buttons.firstObject.hasDestructiveAction = YES;
+    if ([confirmation runModal] != NSAlertFirstButtonReturn) return;
+
+    NSString *removedIdentifier = profile.identifier;
+    NSError *error = nil;
+    if (![root.profileManager removeProfile:profile error:&error]) {
+        [[NSAlert alertWithError:error] runModal];
+        return;
+    }
+
+    ClaudeProfile *fallback = root.profileManager.lastSelectedProfile;
+    for (AppDelegate *controller in root.windowControllers) {
+        if (![controller.selectedProfile.identifier
+                isEqualToString:removedIdentifier]) {
+            continue;
+        }
+        controller.selectedProfile = fallback;
+        [controller.claudeStatusBar selectProfile:fallback];
+        [controller writeWindowProfileFile];
+        [controller updateWindowTitle];
+    }
+}
+
 - (void)closeTerminalWindow:(id)sender {
     (void)sender;
-    [NSApp.keyWindow performClose:nil];
+    AppDelegate *controller =
+        [[self rootController] activeTerminalController];
+    [controller.window performClose:nil];
+}
+
+- (void)closeTerminalTabGroup:(id)sender {
+    (void)sender;
+    AppDelegate *controller =
+        [[self rootController] activeTerminalController];
+    NSArray<NSWindow *> *windows =
+        [controller.window.tabGroup.windows copy];
+    if (windows.count == 0) windows = @[controller.window];
+    for (NSWindow *window in windows) [window performClose:nil];
+}
+
+- (void)clearTerminalScrollbackFromMenu:(id)sender {
+    (void)sender;
+    AppDelegate *controller =
+        [[self rootController] activeTerminalController];
+    const char clearScreen = 0x0c;
+    [controller.terminalView sendUserBytes:&clearScreen length:1];
+}
+
+- (void)applyTerminalTextSize:(CGFloat)size {
+    AppDelegate *controller =
+        [[self rootController] activeTerminalController];
+    if (controller == nil) return;
+    size = MIN(32.0, MAX(9.0, size));
+    if (fabs(controller.terminalFontSize - size) < 0.1) return;
+
+    controller.terminalFontSize = size;
+    NSFont *base = [NSFont fontWithName:controller.theme.fontName size:size]
+        ?: [NSFont monospacedSystemFontOfSize:size
+                                      weight:NSFontWeightRegular];
+    controller.terminalView.font = base;
+
+    NSMutableArray<NSDictionary *> *fontRuns =
+        [NSMutableArray array];
+    NSRange fullRange =
+        NSMakeRange(0, controller.terminalView.textStorage.length);
+    [controller.terminalView.textStorage
+        enumerateAttribute:NSFontAttributeName
+                   inRange:fullRange
+                   options:0
+                usingBlock:^(NSFont *font, NSRange range, BOOL *stop) {
+        (void)stop;
+        if (font == nil) return;
+        NSFont *resized = [NSFontManager.sharedFontManager
+            convertFont:font toSize:size];
+        [fontRuns addObject:@{
+            @"range" : [NSValue valueWithRange:range],
+            @"font" : resized,
+        }];
+    }];
+    [controller.terminalView.textStorage beginEditing];
+    for (NSDictionary *run in fontRuns) {
+        [controller.terminalView.textStorage
+            addAttribute:NSFontAttributeName
+                   value:run[@"font"]
+                   range:[run[@"range"] rangeValue]];
+    }
+    [controller.terminalView.textStorage endEditing];
+    controller.terminalView.needsDisplay = YES;
+    [controller updatePTYWindowSize];
+}
+
+- (void)increaseTerminalTextSize:(id)sender {
+    (void)sender;
+    AppDelegate *controller =
+        [[self rootController] activeTerminalController];
+    [self applyTerminalTextSize:controller.terminalFontSize + 1.0];
+}
+
+- (void)decreaseTerminalTextSize:(id)sender {
+    (void)sender;
+    AppDelegate *controller =
+        [[self rootController] activeTerminalController];
+    [self applyTerminalTextSize:controller.terminalFontSize - 1.0];
+}
+
+- (void)resetTerminalTextSize:(id)sender {
+    (void)sender;
+    [self applyTerminalTextSize:
+        [self rootController].theme.fontSize];
+}
+
+- (void)showTerminalDBHelp:(id)sender {
+    (void)sender;
+    NSAlert *help = [[NSAlert alloc] init];
+    help.messageText = @"TerminalDB Help";
+    help.informativeText =
+        @"Shell\n"
+         "⌘N  New window    ⌘T  New tab    ⌘W  Close tab\n"
+         "⌘K  Clear scrollback\n\n"
+         "Terminal\n"
+         "⌘C  Copy selection    ⌘V  Paste    ⌘A  Select all\n"
+         "⌘+ / ⌘− / ⌘0  Adjust text size\n\n"
+         "AI Chat\n"
+         "⇧⌘L  Show or hide the AI chat pane\n"
+         "Use New AI Chat when you want fresh context.";
+    [help addButtonWithTitle:@"Done"];
+    [help runModal];
 }
 
 - (void)showClaudeAPISettings:(id)sender {
@@ -918,6 +1279,7 @@ static int TerminalDBExitStatus = 0;
                 isEqualToString:@"Claude · TerminalDB · Working"];
         BOOL descriptiveTitles = workloadTitle && claudeStateTitle;
         [self menuNeedsUpdate:self.claudeMenu];
+        [self menuNeedsUpdate:self.viewMenu];
         BOOL staticIdentity = YES;
         for (NSView *view in second.claudeStatusBar.subviews) {
             if ([view isKindOfClass:NSPopUpButton.class]) {
@@ -927,31 +1289,81 @@ static int TerminalDBExitStatus = 0;
         }
         BOOL selectedAccountChecked = NO;
         BOOL hasAddAccountAction = NO;
+        BOOL hasRemoveAccountAction = NO;
         BOOL hasRefreshUsageAction = NO;
         BOOL hasAPISettingsAction = NO;
+        BOOL hasModelMenu = NO;
+        BOOL hasModelRefreshAction = NO;
         for (NSMenuItem *item in self.claudeMenu.itemArray) {
-            if (item.action == @selector(selectClaudeProfileFromMenu:) &&
-                [item.representedObject
-                    isEqual:second.selectedProfile.identifier] &&
-                item.state == NSControlStateValueOn) {
-                selectedAccountChecked = YES;
-            } else if (item.action ==
-                       @selector(addClaudeProfileFromMenu:)) {
-                hasAddAccountAction = YES;
-            } else if (item.action ==
+            if (item.action ==
                        @selector(refreshClaudeUsageFromMenu:)) {
                 hasRefreshUsageAction = YES;
             } else if (item.action ==
                        @selector(showClaudeAPISettings:)) {
                 hasAPISettingsAction = YES;
             }
+            if ([item.title hasPrefix:@"AI Chat Model"] &&
+                item.submenu != nil) {
+                hasModelMenu = YES;
+                for (NSMenuItem *modelItem in item.submenu.itemArray) {
+                    if (modelItem.action ==
+                        @selector(refreshAIChatModelsFromMenu:)) {
+                        hasModelRefreshAction = YES;
+                    }
+                }
+            }
+            if (![item.title
+                    isEqualToString:
+                        @"Claude Code Account for This Tab"] ||
+                item.submenu == nil) {
+                continue;
+            }
+            for (NSMenuItem *accountItem in item.submenu.itemArray) {
+                if (accountItem.action ==
+                        @selector(selectClaudeProfileFromMenu:) &&
+                    [accountItem.representedObject
+                        isEqual:second.selectedProfile.identifier] &&
+                    accountItem.state == NSControlStateValueOn) {
+                    selectedAccountChecked = YES;
+                } else if (accountItem.action ==
+                           @selector(addClaudeProfileFromMenu:)) {
+                    hasAddAccountAction = YES;
+                } else if (accountItem.action ==
+                           @selector(removeClaudeProfileFromMenu:)) {
+                    hasRemoveAccountAction = YES;
+                }
+            }
         }
+        BOOL viewChatToggleWorks = NO;
+        for (NSMenuItem *item in self.viewMenu.itemArray) {
+            if (item.action == @selector(toggleAIChatFromMenu:) &&
+                [item.title isEqualToString:@"Show AI Chat"]) {
+                viewChatToggleWorks = YES;
+                break;
+            }
+        }
+        NSArray<NSString *> *expectedMenus = @[
+            @"TerminalDB", @"Shell", @"Edit", @"View",
+            @"Claude", @"Window", @"Help",
+        ];
+        NSMutableArray<NSString *> *actualMenus =
+            [NSMutableArray array];
+        for (NSMenuItem *item in NSApp.mainMenu.itemArray) {
+            [actualMenus addObject:item.title ?: @""];
+        }
+        BOOL standardMenuOrder =
+            [actualMenus isEqualToArray:expectedMenus];
         BOOL claudeMenuWorks =
             staticIdentity &&
             selectedAccountChecked &&
             hasAddAccountAction &&
+            hasRemoveAccountAction &&
             hasRefreshUsageAction &&
-            hasAPISettingsAction;
+            hasAPISettingsAction &&
+            hasModelMenu &&
+            hasModelRefreshAction &&
+            viewChatToggleWorks &&
+            standardMenuOrder;
 
         BOOL sidebarIconsAvailable =
             second.assistantToggleButton.image != nil &&
@@ -3965,6 +4377,56 @@ static int TerminalDBExitStatus = 0;
         failures++;
     }
     [NSFileManager.defaultManager removeItemAtPath:testProfileRoot error:nil];
+
+    NSString *removalRoot = [NSTemporaryDirectory()
+        stringByAppendingPathComponent:[NSString stringWithFormat:
+            @"terminaldb-profile-removal-test-%@",
+            NSUUID.UUID.UUIDString]];
+    NSString *removalProfilesRoot =
+        [removalRoot stringByAppendingPathComponent:@"profiles"];
+    NSString *removalProfileDirectory =
+        [removalProfilesRoot stringByAppendingPathComponent:@"remove-me"];
+    [NSFileManager.defaultManager
+        createDirectoryAtPath:
+            [removalProfileDirectory stringByAppendingPathComponent:@"config"]
+        withIntermediateDirectories:YES
+        attributes:@{NSFilePosixPermissions : @0700}
+        error:nil];
+    ClaudeProfile *removableProfile = [[ClaudeProfile alloc] init];
+    [removableProfile setValue:@"remove-me" forKey:@"identifier"];
+    [removableProfile setValue:@"Disposable" forKey:@"label"];
+    [removableProfile setValue:removalProfileDirectory
+                        forKey:@"profileDirectory"];
+    ClaudeProfileManager *removalManager =
+        [[ClaudeProfileManager alloc] init];
+    [removalManager setValue:removalProfilesRoot forKey:@"profilesRoot"];
+    [removalManager
+        setValue:[removalRoot stringByAppendingPathComponent:@"profiles.json"]
+          forKey:@"storePath"];
+    [removalManager setValue:@[removableProfile] forKey:@"profiles"];
+    [removalManager setValue:removableProfile
+                      forKey:@"lastSelectedProfile"];
+    NSError *removalError = nil;
+    BOOL profileRemoved =
+        [removalManager removeProfile:removableProfile error:&removalError];
+    NSData *removalStoreData = [NSData dataWithContentsOfFile:
+        [removalRoot stringByAppendingPathComponent:@"profiles.json"]];
+    NSDictionary *removalStore = removalStoreData.length > 0
+        ? [NSJSONSerialization JSONObjectWithData:removalStoreData
+                                           options:0
+                                             error:nil]
+        : nil;
+    if (!profileRemoved ||
+        removalError != nil ||
+        [NSFileManager.defaultManager
+            fileExistsAtPath:removalProfileDirectory] ||
+        removalManager.profiles.count != 0 ||
+        removalManager.lastSelectedProfile != nil ||
+        [removalStore[@"profiles"] count] != 0) {
+        fprintf(stderr, "FAIL local Claude profile removal\n");
+        failures++;
+    }
+    [NSFileManager.defaultManager removeItemAtPath:removalRoot error:nil];
 
     AppDelegate *scrolling = newTerminal();
     TerminalScrollView *testScrollView = [[TerminalScrollView alloc]

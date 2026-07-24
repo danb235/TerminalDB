@@ -35,7 +35,7 @@ terminal programs can hide or show it with the standard cursor mode.
 ## AI chat
 
 Select the standard right-sidebar icon in the upper-right corner or choose
-**Claude → Show AI Chat** (Command-Shift-L) to open a collapsible chat pane
+**View → Show AI Chat** (Command-Shift-L) to open a collapsible chat pane
 beside the active terminal. The icon is built into the window title bar and
 toggles the pane in either direction. Terminal input is always sent to the
 shell; TerminalDB does not try to classify commands as natural language.
@@ -67,13 +67,15 @@ the pane is collapsed. Choose **New chat** when the task changes; after
 confirmation, TerminalDB clears only that tab's AI context. A newly opened
 terminal tab always starts with fresh context.
 
-Open **Claude → Claude API Settings…**, select the gear in the AI-chat header,
-or press **Command-,** to add an Anthropic API key and select a model. The
-active model remains visible under the AI Chat heading. The key is stored only
-in this Mac's TerminalDB preferences. It is not written to project files,
-logs, or generated shell integration. This intentionally favors frictionless
-local persistence over Keychain protection; anyone with access to the macOS
-account can read the preference value.
+Open **TerminalDB → Settings…**, choose **Claude → AI Chat Settings…**, select
+the gear in the AI-chat header, or press **Command-,** to add an Anthropic API
+key. Choose the active model directly from **Claude → AI Chat Model**. That
+submenu is populated from Anthropic's Models API and can be refreshed without
+opening Settings. The active model remains visible under the AI Chat heading.
+The key is stored only in this Mac's TerminalDB preferences. It is not written
+to project files, logs, or generated shell integration. This intentionally
+favors frictionless local persistence over Keychain protection; anyone with
+access to the macOS account can read the preference value.
 
 When no key or model is configured, the chat pane explains the required setup,
 provides a direct settings button, and keeps the composer disabled until the
@@ -103,13 +105,13 @@ macOS Keychain item into memory and is never written by TerminalDB. Because
 Anthropic does not currently document this endpoint as a public API, the
 Claude Code status-line feed remains a fallback.
 
-Account actions live in the native **Claude** application menu. It shows the
-account selected for the current tab, provides checked account choices, and
-separates switching from **Add Claude Account…**, sign-in, and manual usage
-refresh actions. Each tab retains its own selection.
+Account actions live under **Claude → Claude Code Account for This Tab**. The
+submenu shows compact checked account choices and separates switching from
+adding, signing in, and removing a local account. Each tab retains its own
+selection. Usage refresh remains a separate top-level Claude action.
 
-To enroll an account, open the **Claude** menu and choose
-**Add Claude Account…**,
+To enroll an account, open **Claude → Claude Code Account for This Tab** and
+choose **Add Claude Code Account…**,
 give the profile a memorable name, and complete Claude's browser sign-in. The
 normal `claude` command in that TerminalDB window is then automatically scoped
 to the selected profile. TerminalDB also records Claude's per-profile
@@ -117,6 +119,13 @@ first-run-complete state after authentication, so an authenticated account does
 not re-enter Claude's login wizard. Authenticated profiles do not show another
 sign-in action. If a profile becomes logged out, **Sign In to _Profile_…**
 appears automatically.
+
+To remove a profile, select it for the current tab and choose **Remove
+“_Profile_” from TerminalDB…** in the same submenu. After confirmation,
+TerminalDB permanently deletes that local profile's configuration and
+TerminalDB-specific Claude Code credential, then moves affected tabs to the
+remaining default profile. This removes the account only from TerminalDB; it
+does not cancel or change the Claude subscription or its billing.
 
 ## Requirements
 
@@ -137,11 +146,12 @@ keys, output-follow scrolling across successive commands, safe extraction of
 shell code blocks, AI transcript rendering, terminal-context attachment,
 read-only command validation and sandbox execution, inspection-result
 rendering, command pasting without execution, and authenticated-profile
-onboarding state.
+onboarding and removal state.
 It also runs a background AppKit integration check for native tab grouping,
 independent shell sessions, activity state, AI-pane expansion and collapse,
-switching, and closing. QA app processes use accessory activation and keep
-their windows behind the active application.
+menu organization, account/model selection actions, switching, and closing.
+QA app processes use accessory activation and keep their windows behind the
+active application.
 
 ## Tabs
 
