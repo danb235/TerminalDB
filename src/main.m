@@ -875,7 +875,7 @@ static int TerminalDBExitStatus = 0;
                action:@selector(addClaudeProfileFromMenu:)
         keyEquivalent:@""];
     addAccount.target = root;
-    addAccount.enabled = profiles.count < 3 && controller != nil;
+    addAccount.enabled = controller != nil;
     [accountMenu addItem:addAccount];
 
     if (selected != nil && controller != nil) {

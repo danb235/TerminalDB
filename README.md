@@ -16,13 +16,14 @@ JetBrains Mono is TerminalDB's bundled application font. It is included under
 the SIL Open Font License, so users do not need to install any font separately.
 The terminal uses 14-point type with 1.2 line spacing.
 
-When Claude Code is installed, TerminalDB can keep as many as three persistent
-Claude account profiles. Every profile has its own Claude configuration
-directory and macOS Keychain credential item. A profile is selected per tab
-from the native **Claude** application menu, so two TerminalDB tabs or windows
-can use different Claude subscriptions at the same time without changing the
-Claude account used by Terminal, iTerm, or another application. New TerminalDB
-tabs start with the most recently selected profile.
+When Claude Code is installed, TerminalDB can keep multiple persistent Claude
+account profiles without an application-imposed account limit. Every profile
+has its own Claude configuration directory and macOS Keychain credential item.
+A profile is selected per tab from the native **Claude** application menu, so
+two TerminalDB tabs or windows can use different Claude subscriptions at the
+same time without changing the Claude account used by Terminal, iTerm, or
+another application. New TerminalDB tabs start with the most recently selected
+profile.
 
 Each tab is also a fully independent terminal session. It has its own login
 shell, PTY, working directory, foreground process, scrollback, and selected

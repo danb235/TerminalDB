@@ -166,18 +166,6 @@ static NSString *const ClaudeProfileStoreErrorDomain =
         }
         return nil;
     }
-    if (self.profiles.count >= 3) {
-        if (error != NULL) {
-            *error = [NSError errorWithDomain:ClaudeProfileStoreErrorDomain
-                                         code:2
-                                     userInfo:@{
-                NSLocalizedDescriptionKey :
-                    @"TerminalDB currently supports three Claude accounts.",
-            }];
-        }
-        return nil;
-    }
-
     ClaudeProfile *profile = [[ClaudeProfile alloc] init];
     profile.identifier = NSUUID.UUID.UUIDString.lowercaseString;
     profile.label = trimmed;
