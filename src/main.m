@@ -6,6 +6,7 @@
 #import "ClaudeProfile.h"
 #import "ClaudeStatusBar.h"
 #import "TerminalInspector.h"
+#import "TerminalLedger.h"
 #import "TerminalTheme.h"
 
 #include <errno.h>
@@ -465,6 +466,14 @@ static int TerminalDBExitStatus = 0;
 @property(nonatomic) CGFloat terminalFontSize;
 @property(nonatomic) CGFloat terminalLineHeightMultiple;
 @property(nonatomic, strong) ClaudeStatusBar *claudeStatusBar;
+@property(nonatomic, strong) TerminalLedgerBar *ledgerBar;
+@property(nonatomic, strong) TerminalLedgerStore *ledgerStore;
+@property(nonatomic, strong, nullable)
+    TerminalLedgerWindowController *ledgerWindowController;
+@property(nonatomic, copy) NSString *activeLedgerCommand;
+@property(nonatomic, copy) NSString *activeLedgerDirectory;
+@property(nonatomic, strong, nullable) NSDate *activeLedgerStartedAt;
+@property(nonatomic) NSUInteger activeLedgerOutputStart;
 @property(nonatomic, strong) ClaudeAssistantView *assistantView;
 @property(nonatomic, strong) NSButton *assistantToggleButton;
 @property(nonatomic, strong)
@@ -487,10 +496,13 @@ static int TerminalDBExitStatus = 0;
 @property(nonatomic, strong, nullable) NSDate *claudeTabStateModifiedAt;
 @property(nonatomic, copy) NSString *shellTitlePath;
 @property(nonatomic, copy) NSString *shellCWDPath;
+@property(nonatomic, copy) NSString *shellCommandPath;
+@property(nonatomic, copy) NSString *shellExitPath;
 @property(nonatomic, copy, nullable) NSString *shellReportedTitle;
 @property(nonatomic, strong, nullable) NSDate *shellTitleModifiedAt;
 - (void)showAssistantConfigurationRequired;
 - (void)assistantConfigurationDidChange:(NSNotification *)notification;
+- (void)showCommandHistory:(nullable id)sender;
 @end
 
 @implementation AppDelegate
@@ -521,6 +533,18 @@ static int TerminalDBExitStatus = 0;
         [self runBackgroundTabQA];
     } else {
         [self newTerminalWindow:nil];
+        if (visualQA) {
+            AppDelegate *controller = self.windowControllers.lastObject;
+            [controller.ledgerBar
+                finishCommand:@"find . -iname '*.jpg' -print"
+                    directory:[controller currentAssistantDirectory]
+                     exitCode:0
+                     duration:0.12];
+            [controller showAssistantPane];
+            [controller.assistantView setDraftPrompt:
+                @"Find all JPEG files in this directory and explain the safest "
+                 "way to organize them by date."];
+        }
     }
 }
 
@@ -655,6 +679,11 @@ static int TerminalDBExitStatus = 0;
     initialChatToggle.target = self;
     initialChatToggle.keyEquivalentModifierMask =
         NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    NSMenuItem *history = [self.viewMenu
+        addItemWithTitle:@"Command History"
+                  action:@selector(showCommandHistory:)
+           keyEquivalent:@"y"];
+    history.target = self;
     [self.viewMenu addItem:NSMenuItem.separatorItem];
     NSMenuItem *increaseText = [self.viewMenu
         addItemWithTitle:@"Increase Text Size"
@@ -1152,6 +1181,43 @@ static int TerminalDBExitStatus = 0;
     [root.apiSettingsController present];
 }
 
+- (void)showCommandHistory:(id)sender {
+    (void)sender;
+    AppDelegate *controller = [self activeTerminalController] ?: self;
+    if (controller.ledgerWindowController == nil) {
+        controller.ledgerWindowController =
+            [[TerminalLedgerWindowController alloc]
+                initWithStore:controller.ledgerStore ?:
+                    [TerminalLedgerStore sharedStore]
+                       theme:controller.theme ?: [TerminalTheme preferredTheme]];
+        __weak AppDelegate *weakController = controller;
+        controller.ledgerWindowController.pasteHandler =
+            ^(NSString *command) {
+                AppDelegate *strongController = weakController;
+                if (strongController == nil) return;
+                [strongController.terminalView pasteString:command];
+                [strongController.window makeKeyAndOrderFront:nil];
+                [strongController.window
+                    makeFirstResponder:strongController.terminalView];
+            };
+        controller.ledgerWindowController.askHandler =
+            ^(NSString *command) {
+                AppDelegate *strongController = weakController;
+                if (strongController == nil) return;
+                [strongController showAssistantPane];
+                [strongController.assistantView
+                    setDraftPrompt:[NSString stringWithFormat:
+                        @"Explain this command and its likely effects:\n\n%@",
+                        command]];
+                [strongController.window makeKeyAndOrderFront:nil];
+            };
+    }
+    [controller.ledgerWindowController reload];
+    [controller.ledgerWindowController.window center];
+    [controller.ledgerWindowController showWindow:nil];
+    [controller.ledgerWindowController.window makeKeyAndOrderFront:nil];
+}
+
 - (AppDelegate *)rootController {
     return self.owner ?: self;
 }
@@ -1184,6 +1250,7 @@ static int TerminalDBExitStatus = 0;
         if (group == nil || !group.tabBarVisible) {
             [controller.window toggleTabBar:nil];
         }
+        [controller layoutWorkspace];
         [controller updatePTYWindowSize];
     });
 }
@@ -1473,6 +1540,10 @@ static int TerminalDBExitStatus = 0;
     self.followsOutput = YES;
     self.assistantMessages = [NSMutableArray array];
     self.terminalInspector = [[TerminalInspector alloc] init];
+    self.ledgerStore = [TerminalLedgerStore sharedStore];
+    self.activeLedgerCommand = @"";
+    self.activeLedgerDirectory = @"";
+    self.activeLedgerOutputStart = 0;
     self.assistantResponse = @"";
     self.assistantDirectory = @"";
     self.assistantSystemPrompt = @"";
@@ -1504,15 +1575,17 @@ static int TerminalDBExitStatus = 0;
     self.window.appearance = [NSAppearance appearanceNamed:
         self.theme.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
     self.window.backgroundColor = self.theme.titleBarBackground;
-    self.window.titlebarAppearsTransparent = YES;
+    self.window.titlebarAppearsTransparent = NO;
     [self.window center];
 
-    const CGFloat statusBarHeight = 24;
+    const CGFloat statusBarHeight = 28;
+    const CGFloat ledgerBarHeight = 58;
     NSView *contentView = [[NSView alloc] initWithFrame:frame];
     TerminalScrollView *scrollView = [[TerminalScrollView alloc]
         initWithFrame:NSMakeRect(0, statusBarHeight,
                                  frame.size.width,
-                                 frame.size.height - statusBarHeight)];
+                                 frame.size.height -
+                                     statusBarHeight - ledgerBarHeight)];
     self.terminalScrollView = scrollView;
     scrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     scrollView.hasVerticalScroller = YES;
@@ -1571,6 +1644,34 @@ static int TerminalDBExitStatus = 0;
         strongSelf.followsOutput = [strongSelf terminalIsScrolledToBottom];
     };
     [contentView addSubview:scrollView];
+
+    self.ledgerBar = [[TerminalLedgerBar alloc]
+        initWithFrame:NSMakeRect(0,
+                                 frame.size.height - ledgerBarHeight,
+                                 frame.size.width,
+                                 ledgerBarHeight)
+                theme:self.theme];
+    __weak typeof(self) ledgerWeakSelf = self;
+    self.ledgerBar.askHandler = ^(NSString *command) {
+        AppDelegate *strongSelf = ledgerWeakSelf;
+        if (strongSelf == nil) return;
+        [strongSelf showAssistantPane];
+        [strongSelf.assistantView setDraftPrompt:[NSString stringWithFormat:
+            @"Explain this command and point out any risks or improvements:\n\n%@",
+            command]];
+    };
+    self.ledgerBar.pasteHandler = ^(NSString *command) {
+        AppDelegate *strongSelf = ledgerWeakSelf;
+        if (strongSelf == nil) return;
+        [strongSelf.terminalView pasteString:command];
+        [strongSelf.window makeFirstResponder:strongSelf.terminalView];
+    };
+    self.ledgerBar.historyHandler = ^{
+        AppDelegate *strongSelf = ledgerWeakSelf;
+        if (strongSelf == nil) return;
+        [strongSelf showCommandHistory:nil];
+    };
+    [contentView addSubview:self.ledgerBar];
 
     self.assistantView = [[ClaudeAssistantView alloc]
         initWithFrame:NSMakeRect(0, statusBarHeight, 400,
@@ -1645,17 +1746,28 @@ static int TerminalDBExitStatus = 0;
         return;
     }
     NSRect bounds = self.window.contentView.bounds;
-    const CGFloat statusBarHeight = 24;
-    CGFloat workspaceHeight = MAX(1, bounds.size.height - statusBarHeight);
+    const CGFloat statusBarHeight = 28;
+    const CGFloat ledgerBarHeight = 58;
+    // AppKit's unified tab bar overlaps the content edge slightly. Preserve a
+    // compact optical inset so the ledger keyline clears that control.
+    CGFloat titlebarInset =
+        self.window.tabGroup.tabBarVisible ? 8.0 : 0.0;
+    CGFloat workspaceHeight =
+        MAX(1, bounds.size.height - statusBarHeight - titlebarInset);
     BOOL chatVisible = !self.assistantView.hidden;
     CGFloat paneWidth = 0;
     if (chatVisible) {
         paneWidth = MIN(460.0, MAX(340.0, floor(bounds.size.width * 0.39)));
         paneWidth = MIN(paneWidth, MAX(0, bounds.size.width - 420.0));
     }
+    CGFloat terminalWidth = MAX(1, bounds.size.width - paneWidth);
     self.terminalScrollView.frame =
         NSMakeRect(0, statusBarHeight,
-                   MAX(1, bounds.size.width - paneWidth), workspaceHeight);
+                   terminalWidth,
+                   MAX(1, workspaceHeight - ledgerBarHeight));
+    self.ledgerBar.frame =
+        NSMakeRect(0, statusBarHeight + workspaceHeight - ledgerBarHeight,
+                   terminalWidth, ledgerBarHeight);
     self.assistantView.frame =
         NSMakeRect(bounds.size.width - paneWidth, statusBarHeight,
                    paneWidth, workspaceHeight);
@@ -1764,6 +1876,10 @@ static int TerminalDBExitStatus = 0;
         stringByAppendingPathComponent:@"shell-title"];
     self.shellCWDPath = [self.windowRuntimeDirectory
         stringByAppendingPathComponent:@"shell-cwd"];
+    self.shellCommandPath = [self.windowRuntimeDirectory
+        stringByAppendingPathComponent:@"ledger-command"];
+    self.shellExitPath = [self.windowRuntimeDirectory
+        stringByAppendingPathComponent:@"ledger-exit"];
     [files createDirectoryAtPath:self.zshDotDirectory
      withIntermediateDirectories:YES
                       attributes:@{NSFilePosixPermissions : @0700}
@@ -1833,12 +1949,17 @@ static int TerminalDBExitStatus = 0;
              "TERMINALDB_SHELL_TITLE_FILE=%@\n"
              "export TERMINALDB_SHELL_TITLE_FILE\n"
              "TERMINALDB_CWD_FILE=%@\n"
-             "export TERMINALDB_CWD_FILE\n",
+             "export TERMINALDB_CWD_FILE\n"
+             "TERMINALDB_COMMAND_FILE=%@\n"
+             "TERMINALDB_EXIT_FILE=%@\n"
+             "export TERMINALDB_COMMAND_FILE TERMINALDB_EXIT_FILE\n",
             [self shellQuotedString:originalZdotdir],
             [self shellQuotedString:original],
             [self shellQuotedString:original],
             [self shellQuotedString:self.shellTitlePath],
-            [self shellQuotedString:self.shellCWDPath]];
+            [self shellQuotedString:self.shellCWDPath],
+            [self shellQuotedString:self.shellCommandPath],
+            [self shellQuotedString:self.shellExitPath]];
         if ([name isEqualToString:@".zshrc"]) {
             [contents appendString:
                 @"unalias claude 2>/dev/null\n"
@@ -1897,12 +2018,18 @@ static int TerminalDBExitStatus = 0;
                  "  print -rn -- $'\\e]0;'\"$1\"$'\\a'\n"
                  "}\n"
                  "function _terminaldb_precmd_title {\n"
+                 "  local terminaldb_exit=$?\n"
+                 "  print -rn -- \"$terminaldb_exit\" >| "
+                 "\"$TERMINALDB_EXIT_FILE\"\n"
+                 "  print -rn -- $'\\e]633;D\\a'\n"
                  "  print -rn -- \"$PWD\" >| \"$TERMINALDB_CWD_FILE\"\n"
                  "  _terminaldb_title_directory\n"
                  "  _terminaldb_publish_title \"$REPLY\"\n"
                  "}\n"
                  "function _terminaldb_preexec_title {\n"
                  "  local command_name directory_name\n"
+                 "  print -rn -- \"$1\" >| \"$TERMINALDB_COMMAND_FILE\"\n"
+                 "  print -rn -- $'\\e]633;C\\a'\n"
                  "  _terminaldb_title_command \"$1\"\n"
                  "  command_name=$REPLY\n"
                  "  _terminaldb_title_directory\n"
@@ -2200,6 +2327,55 @@ static int TerminalDBExitStatus = 0;
     }
 }
 
+- (NSString *)ledgerFileContentsAtPath:(NSString *)path {
+    NSString *value =
+        [NSString stringWithContentsOfFile:path
+                                 encoding:NSUTF8StringEncoding
+                                    error:nil];
+    return [value stringByTrimmingCharactersInSet:
+        NSCharacterSet.whitespaceAndNewlineCharacterSet] ?: @"";
+}
+
+- (void)beginLedgerCommand {
+    NSString *command =
+        [self ledgerFileContentsAtPath:self.shellCommandPath];
+    if (command.length == 0) return;
+    self.activeLedgerCommand = command;
+    self.activeLedgerDirectory = [self currentAssistantDirectory];
+    self.activeLedgerStartedAt = [NSDate date];
+    self.activeLedgerOutputStart = self.terminalView.string.length;
+    [self.ledgerBar beginCommand:command
+                       directory:self.activeLedgerDirectory];
+}
+
+- (void)finishLedgerCommand {
+    if (self.activeLedgerCommand.length == 0 ||
+        self.activeLedgerStartedAt == nil) {
+        [self.ledgerBar showReadyInDirectory:[self currentAssistantDirectory]];
+        return;
+    }
+    NSInteger exitCode =
+        [[self ledgerFileContentsAtPath:self.shellExitPath] integerValue];
+    NSTimeInterval duration =
+        -self.activeLedgerStartedAt.timeIntervalSinceNow;
+    NSString *terminalText = self.terminalView.string ?: @"";
+    NSUInteger start = MIN(self.activeLedgerOutputStart, terminalText.length);
+    NSString *output = [terminalText substringFromIndex:start];
+    [self.ledgerStore addCommand:self.activeLedgerCommand
+                       directory:self.activeLedgerDirectory
+                          output:output
+                        exitCode:exitCode
+                        duration:duration];
+    [self.ledgerBar finishCommand:self.activeLedgerCommand
+                         directory:self.activeLedgerDirectory
+                          exitCode:exitCode
+                          duration:duration];
+    self.activeLedgerCommand = @"";
+    self.activeLedgerDirectory = @"";
+    self.activeLedgerStartedAt = nil;
+    self.activeLedgerOutputStart = 0;
+}
+
 - (void)applyOSCData {
     if (self.oscData.length == 0) return;
     NSString *payload = [[NSString alloc]
@@ -2212,6 +2388,14 @@ static int TerminalDBExitStatus = 0;
     NSInteger command =
         [[payload substringToIndex:separator.location] integerValue];
     NSString *value = [payload substringFromIndex:NSMaxRange(separator)];
+    if (command == 633) {
+        if ([value isEqualToString:@"C"]) {
+            [self beginLedgerCommand];
+        } else if ([value isEqualToString:@"D"]) {
+            [self finishLedgerCommand];
+        }
+        return;
+    }
     if (command != 0 && command != 1 && command != 2) return;
 
     self.reportedWindowTitle =
@@ -4010,7 +4194,7 @@ static int TerminalDBExitStatus = 0;
     int assistantSockets[2] = {-1, -1};
     if (commandButtons.count != 1 ||
         ![commandButtons.firstObject.title
-            isEqualToString:@"Paste"] ||
+            isEqualToString:@"Paste ↗"] ||
         commandButtons.firstObject.superview != conversationTextView ||
         socketpair(AF_UNIX, SOCK_STREAM, 0, assistantSockets) != 0) {
         fprintf(stderr, "FAIL assistant command action setup\n");
@@ -4493,6 +4677,10 @@ static int TerminalDBExitStatus = 0;
 
     if (![ClaudeStatusBar runUsageNormalizationSelfTests]) {
         fprintf(stderr, "FAIL Fable 5 usage normalization\n");
+        failures++;
+    }
+    if (![TerminalLedgerStore runPrivacyAndEnvironmentSelfTests]) {
+        fprintf(stderr, "FAIL command ledger privacy/environment\n");
         failures++;
     }
 

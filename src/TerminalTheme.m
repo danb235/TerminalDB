@@ -42,46 +42,45 @@ static NSColor *ThemeColor(NSString *hex) {
 
 + (instancetype)preferredTheme {
     TerminalTheme *theme = [[TerminalTheme alloc] init];
-    theme.name = @"Monokai Pro";
+    theme.name = @"Graphite Ledger";
     theme.dark = YES;
 
-    theme.terminalBackground = ThemeColor(@"#403e41");
-    theme.terminalForeground = ThemeColor(@"#fcfcfa");
-    theme.cursorColor = ThemeColor(@"#fcfcfa");
-    theme.selectionBackground = ThemeColor(@"#fcfcfa26");
+    theme.terminalBackground = ThemeColor(@"#101215");
+    theme.terminalForeground = ThemeColor(@"#d9e0e3");
+    theme.cursorColor = ThemeColor(@"#f3f6f7");
+    theme.selectionBackground = ThemeColor(@"#52d0dd2e");
 
-    theme.statusBarBackground = ThemeColor(@"#221f22");
-    theme.statusBarForeground = ThemeColor(@"#727072");
-    theme.statusBarActiveForeground = ThemeColor(@"#939293");
-    theme.statusBarBorder = ThemeColor(@"#19181a");
-    theme.titleBarBackground = ThemeColor(@"#221f22");
-    theme.titleBarForeground = ThemeColor(@"#939293");
+    theme.statusBarBackground = ThemeColor(@"#0c0e10");
+    theme.statusBarForeground = ThemeColor(@"#687277");
+    theme.statusBarActiveForeground = ThemeColor(@"#a5afb3");
+    theme.statusBarBorder = ThemeColor(@"#282d31");
+    theme.titleBarBackground = ThemeColor(@"#171a1f");
+    theme.titleBarForeground = ThemeColor(@"#c8d0d3");
 
     theme.ansiColors = @[
-        ThemeColor(@"#403e41"),
-        ThemeColor(@"#ff6188"),
-        ThemeColor(@"#a9dc76"),
-        ThemeColor(@"#ffd866"),
-        ThemeColor(@"#fc9867"),
-        ThemeColor(@"#ab9df2"),
-        ThemeColor(@"#78dce8"),
-        ThemeColor(@"#fcfcfa"),
-        ThemeColor(@"#727072"),
-        ThemeColor(@"#ff6188"),
-        ThemeColor(@"#a9dc76"),
-        ThemeColor(@"#ffd866"),
-        ThemeColor(@"#fc9867"),
-        ThemeColor(@"#ab9df2"),
-        ThemeColor(@"#78dce8"),
-        ThemeColor(@"#fcfcfa"),
+        ThemeColor(@"#101215"),
+        ThemeColor(@"#f16f74"),
+        ThemeColor(@"#b4e34d"),
+        ThemeColor(@"#e5b454"),
+        ThemeColor(@"#d88a55"),
+        ThemeColor(@"#a78bd4"),
+        ThemeColor(@"#52d0dd"),
+        ThemeColor(@"#d9e0e3"),
+        ThemeColor(@"#687277"),
+        ThemeColor(@"#ff858a"),
+        ThemeColor(@"#c7f062"),
+        ThemeColor(@"#f0c66b"),
+        ThemeColor(@"#e29b68"),
+        ThemeColor(@"#b9a0e8"),
+        ThemeColor(@"#72e2ec"),
+        ThemeColor(@"#f3f6f7"),
     ];
 
-    // Monokai themes do not prescribe a font. TerminalDB keeps the
-    // research-backed, redistributable JetBrains Mono at a comfortable
-    // terminal size and rhythm.
+    // The Graphite Ledger UI uses the system face for controls and
+    // JetBrains Mono for every command, path, metric, and shortcut.
     theme.fontName = @"JetBrainsMono-Regular";
-    theme.fontSize = 14.0;
-    theme.lineHeightMultiple = 1.2;
+    theme.fontSize = 13.5;
+    theme.lineHeightMultiple = 1.24;
     return theme;
 }
 

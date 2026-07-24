@@ -12,6 +12,7 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
 @property(nonatomic, strong) TerminalTheme *theme;
 @property(nonatomic, strong, readwrite, nullable) ClaudeProfile *selectedProfile;
 @property(nonatomic, strong) NSTextField *profileLabel;
+@property(nonatomic, strong) NSTextField *environmentLabel;
 @property(nonatomic, strong) NSTextField *usageLabel;
 @property(nonatomic, strong) NSTimer *timer;
 @property(nonatomic, strong, nullable) NSDate *lastAccountRefresh;
@@ -50,6 +51,19 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
     _profileLabel.selectable = NO;
     [self addSubview:_profileLabel];
 
+    _environmentLabel = [NSTextField labelWithString:@"LOCAL"];
+    _environmentLabel.font =
+        [NSFont fontWithName:theme.fontName size:9.5]
+            ?: [NSFont monospacedSystemFontOfSize:9.5
+                                           weight:NSFontWeightSemibold];
+    _environmentLabel.textColor = theme.ansiColors[6];
+    _environmentLabel.alignment = NSTextAlignmentCenter;
+    _environmentLabel.toolTip =
+        @"Environment context. Remote and production sessions receive "
+         "stronger safety prompts.";
+    [_environmentLabel setAccessibilityLabel:@"Local environment"];
+    [self addSubview:_environmentLabel];
+
     _usageLabel = [NSTextField labelWithString:@"Usage  Select an account"];
     _usageLabel.font = _profileLabel.font;
     _usageLabel.textColor = theme.statusBarForeground;
@@ -78,18 +92,120 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
     NSRectFill(NSMakeRect(0, NSHeight(self.bounds) - 1, NSWidth(self.bounds), 1));
 }
 
+- (void)mouseDown:(NSEvent *)event {
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Claude Code Status"];
+    NSMenuItem *heading =
+        [[NSMenuItem alloc] initWithTitle:@"Claude Code — Status & Usage"
+                                   action:nil
+                            keyEquivalent:@""];
+    heading.enabled = NO;
+    [menu addItem:heading];
+
+    NSString *usage = self.usageLabel.stringValue;
+    if (usage.length > 0) {
+        NSMenuItem *usageItem =
+            [[NSMenuItem alloc] initWithTitle:usage
+                                       action:nil
+                                keyEquivalent:@""];
+        usageItem.enabled = NO;
+        [menu addItem:usageItem];
+    }
+    [menu addItem:NSMenuItem.separatorItem];
+
+    for (ClaudeProfile *profile in self.profileManager.profiles) {
+        NSString *title = [self displayTitleForProfile:profile];
+        NSMenuItem *item =
+            [[NSMenuItem alloc] initWithTitle:title
+                                       action:@selector(selectProfileFromStatusMenu:)
+                                keyEquivalent:@""];
+        item.target = self;
+        item.representedObject = profile.identifier;
+        item.state = [profile.identifier
+            isEqualToString:self.selectedProfile.identifier]
+                ? NSControlStateValueOn
+                : NSControlStateValueOff;
+        [menu addItem:item];
+    }
+    [menu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *add = [[NSMenuItem alloc]
+        initWithTitle:@"Add Claude Code Account…"
+               action:@selector(addProfileFromStatusMenu:)
+        keyEquivalent:@""];
+    add.target = self;
+    [menu addItem:add];
+    if (self.selectedProfile != nil &&
+        self.accountStatusKnown &&
+        !self.accountIsLoggedIn) {
+        NSMenuItem *signIn = [[NSMenuItem alloc]
+            initWithTitle:[NSString stringWithFormat:@"Sign In to %@…",
+                self.selectedProfile.label]
+                   action:@selector(signInFromStatusMenu:)
+            keyEquivalent:@""];
+        signIn.target = self;
+        [menu addItem:signIn];
+    }
+    NSMenuItem *refresh = [[NSMenuItem alloc]
+        initWithTitle:@"Refresh Usage"
+               action:@selector(refreshFromStatusMenu:)
+        keyEquivalent:@""];
+    refresh.target = self;
+    [menu addItem:refresh];
+    [menu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *separation = [[NSMenuItem alloc]
+        initWithTitle:@"API chat key and model are managed separately"
+               action:nil
+        keyEquivalent:@""];
+    separation.enabled = NO;
+    [menu addItem:separation];
+
+    [menu popUpMenuPositioningItem:nil
+                        atLocation:[self convertPoint:event.locationInWindow
+                                            fromView:nil]
+                            inView:self];
+}
+
+- (void)selectProfileFromStatusMenu:(NSMenuItem *)sender {
+    ClaudeProfile *profile =
+        [self.profileManager profileWithIdentifier:sender.representedObject];
+    if (profile == nil) return;
+    [self.delegate claudeStatusBar:self didSelectProfile:profile];
+}
+
+- (void)addProfileFromStatusMenu:(id)sender {
+    (void)sender;
+    [self.delegate claudeStatusBarDidRequestAddProfile:self];
+}
+
+- (void)signInFromStatusMenu:(id)sender {
+    (void)sender;
+    if (self.selectedProfile != nil) {
+        [self.delegate claudeStatusBar:self
+               didRequestLoginProfile:self.selectedProfile];
+    }
+}
+
+- (void)refreshFromStatusMenu:(id)sender {
+    (void)sender;
+    [self refreshNow];
+}
+
 - (void)layout {
     [super layout];
     CGFloat inset = 10;
-    CGFloat gap = 12;
+    CGFloat gap = 10;
     CGFloat availableWidth = MAX(0, NSWidth(self.bounds) - inset * 2);
     CGFloat usageWidth = MIN(availableWidth * 0.64,
                              MAX(300,
                                  self.usageLabel.intrinsicContentSize.width +
                                      24));
-    CGFloat profileWidth = MAX(0, availableWidth - usageWidth - gap);
+    CGFloat environmentWidth = 52;
+    CGFloat profileWidth =
+        MAX(0, availableWidth - usageWidth - environmentWidth - gap * 2);
     self.profileLabel.frame =
         NSMakeRect(inset, 4, profileWidth, NSHeight(self.bounds) - 8);
+    self.environmentLabel.frame =
+        NSMakeRect(inset + profileWidth + gap, 4,
+                   environmentWidth, NSHeight(self.bounds) - 8);
     self.usageLabel.frame =
         NSMakeRect(NSWidth(self.bounds) - inset - usageWidth, 4,
                    usageWidth, NSHeight(self.bounds) - 8);
@@ -158,9 +274,9 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
         ? profile.subscriptionType.capitalizedString
         : @"";
     return plan.length > 0
-        ? [NSString stringWithFormat:@"●  %@  ·  %@  ·  %@",
+        ? [NSString stringWithFormat:@"●  %@ · %@ · %@",
             profile.label, identity, plan]
-        : [NSString stringWithFormat:@"●  %@  ·  %@",
+        : [NSString stringWithFormat:@"●  %@ · %@",
             profile.label, identity];
 }
 

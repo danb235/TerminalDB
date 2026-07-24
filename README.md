@@ -6,15 +6,34 @@ Objective-C, and the system pseudo-terminal APIs.
 It intentionally uses only the Apple Command Line Tools: there is no Xcode
 project and no dependency manager.
 
-TerminalDB has one built-in visual system based on the Monokai Pro
-look: its terminal, ANSI colors, selection, title bar, and status bar are
-defined directly by TerminalDB. It does not load or require Monokai Pro, VS
-Code, or an installed theme, and it does not include Monokai extension code,
-theme files, icons, fonts, or other package assets.
+TerminalDB uses its original **Graphite Ledger** visual system: deep graphite
+surfaces, cyan terminal/context signals, acid-lime live/success states, amber
+cautions, and coral failures. The design is native AppKit and does not load or
+imitate an installed terminal, editor, or third-party design system.
 
 JetBrains Mono is TerminalDB's bundled application font. It is included under
 the SIL Open Font License, so users do not need to install any font separately.
-The terminal uses 14-point type with 1.2 line spacing.
+The terminal uses 13.5-point type with 1.24 line spacing.
+
+The app icon is the TerminalDB prompt-and-ledger mark: a cyan command chevron
+feeding a three-row ledger whose active row is lime. The repository includes
+the SVG master, generated `.icns`, and the complete clickable design reference
+under `Design/`.
+
+## Command ledger
+
+TerminalDB wraps the live shell with a compact command-ledger header. Native
+zsh lifecycle markers report when a command begins and when the next prompt
+returns, including the command, directory, exit code, and duration. The latest
+block remains available for **Ask AI**, **Paste**, and **History** without
+altering normal PTY behavior.
+
+Completed commands are stored in a local TerminalDB command history on this
+Mac. The history window supports live search across commands, paths, and
+captured output, shows full metadata and output, and can paste a prior command
+back into the terminal or attach it to AI chat. Common API keys, bearer tokens,
+and password assignments are redacted before persistence; output is bounded
+and old records roll off after 5,000 entries.
 
 When Claude Code is installed, TerminalDB can keep multiple persistent Claude
 account profiles without an application-imposed account limit. Every profile
@@ -58,7 +77,7 @@ interactive terminal session.
 Every inspected command can also be pasted into the terminal. Commands that
 change state, need broader access, or fail inspection validation are never run
 automatically; Claude instead places them in fenced shell blocks. Each block
-gets its own inline **Paste** button immediately beside the command. The button
+gets its own inline **Paste ↗** button immediately beside the command. The button
 uses the terminal's normal paste behavior and deliberately does not press
 Return, so the user can review or edit the command before executing it.
 Non-shell code samples are never made runnable.
@@ -93,8 +112,11 @@ Anthropic's Models API. The model list refreshes on launch and whenever the
 settings window opens, so newly available models appear without an app update.
 The selected model is used for new AI chats.
 
-The bottom status bar displays the selected account and subscription as static
-identity text on the left. The five-hour, seven-day, and separate Fable 5
+The bottom status bar displays the selected account and subscription as
+persistent identity text on the left, plus the active environment. Selecting
+the bar opens direct account switching, add/sign-in actions, usage refresh, and
+an explicit reminder that API-chat credentials are separate. The five-hour,
+seven-day, and separate Fable 5
 weekly usage meters are right-aligned against the opposite edge. The 5-hour and
 7-day meters include their next reset date and time when Anthropic reports one;
 an em dash indicates that no reset is currently reported. If the most recently
@@ -205,8 +227,8 @@ iTerm-style baseline used by shells and command-line tools:
 
 This is a practical compatibility target rather than full iTerm2 parity.
 Mouse-reporting protocols, complete DEC scrolling-region semantics, Unicode
-cell-width tables for every emoji/CJK edge case, hyperlinks and inline images,
-search, splits, and iTerm2 shell-integration features remain future work.
+cell-width tables for every emoji/CJK edge case, hyperlinks, inline images,
+and split panes remain future work.
 
 The current baseline launches the user's login shell in a PTY, accepts keyboard
 input, displays styled ANSI output, resizes the PTY with the window, and

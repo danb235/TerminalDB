@@ -30,6 +30,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)showToolStatus:(NSString *)status;
 - (void)finish;
 - (void)showError:(NSString *)message settingsAvailable:(BOOL)settingsAvailable;
+- (void)setDraftPrompt:(NSString *)prompt;
 - (void)focusComposer;
 + (NSArray<NSString *> *)commandsFromMarkdown:(NSString *)markdown;
 

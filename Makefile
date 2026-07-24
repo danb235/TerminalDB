@@ -2,7 +2,9 @@ APP := build/TerminalDB.app
 BIN := $(APP)/Contents/MacOS/TerminalDB
 SOURCES := src/main.m src/ClaudeAPI.m src/ClaudeAssistantView.m \
 	src/TerminalInspector.m \
-	src/ClaudeProfile.m src/ClaudeStatusBar.m src/TerminalTheme.m
+	src/ClaudeProfile.m src/ClaudeStatusBar.m src/TerminalTheme.m \
+	src/TerminalLedger.m
+ICON_RESOURCE := Resources/AppIcon.icns
 FONT_RESOURCES := \
 	Resources/Fonts/JetBrainsMono-Regular.ttf \
 	Resources/Fonts/JetBrainsMono-Bold.ttf \
@@ -17,7 +19,7 @@ SCRIPT_RESOURCES := \
 
 all: $(BIN)
 
-$(BIN): $(SOURCES) Info.plist Makefile $(FONT_RESOURCES) $(LICENSE_RESOURCES) $(SCRIPT_RESOURCES)
+$(BIN): $(SOURCES) Info.plist Makefile $(FONT_RESOURCES) $(LICENSE_RESOURCES) $(SCRIPT_RESOURCES) $(ICON_RESOURCE)
 	mkdir -p $(APP)/Contents/MacOS
 	mkdir -p $(APP)/Contents/Resources/Fonts
 	mkdir -p $(APP)/Contents/Resources/Licenses
@@ -26,6 +28,7 @@ $(BIN): $(SOURCES) Info.plist Makefile $(FONT_RESOURCES) $(LICENSE_RESOURCES) $(
 	cp $(FONT_RESOURCES) $(APP)/Contents/Resources/Fonts/
 	cp $(LICENSE_RESOURCES) $(APP)/Contents/Resources/Licenses/
 	cp $(SCRIPT_RESOURCES) $(APP)/Contents/Resources/Scripts/
+	cp $(ICON_RESOURCE) $(APP)/Contents/Resources/
 	chmod 755 $(APP)/Contents/Resources/Scripts/claude-status-bridge.sh
 	chmod 755 $(APP)/Contents/Resources/Scripts/claude-tab-state.sh
 	clang -fobjc-arc -Wall -Wextra -framework AppKit -framework Foundation \

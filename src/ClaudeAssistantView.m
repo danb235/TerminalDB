@@ -84,8 +84,8 @@
     self.wantsLayer = YES;
 
     _titleLabel = [self labelWithFont:
-        [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold]];
-    _titleLabel.stringValue = @"AI Chat";
+        [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold]];
+    _titleLabel.stringValue = @"AI";
     _titleLabel.textColor = theme.terminalForeground;
     [self addSubview:_titleLabel];
 
@@ -156,10 +156,10 @@
     _composerBox = [[NSBox alloc] initWithFrame:NSZeroRect];
     _composerBox.boxType = NSBoxCustom;
     _composerBox.fillColor =
-        [theme.terminalBackground colorWithAlphaComponent:0.72];
+        [NSColor colorWithSRGBRed:0.075 green:0.086 blue:0.098 alpha:1.0];
     _composerBox.borderColor = theme.statusBarBorder;
     _composerBox.borderWidth = 1.0;
-    _composerBox.cornerRadius = 10.0;
+    _composerBox.cornerRadius = 6.0;
     [self addSubview:_composerBox];
 
     _composerScrollView = [[NSScrollView alloc] initWithFrame:NSZeroRect];
@@ -199,15 +199,15 @@
     _composerPlaceholder.font =
         [NSFont systemFontOfSize:13 weight:NSFontWeightRegular];
     _composerPlaceholder.stringValue =
-        @"Ask about this terminal or describe what you want to do…";
+        @"Ask about this terminal, or describe what you want…";
     _composerPlaceholder.textColor = theme.statusBarForeground;
     _composerPlaceholder.lineBreakMode = NSLineBreakByTruncatingTail;
     [self addSubview:_composerPlaceholder];
 
     _contextLabel = [self labelWithFont:
         [NSFont systemFontOfSize:10 weight:NSFontWeightRegular]];
-    _contextLabel.stringValue = @"⌁  Current terminal context attached";
-    _contextLabel.textColor = theme.statusBarActiveForeground;
+    _contextLabel.stringValue = @"▣ visible output   ⌂ current directory";
+    _contextLabel.textColor = theme.ansiColors[6];
     _contextLabel.toolTip =
         @"Each message includes this tab’s current directory and visible "
          "terminal output.";
@@ -257,30 +257,31 @@
 
 - (void)drawRect:(NSRect)dirtyRect {
     (void)dirtyRect;
-    [self.theme.statusBarBackground setFill];
+    [[NSColor colorWithSRGBRed:0.055 green:0.063 blue:0.071 alpha:1.0]
+        setFill];
     NSRectFill(self.bounds);
     [self.theme.statusBarBorder setFill];
     NSRectFill(NSMakeRect(0, 0, 1, self.bounds.size.height));
-    NSRectFill(NSMakeRect(0, 51, self.bounds.size.width, 1));
+    NSRectFill(NSMakeRect(0, 49, self.bounds.size.width, 1));
 }
 
 - (void)layout {
     [super layout];
     const CGFloat padding = 14;
-    const CGFloat headerHeight = 52;
-    const CGFloat composerHeight = 112;
+    const CGFloat headerHeight = 50;
+    const CGFloat composerHeight = 118;
     CGFloat width = self.bounds.size.width;
     CGFloat height = self.bounds.size.height;
 
-    self.titleLabel.frame = NSMakeRect(padding, 8, MAX(80, width - 150), 19);
-    self.progress.frame = NSMakeRect(padding, 31, 14, 14);
+    self.titleLabel.frame = NSMakeRect(padding, 7, MAX(80, width - 150), 18);
+    self.progress.frame = NSMakeRect(padding, 29, 14, 14);
     CGFloat statusX = self.working ? padding + 20 : padding;
     self.statusLabel.frame =
-        NSMakeRect(statusX, 29, MAX(80, width - statusX - 14), 17);
+        NSMakeRect(statusX, 27, MAX(80, width - statusX - 14), 17);
     self.startConversationButton.frame =
-        NSMakeRect(width - 118, 8, 76, 26);
+        NSMakeRect(width - 118, 6, 76, 26);
     self.headerSettingsButton.frame =
-        NSMakeRect(width - 40, 8, 26, 26);
+        NSMakeRect(width - 40, 6, 26, 26);
 
     CGFloat commandHeight = 0;
     if (!self.settingsButton.hidden) commandHeight += 36;
@@ -304,7 +305,7 @@
                    composerHeight);
     self.composerScrollView.frame =
         NSMakeRect(padding + 10, composerY + 8,
-                   MAX(40, width - padding * 2 - 20), 64);
+                   MAX(40, width - padding * 2 - 20), 67);
     NSSize composerViewport = self.composerScrollView.contentSize;
     self.followUpField.frame =
         NSMakeRect(0, 0, composerViewport.width,
@@ -313,10 +314,10 @@
         NSMakeRect(padding + 14, composerY + 12,
                    MAX(20, width - padding * 2 - 28), 20);
     self.contextLabel.frame =
-        NSMakeRect(padding + 12, composerY + 82,
+        NSMakeRect(padding + 12, composerY + 88,
                    MAX(40, width - padding * 2 - 64), 16);
     self.sendButton.frame =
-        NSMakeRect(width - padding - 40, composerY + 73, 30, 30);
+        NSMakeRect(width - padding - 40, composerY + 79, 30, 30);
     [self positionInlineCommandButtons];
 }
 
@@ -349,7 +350,7 @@
     self.followUpField.string = @"";
     self.followUpField.editable = YES;
     self.composerPlaceholder.stringValue =
-        @"Ask about this terminal or describe what you want to do…";
+        @"Ask about this terminal, or describe what you want…";
     self.sendButton.enabled = YES;
     self.working = NO;
     [self.progress stopAnimation:nil];
@@ -426,6 +427,12 @@
     [self removeCommandButtons];
     [self renderResponse];
     [self setNeedsLayout:YES];
+}
+
+- (void)setDraftPrompt:(NSString *)prompt {
+    self.followUpField.string = prompt ?: @"";
+    [self updateComposerPlaceholder];
+    [self focusComposer];
 }
 
 - (void)focusComposer {
@@ -778,7 +785,7 @@
 
         ClaudeCommandButton *button =
             [[ClaudeCommandButton alloc] initWithFrame:NSZeroRect];
-        button.title = @"Paste";
+        button.title = @"Paste ↗";
         button.bezelStyle = NSBezelStyleRounded;
         button.controlSize = NSControlSizeMini;
         button.alignment = NSTextAlignmentCenter;
@@ -823,7 +830,7 @@
             NSMakeRect(markerRect.origin.x,
                        markerRect.origin.y +
                            floor((markerRect.size.height - 20) / 2.0),
-                       MAX(58, markerRect.size.width),
+                       MAX(62, markerRect.size.width),
                        20);
     }
 }
