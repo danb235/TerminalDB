@@ -25,6 +25,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)beginWithModelName:(NSString *)modelName
                   messages:(NSArray<NSDictionary *> *)messages;
 - (void)resetConversationWithModelName:(NSString *)modelName;
+- (void)showConfigurationRequired:(NSString *)message;
 - (void)appendResponseText:(NSString *)text;
 - (void)showToolStatus:(NSString *)status;
 - (void)finish;

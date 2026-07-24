@@ -360,6 +360,8 @@ static int TerminalDBExitStatus = 0;
 @property(nonatomic, copy) NSString *shellCWDPath;
 @property(nonatomic, copy, nullable) NSString *shellReportedTitle;
 @property(nonatomic, strong, nullable) NSDate *shellTitleModifiedAt;
+- (void)showAssistantConfigurationRequired;
+- (void)assistantConfigurationDidChange:(NSNotification *)notification;
 @end
 
 @implementation AppDelegate
@@ -1042,6 +1044,11 @@ static int TerminalDBExitStatus = 0;
     self.assistantView.delegate = self;
     self.assistantView.hidden = YES;
     [contentView addSubview:self.assistantView];
+    [NSNotificationCenter.defaultCenter
+        addObserver:self
+           selector:@selector(assistantConfigurationDidChange:)
+               name:ClaudeAPIConfigurationDidChangeNotification
+             object:self.apiConfiguration];
 
     self.assistantToggleButton =
         [[NSButton alloc] initWithFrame:NSZeroRect];
@@ -1981,24 +1988,17 @@ static int TerminalDBExitStatus = 0;
     NSString *model = self.apiConfiguration.selectedModelID;
     [self showAssistantPane];
 
+    if (apiKey.length == 0 || model.length == 0) {
+        [self showAssistantConfigurationRequired];
+        return;
+    }
+
     NSDictionary *userMessage = @{
         @"role" : @"user",
         @"content" : trimmedPrompt,
     };
     [self.assistantMessages addObject:userMessage];
     [self trimAssistantConversationIfNeeded];
-
-    if (apiKey.length == 0 || model.length == 0) {
-        [self.assistantView beginWithModelName:@"Not configured"
-                                      messages:self.assistantMessages];
-        [self.assistantView
-            showError:
-                apiKey.length == 0
-                    ? @"Add an Anthropic API key to use AI chat."
-                    : @"Refresh the available Claude models and choose one."
-            settingsAvailable:YES];
-        return;
-    }
 
     [self.assistantClient cancel];
     self.assistantRequestGeneration++;
@@ -2024,6 +2024,44 @@ static int TerminalDBExitStatus = 0;
     [self beginAssistantRequestForPrompt:prompt];
 }
 
+- (void)showAssistantConfigurationRequired {
+    NSString *apiKey = self.apiConfiguration.apiKey;
+    NSString *message = apiKey.length == 0
+        ? @"No Anthropic API key is configured.\n\n"
+           "Open API Settings, paste your key, save it, and choose a Claude "
+           "model. TerminalDB stores the key in macOS Keychain and never adds "
+           "it to the project."
+        : @"Your Anthropic API key is saved, but no Claude model is selected."
+           "\n\nOpen API Settings, refresh the available models, and choose "
+           "the model to use for this chat.";
+    [self.assistantView showConfigurationRequired:message];
+}
+
+- (void)assistantConfigurationDidChange:(NSNotification *)notification {
+    (void)notification;
+    NSString *apiKey = self.apiConfiguration.apiKey;
+    NSString *model = self.apiConfiguration.selectedModelID;
+    if (apiKey.length == 0 || model.length == 0) {
+        ClaudeAPIClient *client = self.assistantClient;
+        self.assistantClient = nil;
+        self.assistantRequestGeneration++;
+        [client cancel];
+        [self showAssistantConfigurationRequired];
+        return;
+    }
+    if (self.assistantClient != nil) return;
+
+    NSString *modelName =
+        [self.apiConfiguration displayNameForModelID:model];
+    if (self.assistantMessages.count == 0) {
+        [self.assistantView resetConversationWithModelName:modelName];
+    } else {
+        [self.assistantView beginWithModelName:modelName
+                                      messages:self.assistantMessages];
+        [self.assistantView finish];
+    }
+}
+
 - (void)resetAssistantConversation {
     ClaudeAPIClient *client = self.assistantClient;
     self.assistantClient = nil;
@@ -2034,7 +2072,12 @@ static int TerminalDBExitStatus = 0;
     self.assistantDirectory = @"";
     self.assistantSystemPrompt = @"";
     self.assistantToolIterations = 0;
+    NSString *apiKey = self.apiConfiguration.apiKey;
     NSString *model = self.apiConfiguration.selectedModelID;
+    if (apiKey.length == 0 || model.length == 0) {
+        [self showAssistantConfigurationRequired];
+        return;
+    }
     NSString *modelName = model.length > 0
         ? [self.apiConfiguration displayNameForModelID:model]
         : @"Not configured";
@@ -3098,6 +3141,9 @@ static int TerminalDBExitStatus = 0;
 
 - (void)windowWillClose:(NSNotification *)notification {
     (void)notification;
+    [NSNotificationCenter.defaultCenter removeObserver:self
+        name:ClaudeAPIConfigurationDidChangeNotification
+      object:self.apiConfiguration];
     self.assistantRequestGeneration++;
     [self.assistantClient cancel];
     self.assistantClient = nil;
@@ -3321,6 +3367,39 @@ static int TerminalDBExitStatus = 0;
             rangeOfString:@"Test model · Ready"].location == NSNotFound ||
         !hasNewChatButton) {
         fprintf(stderr, "FAIL assistant conversation transcript\n");
+        failures++;
+    }
+
+    ClaudeAssistantView *setupView = [[ClaudeAssistantView alloc]
+        initWithFrame:NSMakeRect(0, 0, 760, 340)
+                theme:theme];
+    [setupView showConfigurationRequired:
+        @"No Anthropic API key is configured. Open API Settings to continue."];
+    NSTextView *setupTranscript =
+        [setupView valueForKey:@"responseTextView"];
+    NSTextView *setupComposer = [setupView valueForKey:@"followUpField"];
+    NSTextField *setupPlaceholder =
+        [setupView valueForKey:@"composerPlaceholder"];
+    NSTextField *setupStatus = [setupView valueForKey:@"statusLabel"];
+    NSButton *setupButton = [setupView valueForKey:@"settingsButton"];
+    if ([setupTranscript.string
+            rangeOfString:@"No Anthropic API key"].location == NSNotFound ||
+        setupComposer.editable ||
+        setupButton.hidden ||
+        [setupPlaceholder.stringValue
+            rangeOfString:@"Add an API key"].location == NSNotFound ||
+        [setupStatus.stringValue
+            rangeOfString:@"Setup required"].location == NSNotFound) {
+        fprintf(stderr, "FAIL assistant configuration guidance\n");
+        failures++;
+    }
+    [setupView resetConversationWithModelName:@"Configured model"];
+    if (!setupComposer.editable ||
+        !setupButton.hidden ||
+        [setupStatus.stringValue
+            rangeOfString:@"Configured model · New chat"].location ==
+                NSNotFound) {
+        fprintf(stderr, "FAIL assistant configuration recovery\n");
         failures++;
     }
 

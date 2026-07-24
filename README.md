@@ -68,6 +68,9 @@ or press **Command-,** to add an Anthropic API key and select a model. The
 active model remains visible under the AI Chat heading. The key is stored only
 as a generic password in macOS Keychain. It is not written to project files,
 user defaults, logs, or generated shell integration.
+When no key or model is configured, the chat pane explains the required setup,
+provides a direct settings button, and keeps the composer disabled until the
+configuration is ready.
 The settings field reads the saved value back from Keychain so persistence is
 visible and the key can be edited or replaced directly.
 After a key is saved, TerminalDB loads the models available to that key from

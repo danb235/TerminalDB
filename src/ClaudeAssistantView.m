@@ -348,6 +348,8 @@
     self.settingsButton.hidden = YES;
     self.followUpField.string = @"";
     self.followUpField.editable = YES;
+    self.composerPlaceholder.stringValue =
+        @"Ask about this terminal or describe what you want to do…";
     self.sendButton.enabled = YES;
     self.working = NO;
     [self.progress stopAnimation:nil];
@@ -356,6 +358,28 @@
     [self renderResponse];
     [self setNeedsLayout:YES];
     [self focusComposer];
+}
+
+- (void)showConfigurationRequired:(NSString *)message {
+    [self.progress stopAnimation:nil];
+    self.modelName = @"Claude";
+    self.response =
+        message.length > 0
+            ? message
+            : @"Add an Anthropic API key and choose a model to use AI chat.";
+    self.statusLabel.stringValue = @"Claude · Setup required";
+    self.statusLabel.textColor = self.theme.ansiColors[3];
+    self.settingsButton.hidden = NO;
+    self.followUpField.string = @"";
+    self.followUpField.editable = NO;
+    self.composerPlaceholder.stringValue =
+        @"Add an API key and choose a model to start chatting…";
+    self.composerPlaceholder.hidden = NO;
+    self.sendButton.enabled = NO;
+    self.working = NO;
+    [self removeCommandButtons];
+    [self renderResponse];
+    [self setNeedsLayout:YES];
 }
 
 - (void)appendResponseText:(NSString *)text {
