@@ -43,7 +43,7 @@ qa-tabs: all
 	@output="$$($(BIN) --background-tab-qa 2>&1)"; \
 		printf '%s\n' "$$output"; \
 		case "$$output" in \
-			*"grouped=yes selected=yes independent-shells=yes activity=yes titles=yes menu=yes close=yes"*) ;; \
+			*"grouped=yes selected=yes independent-shells=yes activity=yes titles=yes menu=yes assistant=yes close=yes"*) ;; \
 			*) exit 1 ;; \
 		esac
 

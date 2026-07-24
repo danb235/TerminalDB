@@ -674,7 +674,13 @@ static int TerminalDBExitStatus = 0;
 }
 
 - (void)presentTerminalController:(AppDelegate *)controller {
-    [controller.window makeKeyAndOrderFront:nil];
+    BOOL backgroundUIQA = [NSProcessInfo.processInfo.arguments
+        containsObject:@"--visual-qa"];
+    if (backgroundUIQA) {
+        [controller.window orderBack:nil];
+    } else {
+        [controller.window makeKeyAndOrderFront:nil];
+    }
     [controller.window makeFirstResponder:controller.terminalView];
     dispatch_async(dispatch_get_main_queue(), ^{
         NSWindowTabGroup *group = controller.window.tabGroup;
@@ -806,6 +812,30 @@ static int TerminalDBExitStatus = 0;
             hasAddAccountAction &&
             hasRefreshUsageAction;
 
+        NSButton *collapseChatButton =
+            [second.assistantView valueForKey:@"closeButton"];
+        BOOL sidebarIconsAvailable =
+            second.assistantToggleButton.image != nil &&
+            collapseChatButton.image != nil &&
+            [[second.assistantToggleButton accessibilityLabel]
+                isEqualToString:@"Show AI Chat"] &&
+            [[collapseChatButton accessibilityLabel]
+                isEqualToString:@"Hide AI Chat"];
+        [second showAssistantPane];
+        BOOL chatExpanded =
+            !second.assistantView.hidden &&
+            second.assistantToggleButton.hidden &&
+            second.terminalScrollView.frame.size.width <
+                second.window.contentView.bounds.size.width;
+        [second hideAssistantPane];
+        BOOL chatCollapsed =
+            second.assistantView.hidden &&
+            !second.assistantToggleButton.hidden &&
+            fabs(second.terminalScrollView.frame.size.width -
+                 second.window.contentView.bounds.size.width) < 0.5;
+        BOOL assistantPaneWorks =
+            sidebarIconsAvailable && chatExpanded && chatCollapsed;
+
         pid_t foregroundGroup =
             second.pty >= 0 ? tcgetpgrp(second.pty) : -1;
         const char interrupt = 0x03;
@@ -823,11 +853,11 @@ static int TerminalDBExitStatus = 0;
             TerminalDBExitStatus =
                 grouped && selectionWorks && independentShells &&
                 activityPolicy && descriptiveTitles &&
-                claudeMenuWorks && closeWorks ? 0 : 1;
+                claudeMenuWorks && assistantPaneWorks && closeWorks ? 0 : 1;
             fprintf(TerminalDBExitStatus == 0 ? stdout : stderr,
                     "TerminalDB background tab QA: grouped=%s "
                     "selected=%s independent-shells=%s activity=%s "
-                    "titles=%s menu=%s close=%s "
+                    "titles=%s menu=%s assistant=%s close=%s "
                     "foreground-group=%d shell=%d\n",
                     grouped ? "yes" : "no",
                     selectionWorks ? "yes" : "no",
@@ -835,6 +865,7 @@ static int TerminalDBExitStatus = 0;
                     activityPolicy ? "yes" : "no",
                     descriptiveTitles ? "yes" : "no",
                     claudeMenuWorks ? "yes" : "no",
+                    assistantPaneWorks ? "yes" : "no",
                     closeWorks ? "yes" : "no",
                     foregroundGroup,
                     second.shellPid);
@@ -994,11 +1025,18 @@ static int TerminalDBExitStatus = 0;
 
     self.assistantToggleButton =
         [[NSButton alloc] initWithFrame:NSZeroRect];
-    self.assistantToggleButton.title = @"✦  AI Chat";
-    self.assistantToggleButton.bezelStyle = NSBezelStyleRounded;
+    self.assistantToggleButton.title = @"";
+    self.assistantToggleButton.bezelStyle = NSBezelStyleTexturedRounded;
     self.assistantToggleButton.controlSize = NSControlSizeSmall;
-    self.assistantToggleButton.font =
-        [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+    NSImage *showSidebarImage =
+        [NSImage imageWithSystemSymbolName:@"sidebar.right"
+                  accessibilityDescription:@"Show AI Chat"];
+    showSidebarImage = [showSidebarImage imageWithSymbolConfiguration:
+        [NSImageSymbolConfiguration configurationWithPointSize:14
+                                                        weight:NSFontWeightMedium]];
+    self.assistantToggleButton.image = showSidebarImage;
+    self.assistantToggleButton.imagePosition = NSImageOnly;
+    [self.assistantToggleButton setAccessibilityLabel:@"Show AI Chat"];
     self.assistantToggleButton.contentTintColor = self.theme.ansiColors[6];
     self.assistantToggleButton.target = self;
     self.assistantToggleButton.action = @selector(toggleAssistantPane:);
@@ -1050,9 +1088,9 @@ static int TerminalDBExitStatus = 0;
                    paneWidth, workspaceHeight);
     self.assistantToggleButton.hidden = chatVisible;
     self.assistantToggleButton.frame =
-        NSMakeRect(MAX(8, bounds.size.width - 100),
+        NSMakeRect(MAX(8, bounds.size.width - 42),
                    MAX(statusBarHeight + 8, bounds.size.height - 38),
-                   88, 26);
+                   30, 26);
     [self updatePTYWindowSize];
 }
 
@@ -3388,8 +3426,10 @@ int main(void) {
         }
         BOOL backgroundTabQA = [NSProcessInfo.processInfo.arguments
             containsObject:@"--background-tab-qa"];
+        BOOL visualQA = [NSProcessInfo.processInfo.arguments
+            containsObject:@"--visual-qa"];
         [app setActivationPolicy:
-            backgroundTabQA
+            backgroundTabQA || visualQA
                 ? NSApplicationActivationPolicyAccessory
                 : NSApplicationActivationPolicyRegular];
         TerminalDBApplicationDelegate = [[AppDelegate alloc] init];

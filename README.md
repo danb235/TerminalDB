@@ -30,10 +30,11 @@ Claude profile, so switching accounts in one tab does not alter another tab.
 
 ## AI chat
 
-Select **✦ AI Chat** in the upper-right corner or choose **Claude → Show AI
-Chat** (Command-Shift-L) to open a collapsible chat pane beside the active
-terminal. Terminal input is always sent to the shell; TerminalDB does not try
-to classify commands as natural language.
+Select the standard right-sidebar icon in the upper-right corner or choose
+**Claude → Show AI Chat** (Command-Shift-L) to open a collapsible chat pane
+beside the active terminal. The same sidebar icon collapses the pane from its
+header. Terminal input is always sent to the shell; TerminalDB does not try to
+classify commands as natural language.
 
 Each message sent from the chat includes a fresh snapshot of that tab's current
 working directory, window state, and visible terminal output. Claude can use
@@ -107,8 +108,9 @@ keys, output-follow scrolling across successive commands, safe extraction of
 shell code blocks, AI transcript rendering, terminal-context attachment,
 command pasting without execution, and authenticated-profile onboarding state.
 It also runs a background AppKit integration check for native tab grouping,
-independent shell sessions, activity state, switching, and closing. The QA app
-uses accessory activation and does not bring test windows to the foreground.
+independent shell sessions, activity state, AI-pane expansion and collapse,
+switching, and closing. QA app processes use accessory activation and keep
+their windows behind the active application.
 
 ## Tabs
 

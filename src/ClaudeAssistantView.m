@@ -82,11 +82,18 @@
     _progress.displayedWhenStopped = NO;
     [self addSubview:_progress];
 
-    _closeButton = [self headerButtonWithTitle:@"×"
+    _closeButton = [self headerButtonWithTitle:@""
                                        toolTip:@"Collapse AI chat"
                                          action:@selector(closeSelected:)];
-    _closeButton.font =
-        [NSFont systemFontOfSize:18 weight:NSFontWeightRegular];
+    NSImage *hideSidebarImage =
+        [NSImage imageWithSystemSymbolName:@"sidebar.right"
+                  accessibilityDescription:@"Hide AI Chat"];
+    hideSidebarImage = [hideSidebarImage imageWithSymbolConfiguration:
+        [NSImageSymbolConfiguration configurationWithPointSize:14
+                                                        weight:NSFontWeightMedium]];
+    _closeButton.image = hideSidebarImage;
+    _closeButton.imagePosition = NSImageOnly;
+    [_closeButton setAccessibilityLabel:@"Hide AI Chat"];
 
     _startConversationButton =
         [self headerButtonWithTitle:@"New chat"
