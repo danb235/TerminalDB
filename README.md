@@ -256,7 +256,7 @@ Completed records contain:
 - timestamp, host, and inferred environment; and
 - a stable record identifier.
 
-Open **View → Command History** or press **Command-Y** to search and inspect
+Open **View → History** or press **Command-Y** to search and inspect
 records. Clearing TerminalDB history does not change `.zsh_history`.
 
 ## Keyboard shortcuts
@@ -265,20 +265,24 @@ records. Clearing TerminalDB history does not change `.zsh_history`.
 | --- | --- |
 | New window | Command-N |
 | New tab | Command-T |
+| New private session | Shift-Command-N |
 | Split right | Command-D |
 | Split down | Shift-Command-D |
 | Close tab | Command-W |
 | Close window | Shift-Command-W |
 | Show or hide AI chat | Shift-Command-L |
 | Command history | Command-Y |
-| Runbooks | Shift-Command-R |
+| Runbooks | Command-R |
+| Run last command again | Shift-Command-R |
+| Monitor Center | Option-Command-M |
 | Clear scrollback | Command-K |
 | Settings | Command-, |
 | Increase terminal text | Command-+ |
 | Decrease terminal text | Command-minus |
 | Reset terminal text | Command-0 |
-| Previous tab | Shift-Command-[ |
-| Next tab | Shift-Command-] |
+| Previous tab | Control-Shift-Tab |
+| Next tab | Control-Tab |
+| Keyboard shortcuts | Command-/ |
 
 ## Architecture
 
@@ -374,6 +378,8 @@ make                 # Build the app bundle
 make run             # Build and launch
 make test            # Run all self-tests and background integration QA
 make qa-signature    # Verify the development signature requirement
+make qa-icon         # Verify bundle icon metadata and every icon size
+make qa-secrets      # Reject probable Anthropic keys in tracked files
 make qa-tabs         # Exercise tabs, shells, titles, menus, and AI pane
 make qa-claude-state # Exercise Claude Code lifecycle bridge behavior
 make clean           # Remove the generated build directory
@@ -389,6 +395,10 @@ background AppKit tab integration.
 
 QA app processes use accessory activation and keep their windows behind the
 active application.
+
+The current adversarial test matrix, design-route comparison, corrected
+defects, and remaining parity risks are documented in
+[QA_AUDIT.md](QA_AUDIT.md).
 
 ## Terminal compatibility
 

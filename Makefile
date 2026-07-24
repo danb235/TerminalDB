@@ -15,7 +15,7 @@ SCRIPT_RESOURCES := \
 	Resources/Scripts/claude-status-bridge.sh \
 	Resources/Scripts/claude-tab-state.sh
 
-.PHONY: all run test qa-tabs qa-claude-state qa-signature clean
+.PHONY: all run test qa-tabs qa-claude-state qa-signature qa-icon qa-secrets clean
 
 all: $(BIN)
 
@@ -44,6 +44,8 @@ run: all
 test: all
 	$(BIN) --self-test
 	$(MAKE) qa-signature
+	$(MAKE) qa-icon
+	$(MAKE) qa-secrets
 	$(MAKE) qa-tabs
 	$(MAKE) qa-claude-state
 
@@ -55,6 +57,30 @@ qa-signature: all
 			*'designated => identifier "com.terminaldb.app"'*) ;; \
 			*) exit 1 ;; \
 		esac
+
+qa-icon: all
+	@icon_dir="$$(mktemp -d)/AppIcon.iconset"; \
+		trap 'rm -r "$${icon_dir%/AppIcon.iconset}"' EXIT HUP INT TERM; \
+		iconutil --convert iconset --output "$$icon_dir" \
+			$(APP)/Contents/Resources/AppIcon.icns; \
+		for icon in icon_16x16.png icon_16x16@2x.png \
+			icon_32x32.png icon_32x32@2x.png \
+			icon_128x128.png icon_128x128@2x.png \
+			icon_256x256.png icon_256x256@2x.png \
+			icon_512x512.png icon_512x512@2x.png; do \
+			test -s "$$icon_dir/$$icon" || exit 1; \
+		done; \
+		test "$$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' \
+			$(APP)/Contents/Info.plist)" = "AppIcon"; \
+		printf '%s\n' "TerminalDB icon QA: 10 sizes and bundle metadata passed"
+
+qa-secrets:
+	@if rg -n --hidden --glob '!.git/**' --glob '!build/**' \
+			'sk-ant-api0[0-9]-[A-Za-z0-9_-]{20,}' . >/dev/null; then \
+		printf '%s\n' "FAIL: probable Anthropic API key in working tree" >&2; \
+		exit 1; \
+	fi
+	@printf '%s\n' "TerminalDB working-tree secret QA: passed"
 
 qa-tabs: all
 	@output="$$($(BIN) --background-tab-qa 2>&1)"; \

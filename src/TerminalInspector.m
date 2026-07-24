@@ -101,6 +101,71 @@ static const NSTimeInterval TerminalInspectionTimeout = 12.0;
     return NO;
 }
 
++ (BOOL)command:(NSString *)command
+    staysInsideDirectory:(NSString *)directory
+                   error:(NSString **)error {
+    NSString *tokenError = nil;
+    NSArray<NSArray<NSString *> *> *pipeline =
+        [self pipelineTokensForCommand:command error:&tokenError];
+    if (pipeline == nil) {
+        if (error != NULL) *error = tokenError;
+        return NO;
+    }
+    NSString *root = [[directory stringByStandardizingPath]
+        stringByResolvingSymlinksInPath];
+    NSString *rootPrefix = [root hasSuffix:@"/"]
+        ? root : [root stringByAppendingString:@"/"];
+    NSFileManager *files = NSFileManager.defaultManager;
+    for (NSArray<NSString *> *tokens in pipeline) {
+        NSString *executable =
+            tokens.firstObject.lastPathComponent.lowercaseString;
+        for (NSUInteger index = 1; index < tokens.count; index++) {
+            NSString *token = tokens[index];
+            if (([executable isEqualToString:@"grep"] ||
+                 [executable isEqualToString:@"egrep"] ||
+                 [executable isEqualToString:@"fgrep"]) &&
+                ([token isEqualToString:@"-R"] ||
+                 [token isEqualToString:@"--dereference-recursive"])) {
+                if (error != NULL) {
+                    *error =
+                        @"Following symbolic links during recursive search "
+                         "is not allowed in automatic inspections.";
+                }
+                return NO;
+            }
+            if ([token isEqualToString:@"-L"] ||
+                [token isEqualToString:@"--dereference"]) {
+                if (error != NULL) {
+                    *error =
+                        @"Following symbolic links is not allowed in "
+                         "automatic inspections.";
+                }
+                return NO;
+            }
+            if ([token hasPrefix:@"-"]) continue;
+            NSString *candidate =
+                [[directory stringByAppendingPathComponent:token]
+                    stringByStandardizingPath];
+            BOOL isDirectory = NO;
+            if (![files fileExistsAtPath:candidate
+                             isDirectory:&isDirectory]) {
+                continue;
+            }
+            NSString *resolved = [candidate stringByResolvingSymlinksInPath];
+            if (![resolved isEqualToString:root] &&
+                ![resolved hasPrefix:rootPrefix]) {
+                if (error != NULL) {
+                    *error =
+                        @"A path in this inspection resolves outside the "
+                         "current directory.";
+                }
+                return NO;
+            }
+        }
+    }
+    return YES;
+}
+
 + (BOOL)validateReadOnlyCommand:(NSString *)command
                           error:(NSString **)error {
     NSString *trimmed = [command stringByTrimmingCharactersInSet:
@@ -167,6 +232,21 @@ static const NSTimeInterval TerminalInspectionTimeout = 12.0;
                         @"Automatic inspections stay inside the current "
                          "directory. Use a relative path or paste the command "
                          "into the terminal.";
+                }
+                return NO;
+            }
+            if ([token isEqualToString:@"-L"] ||
+                [token isEqualToString:@"--dereference"] ||
+                (([executable isEqualToString:@"grep"] ||
+                  [executable isEqualToString:@"egrep"] ||
+                  [executable isEqualToString:@"fgrep"]) &&
+                 ([token isEqualToString:@"-R"] ||
+                  [token isEqualToString:
+                      @"--dereference-recursive"]))) {
+                if (error != NULL) {
+                    *error =
+                        @"Following symbolic links is not allowed in "
+                         "automatic inspections.";
                 }
                 return NO;
             }
@@ -309,6 +389,23 @@ static const NSTimeInterval TerminalInspectionTimeout = 12.0;
         });
         return;
     }
+    NSString *pathValidationError = nil;
+    if (![[self class] command:command
+          staysInsideDirectory:directory
+                         error:&pathValidationError]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            completion(@{
+                @"command" : command,
+                @"directory" : directory,
+                @"output" :
+                    pathValidationError ?: @"Inspection path blocked.",
+                @"exit_code" : @(-1),
+                @"duration" : @0,
+                @"blocked" : @YES,
+            });
+        });
+        return;
+    }
 
     dispatch_async(
         dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -320,8 +417,10 @@ static const NSTimeInterval TerminalInspectionTimeout = 12.0;
              "(allow default) "
              "(deny file-write*) "
              "(deny network*)";
+        NSString *boundedCommand =
+            [@"set -o noglob; " stringByAppendingString:command];
         task.arguments =
-            @[@"-p", profile, @"/bin/zsh", @"-f", @"-c", command];
+            @[@"-p", profile, @"/bin/zsh", @"-f", @"-c", boundedCommand];
         task.currentDirectoryURL = [NSURL fileURLWithPath:directory
                                              isDirectory:YES];
         NSMutableDictionary<NSString *, NSString *> *environment =

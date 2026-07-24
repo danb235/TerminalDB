@@ -41,6 +41,27 @@ static NSString *ClaudeAPIErrorMessage(NSData *data,
     return @"Claude API request failed.";
 }
 
+static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
+    if (![saved isKindOfClass:NSArray.class]) return @[];
+    NSMutableArray<NSDictionary *> *valid = [NSMutableArray array];
+    for (id candidate in saved) {
+        if (![candidate isKindOfClass:NSDictionary.class]) continue;
+        NSDictionary *model = candidate;
+        NSString *identifier =
+            [model[@"id"] isKindOfClass:NSString.class] ? model[@"id"] : nil;
+        if (identifier.length == 0) continue;
+        NSMutableDictionary *clean =
+            [@{@"id" : identifier} mutableCopy];
+        for (NSString *key in @[@"display_name", @"created_at", @"type"]) {
+            if ([model[key] isKindOfClass:NSString.class]) {
+                clean[key] = model[key];
+            }
+        }
+        [valid addObject:clean];
+    }
+    return valid;
+}
+
 @interface ClaudeAPIConfiguration ()
 @property(nonatomic, copy) NSArray<NSDictionary *> *models;
 @property(nonatomic, copy, nullable) NSString *selectedModelID;
@@ -55,17 +76,28 @@ static NSString *ClaudeAPIErrorMessage(NSData *data,
     NSArray *saved =
         [NSUserDefaults.standardUserDefaults
             arrayForKey:ClaudeAPIModelsDefaultsKey];
-    NSMutableArray<NSDictionary *> *valid = [NSMutableArray array];
-    for (NSDictionary *model in saved) {
-        NSString *identifier =
-            [model[@"id"] isKindOfClass:NSString.class] ? model[@"id"] : nil;
-        if (identifier.length > 0) [valid addObject:model];
-    }
-    _models = valid;
+    _models = ClaudeAPIValidModels(saved);
     _selectedModelID =
         [NSUserDefaults.standardUserDefaults
             stringForKey:ClaudeAPISelectedModelDefaultsKey];
     return self;
+}
+
++ (BOOL)runConfigurationSelfTests {
+    NSArray *valid = ClaudeAPIValidModels(@[
+        @"bad",
+        @{@"id" : @7},
+        @{@"display_name" : @"Missing ID"},
+        @{@"id" : @"claude-test",
+          @"display_name" : @"Test",
+          @"created_at" : @123,
+          @"unexpected" : @"discard"},
+    ]);
+    return valid.count == 1 &&
+        [valid.firstObject[@"id"] isEqualToString:@"claude-test"] &&
+        [valid.firstObject[@"display_name"] isEqualToString:@"Test"] &&
+        valid.firstObject[@"created_at"] == nil &&
+        valid.firstObject[@"unexpected"] == nil;
 }
 
 - (nullable NSString *)apiKey {
@@ -98,6 +130,12 @@ static NSString *ClaudeAPIErrorMessage(NSData *data,
     (void)error;
     [NSUserDefaults.standardUserDefaults
         removeObjectForKey:ClaudeAPIKeyDefaultsKey];
+    [NSUserDefaults.standardUserDefaults
+        removeObjectForKey:ClaudeAPIModelsDefaultsKey];
+    [NSUserDefaults.standardUserDefaults
+        removeObjectForKey:ClaudeAPISelectedModelDefaultsKey];
+    self.models = @[];
+    self.selectedModelID = nil;
     [self notifyChanged];
     return YES;
 }
@@ -686,6 +724,17 @@ didCompleteWithError:(NSError *)error {
         return;
     }
     [self processAvailableEvents];
+    if (!self.finished && self.streamBuffer.length > 0) {
+        NSString *finalEvent = [[NSString alloc]
+            initWithData:self.streamBuffer encoding:NSUTF8StringEncoding];
+        [self.streamBuffer setLength:0];
+        if ([finalEvent
+                stringByTrimmingCharactersInSet:
+                    NSCharacterSet.whitespaceAndNewlineCharacterSet].length >
+            0) {
+            [self processEvent:finalEvent];
+        }
+    }
     [self finishWithError:nil];
 }
 

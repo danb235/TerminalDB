@@ -14,6 +14,56 @@ static NSString *TerminalProductTrim(NSString *value) {
         NSCharacterSet.whitespaceAndNewlineCharacterSet];
 }
 
+static NSArray<NSDictionary *> *TerminalProductDictionaries(id value) {
+    if (![value isKindOfClass:NSArray.class]) return @[];
+    NSMutableArray<NSDictionary *> *valid = [NSMutableArray array];
+    for (id candidate in value) {
+        if (![candidate isKindOfClass:NSDictionary.class]) continue;
+        NSDictionary *item = candidate;
+        if (![item[@"id"] isKindOfClass:NSString.class]) continue;
+        NSMutableDictionary *clean = [item mutableCopy];
+        for (NSString *key in @[
+                @"name", @"detail", @"command", @"directory", @"account",
+                @"chat", @"model", @"state", @"environment", @"output",
+            ]) {
+            if (clean[key] != nil &&
+                ![clean[key] isKindOfClass:NSString.class]) {
+                [clean removeObjectForKey:key];
+            }
+        }
+        for (NSString *key in @[
+                @"created_at", @"updated_at", @"last_run_at", @"run_count",
+                @"last_opened_at", @"tab_count", @"splits", @"selected_tab",
+                @"started_at", @"finished_at", @"exit_code",
+            ]) {
+            if (clean[key] != nil &&
+                ![clean[key] isKindOfClass:NSNumber.class]) {
+                [clean removeObjectForKey:key];
+            }
+        }
+        if (clean[@"steps"] != nil &&
+            ![clean[@"steps"] isKindOfClass:NSArray.class]) {
+            [clean removeObjectForKey:@"steps"];
+        }
+        if (clean[@"tabs"] != nil &&
+            ![clean[@"tabs"] isKindOfClass:NSArray.class] &&
+            ![clean[@"tabs"] isKindOfClass:NSNumber.class]) {
+            [clean removeObjectForKey:@"tabs"];
+        }
+        [valid addObject:clean];
+    }
+    return valid;
+}
+
+static NSString *TerminalProductTail(NSString *text,
+                                     NSUInteger maximumLength) {
+    if (text.length <= maximumLength) return text ?: @"";
+    NSUInteger approximateStart = text.length - maximumLength;
+    NSRange composed =
+        [text rangeOfComposedCharacterSequenceAtIndex:approximateStart];
+    return [text substringFromIndex:composed.location];
+}
+
 static NSString *TerminalProductDisplayDate(NSNumber *timestamp) {
     NSDate *date = [NSDate dateWithTimeIntervalSince1970:
         timestamp.doubleValue];
@@ -40,14 +90,6 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
             @"approval" : @"Review before execution",
         }];
     }
-    if (steps.count == 0 && TerminalProductTrim(command).length > 0) {
-        [steps addObject:@{
-            @"id" : NSUUID.UUID.UUIDString,
-            @"number" : @1,
-            @"command" : TerminalProductTrim(command),
-            @"approval" : @"Review before execution",
-        }];
-    }
     return steps;
 }
 
@@ -56,6 +98,8 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
 @property(nonatomic, strong) NSMutableArray<NSDictionary *> *mutableWorkspaces;
 @property(nonatomic, strong) NSMutableArray<NSDictionary *> *mutableMonitors;
 @property(nonatomic, copy) NSString *storagePath;
+@property(nonatomic) BOOL removesStorageOnDealloc;
+- (instancetype)initWithStoragePath:(NSString *)storagePath;
 @end
 
 @implementation TerminalProductStore
@@ -69,30 +113,58 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     return store;
 }
 
++ (instancetype)ephemeralStoreForTesting {
+    NSString *directory = [NSTemporaryDirectory()
+        stringByAppendingPathComponent:[NSString stringWithFormat:
+            @"TerminalDB-product-tests-%@", NSUUID.UUID.UUIDString]];
+    NSString *path = [directory stringByAppendingPathComponent:
+        @"product-state.json"];
+    TerminalProductStore *store =
+        [[TerminalProductStore alloc] initWithStoragePath:path];
+    store.removesStorageOnDealloc = YES;
+    return store;
+}
+
 - (instancetype)init {
+    NSString *path = [TerminalProductSupportDirectory()
+        stringByAppendingPathComponent:@"product-state.json"];
+    return [self initWithStoragePath:path];
+}
+
+- (instancetype)initWithStoragePath:(NSString *)storagePath {
     self = [super init];
     if (self == nil) return nil;
     _mutableRunbooks = [NSMutableArray array];
     _mutableWorkspaces = [NSMutableArray array];
     _mutableMonitors = [NSMutableArray array];
-    NSString *directory = TerminalProductSupportDirectory();
+    NSString *directory = storagePath.stringByDeletingLastPathComponent;
     [NSFileManager.defaultManager createDirectoryAtPath:directory
                             withIntermediateDirectories:YES
-                                             attributes:nil
+                                             attributes:
+                                                 @{NSFilePosixPermissions :
+                                                       @0700}
                                                   error:nil];
-    _storagePath = [directory stringByAppendingPathComponent:
-        @"product-state.json"];
+    [NSFileManager.defaultManager
+        setAttributes:@{NSFilePosixPermissions : @0700}
+        ofItemAtPath:directory
+        error:nil];
+    _storagePath = [storagePath copy];
     NSData *data = [NSData dataWithContentsOfFile:_storagePath];
     NSDictionary *state = data.length > 0
         ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil]
         : nil;
-    if ([state[@"runbooks"] isKindOfClass:NSArray.class]) {
-        [_mutableRunbooks addObjectsFromArray:state[@"runbooks"]];
-    }
-    if ([state[@"workspaces"] isKindOfClass:NSArray.class]) {
-        [_mutableWorkspaces addObjectsFromArray:state[@"workspaces"]];
-    }
+    [_mutableRunbooks addObjectsFromArray:
+        TerminalProductDictionaries(state[@"runbooks"])];
+    [_mutableWorkspaces addObjectsFromArray:
+        TerminalProductDictionaries(state[@"workspaces"])];
     return self;
+}
+
+- (void)dealloc {
+    if (!self.removesStorageOnDealloc || self.storagePath.length == 0) return;
+    [NSFileManager.defaultManager
+        removeItemAtPath:self.storagePath.stringByDeletingLastPathComponent
+                  error:nil];
 }
 
 - (NSArray<NSDictionary *> *)runbooks {
@@ -161,18 +233,27 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     NSData *data = [NSJSONSerialization dataWithJSONObject:state
                                                    options:NSJSONWritingPrettyPrinted
                                                      error:nil];
-    [data writeToFile:self.storagePath atomically:YES];
+    [data writeToFile:self.storagePath
+              options:NSDataWritingAtomic
+                error:nil];
+    [NSFileManager.defaultManager
+        setAttributes:@{NSFilePosixPermissions : @0600}
+        ofItemAtPath:self.storagePath
+        error:nil];
 }
 
 - (NSDictionary *)saveRunbookNamed:(NSString *)name
                            command:(NSString *)command
                          directory:(NSString *)directory {
-    NSArray *steps = TerminalProductRunbookSteps(command);
+    NSString *trimmedCommand = TerminalProductTrim(command);
+    if (trimmedCommand.length == 0) return @{};
+    NSArray *steps = TerminalProductRunbookSteps(trimmedCommand);
+    if (steps.count == 0) return @{};
     NSDictionary *runbook = @{
         @"id" : NSUUID.UUID.UUIDString,
         @"name" : TerminalProductTrim(name).length > 0
             ? TerminalProductTrim(name) : @"Untitled runbook",
-        @"command" : TerminalProductTrim(command),
+        @"command" : trimmedCommand,
         @"steps" : steps,
         @"directory" : directory.length > 0 ? directory : @"~",
         @"created_at" : @([NSDate date].timeIntervalSince1970),
@@ -259,8 +340,14 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
 
 - (NSDictionary *)saveWorkspaceNamed:(NSString *)name
                              snapshot:(NSDictionary *)snapshot {
-    NSArray *tabs = [snapshot[@"tabs"] isKindOfClass:NSArray.class]
-        ? snapshot[@"tabs"] : @[];
+    NSMutableArray<NSDictionary *> *tabs = [NSMutableArray array];
+    if ([snapshot[@"tabs"] isKindOfClass:NSArray.class]) {
+        for (id candidate in snapshot[@"tabs"]) {
+            if ([candidate isKindOfClass:NSDictionary.class]) {
+                [tabs addObject:candidate];
+            }
+        }
+    }
     NSDictionary *first = tabs.firstObject;
     NSMutableDictionary *workspace = [@{
         @"id" : NSUUID.UUID.UUIDString,
@@ -332,6 +419,21 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         @"notify" : @YES,
     };
     [self.mutableMonitors insertObject:monitor atIndex:0];
+    while (self.mutableMonitors.count > 500) {
+        NSUInteger removable = [self.mutableMonitors
+            indexOfObjectWithOptions:NSEnumerationReverse
+            passingTest:^BOOL(NSDictionary *candidate,
+                              NSUInteger index,
+                              BOOL *stop) {
+                (void)index;
+                (void)stop;
+                return ![candidate[@"state"] isEqualToString:@"RUNNING"];
+            }];
+        if (removable == NSNotFound) {
+            removable = self.mutableMonitors.count - 1;
+        }
+        [self.mutableMonitors removeObjectAtIndex:removable];
+    }
     return identifier;
 }
 
@@ -351,9 +453,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     updated[@"state"] = exitCode == 0 ? @"DONE" : @"FAILED";
     updated[@"finished_at"] = @([NSDate date].timeIntervalSince1970);
     updated[@"exit_code"] = @(exitCode);
-    updated[@"output"] = output.length > 8000
-        ? [output substringFromIndex:output.length - 8000]
-        : output ?: @"";
+    updated[@"output"] = TerminalProductTail(output ?: @"", 8000);
     self.mutableMonitors[index] = updated;
     NSTimeInterval duration =
         [updated[@"finished_at"] doubleValue] -
@@ -398,6 +498,15 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
 }
 
 - (BOOL)runSelfTests {
+    NSArray *sanitized = TerminalProductDictionaries(@[
+        @"bad",
+        @{@"id" : @7},
+        @{@"id" : @"valid", @"name" : @9, @"run_count" : @"bad"},
+    ]);
+    BOOL malformedStateHandled =
+        sanitized.count == 1 &&
+        sanitized.firstObject[@"name"] == nil &&
+        sanitized.firstObject[@"run_count"] == nil;
     NSString *name = [NSString stringWithFormat:@"QA-%@",
         NSUUID.UUID.UUIDString];
     NSDictionary *runbook =
@@ -406,6 +515,12 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
                      directory:@"/tmp"];
     BOOL saved = [self.runbooks containsObject:runbook] &&
         [runbook[@"steps"] count] == 2;
+    NSUInteger runbookCount = self.runbooks.count;
+    saved = saved &&
+        [self saveRunbookNamed:@"Empty QA"
+                       command:@" \n # comment only"
+                     directory:@"/tmp"].count == 0 &&
+        self.runbooks.count == runbookCount;
     [self updateRunbookWithIdentifier:runbook[@"id"]
                                  name:[name stringByAppendingString:@"-edited"]
                               command:@"pwd\nwhoami"
@@ -428,6 +543,21 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         [NSPredicate predicateWithFormat:@"id == %@", monitor]].firstObject;
     BOOL monitored = [result[@"state"] isEqualToString:@"DONE"];
     [self removeMonitorWithIdentifier:monitor];
+    NSMutableArray<NSString *> *stressMonitors = [NSMutableArray array];
+    for (NSUInteger index = 0; index < 510; index++) {
+        NSString *identifier =
+            [self beginMonitoringCommand:@"true"
+                               directory:@"/tmp"
+                             environment:@"LOCAL"];
+        [stressMonitors addObject:identifier];
+        [self finishMonitorWithIdentifier:identifier
+                                 exitCode:0
+                                   output:@"done"];
+    }
+    monitored = monitored && self.monitors.count <= 500;
+    for (NSString *identifier in stressMonitors) {
+        [self removeMonitorWithIdentifier:identifier];
+    }
     NSDictionary *workspace = [self saveWorkspaceNamed:name snapshot:@{
         @"tabs" : @[
             @{@"directory":@"/tmp", @"account_label":@"QA",
@@ -452,7 +582,16 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     workspaces = workspaces &&
         [renamed[@"name"] hasSuffix:@"-renamed"];
     [self deleteWorkspaceWithIdentifier:workspace[@"id"]];
-    return saved && monitored && workspaces;
+    if (!malformedStateHandled || !saved || !monitored || !workspaces) {
+        fprintf(stderr,
+                "Product store QA detail: malformed=%s runbook=%s "
+                "monitor=%s workspace=%s\n",
+                malformedStateHandled ? "yes" : "no",
+                saved ? "yes" : "no",
+                monitored ? "yes" : "no",
+                workspaces ? "yes" : "no");
+    }
+    return malformedStateHandled && saved && monitored && workspaces;
 }
 
 @end
@@ -482,6 +621,56 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
 
 @implementation TerminalProductWindowController
 
++ (BOOL)runWindowSelfTestsWithTheme:(TerminalTheme *)theme
+                               store:(TerminalProductStore *)store {
+    TerminalProductWindowController *controller =
+        [[TerminalProductWindowController alloc] initWithTheme:theme
+                                                         store:store];
+    controller.directory = @"/tmp";
+    controller.accountLabel = @"QA";
+    controller.section = TerminalProductSectionOnboarding;
+    [controller refresh];
+    NSArray *onboarding = controller.items;
+    BOOL onboardingWorks =
+        onboarding.count == 8 &&
+        [onboarding[1][@"id"] isEqualToString:@"privacy"] &&
+        [onboarding[3][@"id"] isEqualToString:@"api"] &&
+        [onboarding[4][@"id"] isEqualToString:@"model"] &&
+        [onboarding[5][@"id"] isEqualToString:@"account"] &&
+        [onboarding[6][@"id"] isEqualToString:@"permissions"] &&
+        controller.sectionControl.hidden &&
+        controller.searchField.hidden &&
+        controller.secondaryButton.hidden &&
+        [controller.primaryButton.title isEqualToString:@"Continue"];
+    [controller.tableView selectRowIndexes:
+        [NSIndexSet indexSetWithIndex:7]
+                        byExtendingSelection:NO];
+    [controller tableViewSelectionDidChange:
+        [NSNotification notificationWithName:@"TerminalDBSelfTestSelection"
+                                       object:controller.tableView]];
+    onboardingWorks = onboardingWorks &&
+        [controller.primaryButton.title isEqualToString:@"Finish"] &&
+        controller.tertiaryButton.enabled;
+
+    controller.section = TerminalProductSectionSettings;
+    [controller refresh];
+    BOOL settingsWork =
+        controller.items.count == 12 &&
+        !controller.sectionControl.hidden &&
+        !controller.searchField.hidden &&
+        !controller.secondaryButton.hidden;
+    controller.section = TerminalProductSectionProject;
+    [controller refresh];
+    BOOL projectWorks = controller.items.count >= 4;
+    controller.section = TerminalProductSectionEnvironments;
+    [controller refresh];
+    BOOL environmentWorks = controller.items.count == 4;
+    [controller.refreshTimer invalidate];
+    [controller.window close];
+    return onboardingWorks && settingsWork &&
+        projectWorks && environmentWorks;
+}
+
 - (instancetype)initWithTheme:(TerminalTheme *)theme
                          store:(TerminalProductStore *)store {
     NSWindow *window = [[NSWindow alloc]
@@ -493,7 +682,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
                     backing:NSBackingStoreBuffered
                       defer:NO];
     window.title = @"TerminalDB";
-    window.minSize = NSMakeSize(850, 560);
+    window.contentMinSize = NSMakeSize(1120, 690);
     window.backgroundColor = theme.terminalBackground;
     self = [super initWithWindow:window];
     if (self == nil) return nil;
@@ -829,24 +1018,31 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     return @[
         @{@"id":@"welcome", @"name":@"1  Welcome",
           @"detail":@"A terminal that remembers command work as local blocks."},
-        @{@"id":@"integration", @"name":@"2  Shell integration",
+        @{@"id":@"privacy", @"name":@"2  Privacy & history",
+          @"detail":@"Save redacted command blocks locally, or start private by default."},
+        @{@"id":@"integration", @"name":@"3  Shell integration",
           @"detail":@"Command, path, host, status, duration, and output stay together."},
-        @{@"id":@"blocks", @"name":@"3  Command blocks",
-          @"detail":@"Copy, inspect, rerun, bookmark, ask AI, or save a runbook."},
-        @{@"id":@"assistant", @"name":@"4  AI context",
-          @"detail":@"Only visible chips and the current terminal snapshot are sent."},
-        @{@"id":@"permissions", @"name":@"5  Execution safety",
-          @"detail":@"Paste, Run once, or allow validated read-only patterns."},
-        @{@"id":@"history", @"name":@"6  Searchable history",
-          @"detail":@"Find prior fixes by command, project, environment, date, or status."},
-        @{@"id":@"workflows", @"name":@"7  Workflows",
-          @"detail":@"Monitor work, save runbooks, and restore workspaces."},
+        @{@"id":@"api", @"name":@"4  Anthropic API key",
+          @"detail":@"Add a masked API credential for the right-side AI chat."},
+        @{@"id":@"model", @"name":@"5  Default model",
+          @"detail":@"Choose from the live model list returned by Anthropic."},
+        @{@"id":@"account", @"name":@"6  Claude Code account",
+          @"detail":@"Optionally connect one or more subscription accounts per tab."},
+        @{@"id":@"permissions", @"name":@"7  Permission mode",
+          @"detail":@"Paste only, ask before running, or auto-run validated read-only work."},
         @{@"id":@"ready", @"name":@"8  You’re ready",
           @"detail":@"Start in the terminal; use the sidebar icon whenever AI helps."},
     ];
 }
 
 - (void)refresh {
+    BOOL onboarding =
+        self.section == TerminalProductSectionOnboarding;
+    self.sectionControl.hidden = onboarding;
+    self.searchField.hidden = onboarding;
+    self.createButton.hidden = onboarding;
+    self.secondaryButton.hidden = onboarding;
+    self.tertiaryButton.enabled = YES;
     switch (self.section) {
         case TerminalProductSectionProject:
             self.eyebrowLabel.stringValue = @"PROJECT-AWARE TOOLS";
@@ -949,7 +1145,6 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
             self.items = [self onboardingItems];
             self.createButton.title = @"API settings";
             self.primaryButton.title = @"Next";
-            self.secondaryButton.title = @"Finish";
             self.tertiaryButton.title = @"Back";
             self.tertiaryButton.hidden = NO;
             self.deleteButton.hidden = YES;
@@ -1047,6 +1242,11 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
             self.primaryButton.title = @"Inspect local";
             self.secondaryButton.title = @"Copy context";
         }
+    } else if (self.section == TerminalProductSectionOnboarding) {
+        NSInteger last = (NSInteger)self.items.count - 1;
+        self.primaryButton.title =
+            self.tableView.selectedRow == last ? @"Finish" : @"Continue";
+        self.tertiaryButton.enabled = self.tableView.selectedRow > 0;
     }
 }
 
@@ -1250,6 +1450,11 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         if (self.openAPISettingsHandler) self.openAPISettingsHandler();
     }
     [self refresh];
+}
+
+- (void)promptToSaveCurrentWorkspace {
+    if (self.section != TerminalProductSectionWorkspaces) return;
+    [self newSelected:nil];
 }
 
 - (void)primarySelected:(id)sender {

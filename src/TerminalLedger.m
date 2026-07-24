@@ -20,24 +20,78 @@ static NSString *TerminalLedgerHistoryPath(void) {
 static NSString *TerminalLedgerRedact(NSString *text) {
     if (text.length == 0) return @"";
     NSMutableString *redacted = [text mutableCopy];
-    NSArray<NSString *> *patterns = @[
-        @"(?i)(sk-ant-[A-Za-z0-9_-]{12})[A-Za-z0-9_-]+",
-        @"(?i)(api[_-]?key\\s*[=:]\\s*)[^\\s\"']+",
-        @"(?i)(authorization:\\s*bearer\\s+)[A-Za-z0-9._-]+",
-        @"(?i)(password\\s*[=:]\\s*)[^\\s\"']+",
+    NSArray<NSArray<NSString *> *> *rules = @[
+        @[@"(?i)(sk-ant-[A-Za-z0-9_-]{8})[A-Za-z0-9_-]+",
+          @"$1••••••"],
+        @[@"(?i)(gh[pousr]_[A-Za-z0-9]{8})[A-Za-z0-9]+",
+          @"$1••••••"],
+        @[@"(?i)(xox[baprs]-[A-Za-z0-9-]{8})[A-Za-z0-9-]+",
+          @"$1••••••"],
+        @[@"(?i)((?:AKIA|ASIA)[A-Z0-9]{4})[A-Z0-9]{12}",
+          @"$1••••••"],
+        @[@"(?i)((?:api[_-]?key|access[_-]?key|token|password|secret)\\s*[=:]\\s*[\"']?)[^\\s\"']+([\"']?)",
+          @"$1••••••$2"],
+        @[@"(?i)((?:--password|--token|--api-key|--secret)(?:=|\\s+)[\"']?)[^\\s\"']+([\"']?)",
+          @"$1••••••$2"],
+        @[@"(?i)(authorization:\\s*(?:bearer|basic)\\s+)[A-Za-z0-9._~+/=-]+",
+          @"$1••••••"],
     ];
-    for (NSString *pattern in patterns) {
+    for (NSArray<NSString *> *rule in rules) {
         NSRegularExpression *expression =
-            [NSRegularExpression regularExpressionWithPattern:pattern
+            [NSRegularExpression regularExpressionWithPattern:rule[0]
                                                       options:0
                                                         error:nil];
         if (expression == nil) continue;
         [expression replaceMatchesInString:redacted
                                    options:0
                                      range:NSMakeRange(0, redacted.length)
-                              withTemplate:@"$1••••••"];
+                              withTemplate:rule[1]];
     }
     return redacted;
+}
+
+static NSString *TerminalLedgerTail(NSString *text, NSUInteger maximumLength) {
+    if (text.length <= maximumLength) return text ?: @"";
+    NSUInteger approximateStart = text.length - maximumLength;
+    NSRange composed =
+        [text rangeOfComposedCharacterSequenceAtIndex:approximateStart];
+    return [text substringFromIndex:composed.location];
+}
+
+static NSDictionary *TerminalLedgerSanitizedRecord(id candidate) {
+    if (![candidate isKindOfClass:NSDictionary.class]) return nil;
+    NSDictionary *record = candidate;
+    if (![record[@"id"] isKindOfClass:NSString.class] ||
+        ![record[@"command"] isKindOfClass:NSString.class]) {
+        return nil;
+    }
+    NSMutableDictionary *clean = [record mutableCopy];
+    for (NSString *key in @[
+            @"command", @"directory", @"output", @"environment", @"host",
+            @"project",
+        ]) {
+        if (clean[key] != nil && ![clean[key] isKindOfClass:NSString.class]) {
+            [clean removeObjectForKey:key];
+        }
+    }
+    for (NSString *key in @[
+            @"exit_code", @"duration", @"timestamp", @"bookmarked",
+            @"truncated",
+        ]) {
+        if (clean[key] != nil && ![clean[key] isKindOfClass:NSNumber.class]) {
+            [clean removeObjectForKey:key];
+        }
+    }
+    for (NSString *key in @[@"annotations", @"tags"]) {
+        if (clean[key] != nil && ![clean[key] isKindOfClass:NSArray.class]) {
+            [clean removeObjectForKey:key];
+        }
+    }
+    if (clean[@"approval"] != nil &&
+        ![clean[@"approval"] isKindOfClass:NSDictionary.class]) {
+        [clean removeObjectForKey:@"approval"];
+    }
+    return clean;
 }
 
 static NSString *TerminalLedgerEnvironment(NSString *command) {
@@ -119,7 +173,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
                     backing:NSBackingStoreBuffered
                       defer:NO];
     window.title = @"TerminalDB — Command Inspector";
-    window.contentMinSize = NSMakeSize(760, 520);
+    window.contentMinSize = NSMakeSize(940, 620);
     window.backgroundColor = theme.terminalBackground;
     self = [super initWithWindow:window];
     if (self == nil) return nil;
@@ -174,6 +228,8 @@ static NSString *TerminalLedgerCSVCell(id value) {
                              font:[NSFont systemFontOfSize:10
                                                    weight:NSFontWeightSemibold]
                             color:self.theme.ansiColors[6]];
+    self.titleLabel.autoresizingMask =
+        NSViewWidthSizable | NSViewMinYMargin;
     [content addSubview:self.titleLabel];
     self.statusLabel = [self label:@""
                              frame:NSMakeRect(760, 582, 160, 20)
@@ -181,23 +237,31 @@ static NSString *TerminalLedgerCSVCell(id value) {
                                                               weight:NSFontWeightSemibold]
                              color:self.theme.ansiColors[2]];
     self.statusLabel.alignment = NSTextAlignmentRight;
+    self.statusLabel.autoresizingMask =
+        NSViewMinXMargin | NSViewMinYMargin;
     [content addSubview:self.statusLabel];
     self.commandLabel = [self label:@""
                               frame:NSMakeRect(20, 548, 900, 28)
                                font:[NSFont fontWithName:self.theme.fontName
                                                    size:15] ?: mono
                               color:self.theme.terminalForeground];
+    self.commandLabel.autoresizingMask =
+        NSViewWidthSizable | NSViewMinYMargin;
     [content addSubview:self.commandLabel];
     self.metadataLabel = [self label:@""
                                frame:NSMakeRect(20, 516, 900, 22)
                                 font:mono
                                color:self.theme.statusBarActiveForeground];
+    self.metadataLabel.autoresizingMask =
+        NSViewWidthSizable | NSViewMinYMargin;
     [content addSubview:self.metadataLabel];
 
     NSScrollView *outputScroll =
         [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 166, 610, 336)];
     outputScroll.hasVerticalScroller = YES;
     outputScroll.borderType = NSBezelBorder;
+    outputScroll.autoresizingMask =
+        NSViewWidthSizable | NSViewHeightSizable;
     self.outputView = [[NSTextView alloc] initWithFrame:outputScroll.bounds];
     self.outputView.editable = NO;
     self.outputView.selectable = YES;
@@ -214,11 +278,15 @@ static NSString *TerminalLedgerCSVCell(id value) {
         frame:NSMakeRect(650, 482, 270, 18)
          font:[NSFont systemFontOfSize:10 weight:NSFontWeightSemibold]
         color:self.theme.ansiColors[3]];
+    annotationsTitle.autoresizingMask =
+        NSViewMinXMargin | NSViewMinYMargin;
     [content addSubview:annotationsTitle];
     NSScrollView *annotationScroll =
         [[NSScrollView alloc] initWithFrame:NSMakeRect(650, 252, 270, 220)];
     annotationScroll.hasVerticalScroller = YES;
     annotationScroll.borderType = NSBezelBorder;
+    annotationScroll.autoresizingMask =
+        NSViewMinXMargin | NSViewHeightSizable;
     self.annotationsView =
         [[NSTextView alloc] initWithFrame:annotationScroll.bounds];
     self.annotationsView.editable = NO;
@@ -237,15 +305,18 @@ static NSString *TerminalLedgerCSVCell(id value) {
     self.annotationField.placeholderString = @"Add a private annotation";
     self.annotationField.target = self;
     self.annotationField.action = @selector(addAnnotation:);
+    self.annotationField.autoresizingMask = NSViewMinXMargin;
     [content addSubview:self.annotationField];
     NSButton *addAnnotation =
         [self button:@"Add"
                frame:NSMakeRect(848, 210, 72, 32)
               action:@selector(addAnnotation:)];
+    addAnnotation.autoresizingMask = NSViewMinXMargin;
     [content addSubview:addAnnotation];
 
     NSBox *separator = [[NSBox alloc] initWithFrame:NSMakeRect(20, 146, 900, 1)];
     separator.boxType = NSBoxSeparator;
+    separator.autoresizingMask = NSViewWidthSizable;
     [content addSubview:separator];
 
     NSArray<NSArray *> *actions = @[
@@ -267,6 +338,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
         [self button:@"☆ Bookmark"
                frame:NSMakeRect(806, 92, 114, 32)
               action:@selector(toggleBookmark:)];
+    self.bookmarkButton.autoresizingMask = NSViewMinXMargin;
     [content addSubview:self.bookmarkButton];
     NSTextField *privacy = [self label:
         @"LOCAL BLOCK · output may contain sensitive data · exports stay local"
@@ -274,6 +346,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
          font:[NSFont fontWithName:self.theme.fontName size:9.5] ?: mono
         color:self.theme.statusBarForeground];
     privacy.alignment = NSTextAlignmentCenter;
+    privacy.autoresizingMask = NSViewWidthSizable;
     [content addSubview:privacy];
 }
 
@@ -457,10 +530,27 @@ static NSString *TerminalLedgerCSVCell(id value) {
                               "sk-ant-example1234567890abcdef");
     NSString *generic =
         TerminalLedgerRedact(@"api_key=terminaldb-test-secret");
+    NSString *quoted =
+        TerminalLedgerRedact(@"password=\"terminaldb-password\"");
+    NSString *github =
+        TerminalLedgerRedact(@"token ghp_1234567890abcdefghijklmnop");
+    NSString *flag =
+        TerminalLedgerRedact(@"curl --token terminaldb-flag-secret");
+    NSMutableString *unicodeSample = [NSMutableString stringWithString:
+        @"prefix-"];
+    for (NSUInteger index = 0; index < 20; index++) {
+        [unicodeSample appendString:@"👨‍👩‍👧‍👦"];
+    }
+    NSString *unicodeTail = TerminalLedgerTail(unicodeSample, 24);
     BOOL secretsRedacted =
         ![anthropic containsString:@"7890abcdef"] &&
         [anthropic containsString:@"••••••"] &&
-        ![generic containsString:@"terminaldb-test-secret"];
+        ![generic containsString:@"terminaldb-test-secret"] &&
+        ![quoted containsString:@"terminaldb-password"] &&
+        [quoted hasSuffix:@"••••••\""] &&
+        ![github containsString:@"1234567890abcdefghijklmnop"] &&
+        ![flag containsString:@"terminaldb-flag-secret"] &&
+        [unicodeTail canBeConvertedToEncoding:NSUTF8StringEncoding];
     BOOL environments =
         [TerminalLedgerEnvironment(@"ls -la") isEqualToString:@"LOCAL"] &&
         [TerminalLedgerEnvironment(@"ssh example.test")
@@ -477,7 +567,14 @@ static NSString *TerminalLedgerCSVCell(id value) {
     id decoded = data.length > 0
         ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil]
         : nil;
-    _records = [decoded isKindOfClass:NSArray.class] ? decoded : @[];
+    NSMutableArray<NSDictionary *> *validRecords = [NSMutableArray array];
+    if ([decoded isKindOfClass:NSArray.class]) {
+        for (id candidate in decoded) {
+            NSDictionary *record = TerminalLedgerSanitizedRecord(candidate);
+            if (record != nil) [validRecords addObject:record];
+        }
+    }
+    _records = validRecords;
     return self;
 }
 
@@ -510,7 +607,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
     if (cleanOutput.length > 24000) {
         cleanOutput = [NSString stringWithFormat:
             @"… output truncated …\n%@",
-            [cleanOutput substringFromIndex:cleanOutput.length - 24000]];
+            TerminalLedgerTail(cleanOutput, 24000)];
     }
     NSDictionary *record = @{
         @"id" : NSUUID.UUID.UUIDString.lowercaseString,
@@ -611,7 +708,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
 
 - (void)addAnnotation:(NSString *)annotation
              toRecord:(NSString *)identifier {
-    NSString *trimmed = [annotation
+    NSString *trimmed = [TerminalLedgerRedact(annotation)
         stringByTrimmingCharactersInSet:
             NSCharacterSet.whitespaceAndNewlineCharacterSet];
     NSDictionary *record = [self recordWithIdentifier:identifier];
@@ -1236,7 +1333,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
                     backing:NSBackingStoreBuffered
                       defer:NO];
     window.title = @"TerminalDB — History Database";
-    window.contentMinSize = NSMakeSize(900, 520);
+    window.contentMinSize = NSMakeSize(1120, 650);
     window.backgroundColor = theme.terminalBackground;
     self = [super initWithWindow:window];
     if (self == nil) return nil;
@@ -1266,6 +1363,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
     self.searchField.placeholderString =
         @"Search commands, paths, output, or ask naturally";
     self.searchField.delegate = self;
+    self.searchField.autoresizingMask = NSViewMinYMargin;
     [content addSubview:self.searchField];
 
     self.statusFilter =
@@ -1275,6 +1373,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
         @[@"All status", @"Succeeded", @"Failed"]];
     self.statusFilter.target = self;
     self.statusFilter.action = @selector(filterChanged:);
+    self.statusFilter.autoresizingMask = NSViewMinYMargin;
     [content addSubview:self.statusFilter];
 
     self.environmentFilter =
@@ -1285,6 +1384,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
           @"Production"]];
     self.environmentFilter.target = self;
     self.environmentFilter.action = @selector(filterChanged:);
+    self.environmentFilter.autoresizingMask = NSViewMinYMargin;
     [content addSubview:self.environmentFilter];
 
     self.bookmarksOnlyButton =
@@ -1292,6 +1392,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
                              target:self
                              action:@selector(filterChanged:)];
     self.bookmarksOnlyButton.frame = NSMakeRect(672, 607, 102, 24);
+    self.bookmarksOnlyButton.autoresizingMask = NSViewMinYMargin;
     [content addSubview:self.bookmarksOnlyButton];
 
     self.savedSearches =
@@ -1299,6 +1400,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
                                   pullsDown:NO];
     self.savedSearches.target = self;
     self.savedSearches.action = @selector(selectSavedSearch:);
+    self.savedSearches.autoresizingMask = NSViewMinYMargin;
     [content addSubview:self.savedSearches];
     self.saveSearchButton =
         [NSButton buttonWithTitle:@"Save"
@@ -1306,6 +1408,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
                            action:@selector(saveCurrentSearch:)];
     self.saveSearchButton.frame = NSMakeRect(936, 605, 66, 28);
     self.saveSearchButton.controlSize = NSControlSizeSmall;
+    self.saveSearchButton.autoresizingMask = NSViewMinYMargin;
     [content addSubview:self.saveSearchButton];
 
     self.resultCountLabel = [NSTextField labelWithString:@""];
@@ -1316,6 +1419,8 @@ static NSString *TerminalLedgerCSVCell(id value) {
     self.resultCountLabel.textColor = self.theme.statusBarForeground;
     self.resultCountLabel.alignment = NSTextAlignmentRight;
     self.resultCountLabel.frame = NSMakeRect(1008, 609, 94, 18);
+    self.resultCountLabel.autoresizingMask =
+        NSViewMinXMargin | NSViewMinYMargin;
     [content addSubview:self.resultCountLabel];
 
     NSTextField *privacy = [NSTextField labelWithString:
@@ -1327,6 +1432,8 @@ static NSString *TerminalLedgerCSVCell(id value) {
     privacy.textColor = self.theme.ansiColors[6];
     privacy.frame = NSMakeRect(600, 582, 502, 18);
     privacy.alignment = NSTextAlignmentRight;
+    privacy.autoresizingMask =
+        NSViewMinXMargin | NSViewMinYMargin;
     [content addSubview:privacy];
     [self reloadSavedSearches];
 
@@ -1336,6 +1443,8 @@ static NSString *TerminalLedgerCSVCell(id value) {
     tableScroll.borderType = NSBezelBorder;
     tableScroll.drawsBackground = YES;
     tableScroll.backgroundColor = self.theme.terminalBackground;
+    tableScroll.autoresizingMask =
+        NSViewWidthSizable | NSViewHeightSizable;
     self.tableView = [[NSTableView alloc] initWithFrame:tableScroll.bounds];
     self.tableView.delegate = self;
     self.tableView.dataSource = self;
@@ -1366,6 +1475,8 @@ static NSString *TerminalLedgerCSVCell(id value) {
         [[NSScrollView alloc] initWithFrame:NSMakeRect(612, 84, 490, 492)];
     detailScroll.hasVerticalScroller = YES;
     detailScroll.borderType = NSBezelBorder;
+    detailScroll.autoresizingMask =
+        NSViewMinXMargin | NSViewHeightSizable;
     self.detailView = [[NSTextView alloc] initWithFrame:detailScroll.bounds];
     self.detailView.editable = NO;
     self.detailView.selectable = YES;
@@ -1416,6 +1527,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
                                          action:@selector(clearHistory:)];
     clear.frame = NSMakeRect(970, 30, 132, 32);
     clear.contentTintColor = self.theme.ansiColors[1];
+    clear.autoresizingMask = NSViewMinXMargin;
     [content addSubview:clear];
     [self reload];
 }

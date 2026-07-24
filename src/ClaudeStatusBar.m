@@ -3,8 +3,15 @@
 #import "ClaudeProfile.h"
 #import "TerminalTheme.h"
 
+#import <math.h>
+
 static NSTimeInterval const ClaudeUsageRefreshInterval = 5.0 * 60.0;
 static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
+
+static double ClaudeUsageClampedPercent(double percent) {
+    if (!isfinite(percent)) return 0;
+    return MIN(100.0, MAX(0.0, percent));
+}
 
 @interface ClaudeStatusBar ()
 @property(nonatomic, copy, nullable) NSString *claudeExecutable;
@@ -25,6 +32,12 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
 @property(nonatomic, strong, nullable) NSTextField *usageWindowAccountLabel;
 @property(nonatomic, strong, nullable) NSTextField *usageWindowUsageLabel;
 @property(nonatomic, strong, nullable) NSTextField *usageWindowAccountsLabel;
+@property(nonatomic, strong, nullable) NSPopUpButton *usageWindowProfilePopup;
+@property(nonatomic, strong, nullable) NSButton *usageWindowSignInButton;
+@property(nonatomic, strong, nullable) NSButton *usageWindowRemoveButton;
++ (nullable NSNumber *)nextResetTimestamp:(nullable NSNumber *)timestamp
+                                   period:(NSTimeInterval)period
+                                   rolled:(BOOL *)rolled;
 @end
 
 @implementation ClaudeStatusBar
@@ -200,7 +213,7 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
                         backing:NSBackingStoreBuffered
                           defer:NO];
         window.title = @"TerminalDB — Claude Code Account & Usage";
-        window.contentMinSize = NSMakeSize(760, 500);
+        window.contentMinSize = NSMakeSize(920, 570);
         window.backgroundColor = self.theme.terminalBackground;
         NSView *content = window.contentView;
         content.wantsLayer = YES;
@@ -244,9 +257,35 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
                          size:14
                        weight:NSFontWeightSemibold
                         color:self.theme.terminalForeground
-                        frame:NSMakeRect(18, 18, 824, 68)];
+                        frame:NSMakeRect(18, 18, 550, 68)];
         [accountBox.contentView
             addSubview:self.usageWindowAccountLabel];
+        self.usageWindowProfilePopup = [[NSPopUpButton alloc]
+            initWithFrame:NSMakeRect(582, 56, 260, 28)
+                pullsDown:NO];
+        self.usageWindowProfilePopup.target = self;
+        self.usageWindowProfilePopup.action =
+            @selector(selectProfileFromUsageWindow:);
+        [accountBox.contentView
+            addSubview:self.usageWindowProfilePopup];
+        self.usageWindowSignInButton =
+            [NSButton buttonWithTitle:@"Sign In…"
+                               target:self
+                               action:@selector(signInFromStatusMenu:)];
+        self.usageWindowSignInButton.frame =
+            NSMakeRect(582, 16, 122, 30);
+        [accountBox.contentView
+            addSubview:self.usageWindowSignInButton];
+        self.usageWindowRemoveButton =
+            [NSButton buttonWithTitle:@"Remove…"
+                               target:self
+                               action:@selector(removeProfileFromUsageWindow:)];
+        self.usageWindowRemoveButton.frame =
+            NSMakeRect(712, 16, 130, 30);
+        self.usageWindowRemoveButton.contentTintColor =
+            self.theme.ansiColors[1];
+        [accountBox.contentView
+            addSubview:self.usageWindowRemoveButton];
 
         NSBox *usageBox =
             [[NSBox alloc] initWithFrame:NSMakeRect(28, 220, 864, 106)];
@@ -354,22 +393,64 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
         @"%@\n%@", usage, resetDetails];
 
     NSMutableArray<NSString *> *accounts = [NSMutableArray array];
+    [self.usageWindowProfilePopup removeAllItems];
     for (ClaudeProfile *profile in self.profileManager.profiles) {
         BOOL selected = [profile.identifier
             isEqualToString:self.selectedProfile.identifier];
+        [self.usageWindowProfilePopup
+            addItemWithTitle:[self displayTitleForProfile:profile]];
+        self.usageWindowProfilePopup.lastItem.representedObject =
+            profile.identifier;
         [accounts addObject:[NSString stringWithFormat:@"%@  %@",
             selected ? @"✓" : @" ",
             [self displayTitleForProfile:profile]]];
     }
+    if (self.selectedProfile != nil) {
+        for (NSMenuItem *item in
+                self.usageWindowProfilePopup.itemArray) {
+            if ([item.representedObject
+                    isEqualToString:self.selectedProfile.identifier]) {
+                [self.usageWindowProfilePopup selectItem:item];
+                break;
+            }
+        }
+    }
+    self.usageWindowProfilePopup.enabled =
+        self.profileManager.profiles.count > 0;
+    self.usageWindowRemoveButton.enabled = self.selectedProfile != nil;
+    self.usageWindowSignInButton.hidden =
+        self.selectedProfile == nil ||
+        !self.accountStatusKnown ||
+        self.accountIsLoggedIn;
     self.usageWindowAccountsLabel.stringValue = accounts.count > 0
         ? [accounts componentsJoinedByString:@"\n"]
         : @"No accounts yet. Add an account to track subscription usage.";
+}
+
+- (void)selectProfileFromUsageWindow:(NSPopUpButton *)sender {
+    NSString *identifier =
+        [sender.selectedItem.representedObject
+            isKindOfClass:NSString.class]
+            ? sender.selectedItem.representedObject
+            : nil;
+    ClaudeProfile *profile =
+        [self.profileManager profileWithIdentifier:identifier];
+    if (profile != nil) {
+        [self selectProfile:profile];
+        [self.delegate claudeStatusBar:self didSelectProfile:profile];
+    }
+}
+
+- (void)removeProfileFromUsageWindow:(id)sender {
+    (void)sender;
+    [self.delegate claudeStatusBarDidRequestRemoveProfile:self];
 }
 
 - (void)selectProfileFromStatusMenu:(NSMenuItem *)sender {
     ClaudeProfile *profile =
         [self.profileManager profileWithIdentifier:sender.representedObject];
     if (profile == nil) return;
+    [self selectProfile:profile];
     [self.delegate claudeStatusBar:self didSelectProfile:profile];
 }
 
@@ -639,7 +720,6 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
     }
 
     NSDictionary *status = nil;
-    NSString *sourcePath = nil;
     NSDate *sourceModifiedAt = nil;
     for (NSString *candidate in
             @[profile.statusCachePath, profile.statusLineCachePath]) {
@@ -666,7 +746,6 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
                   [modifiedAt compare:sourceModifiedAt] ==
                       NSOrderedDescending))) {
                 status = candidateStatus;
-                sourcePath = candidate;
                 sourceModifiedAt = modifiedAt;
             }
         }
@@ -709,8 +788,13 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
         NSFontAttributeName : self.usageLabel.font,
         NSForegroundColorAttributeName : self.theme.statusBarActiveForeground,
     };
+    BOOL sourceIsStale =
+        sourceModifiedAt != nil &&
+        -sourceModifiedAt.timeIntervalSinceNow >
+            ClaudeUsageRefreshInterval * 2.0;
     [styled appendAttributedString:[[NSAttributedString alloc]
-        initWithString:@"Usage  " attributes:muted]];
+        initWithString:sourceIsStale ? @"Usage cached  " : @"Usage  "
+            attributes:muted]];
     if (fivePercent != nil) {
         [styled appendAttributedString:
             [self usageWindowSegment:@"5h"
@@ -744,15 +828,17 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
     [self appendResetDescription:@"Fable 5 weekly"
                           window:fableWeekly
                               to:details];
-    NSDictionary *attributes = [[NSFileManager defaultManager]
-        attributesOfItemAtPath:sourcePath error:nil];
-    NSDate *updated = attributes[NSFileModificationDate];
+    NSDate *updated = sourceModifiedAt;
     if (updated != nil) {
         NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
         formatter.timeStyle = NSDateFormatterShortStyle;
         formatter.dateStyle = NSDateFormatterNoStyle;
         [details addObject:[NSString stringWithFormat:@"Updated %@",
             [formatter stringFromDate:updated]]];
+        if (sourceIsStale) {
+            [details addObject:
+                @"Cached usage is stale; TerminalDB is requesting a refresh."];
+        }
     }
     [details addObject:@"Refreshes every 5 minutes"];
     self.usageLabel.toolTip = [details componentsJoinedByString:@"\n"];
@@ -905,7 +991,9 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
         if (utilization == nil) continue;
 
         NSMutableDictionary *normalizedWindow =
-            [@{@"used_percentage" : utilization} mutableCopy];
+            [@{@"used_percentage" :
+                @(ClaudeUsageClampedPercent(utilization.doubleValue))}
+                mutableCopy];
         NSNumber *resetTimestamp =
             [self timestampFromUsageResetValue:window[@"resets_at"]];
         if (resetTimestamp != nil) {
@@ -942,7 +1030,8 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
         if (percent == nil) continue;
 
         NSMutableDictionary *normalizedWindow =
-            [@{@"used_percentage" : percent,
+            [@{@"used_percentage" :
+                   @(ClaudeUsageClampedPercent(percent.doubleValue)),
                @"display_name" : @"Fable 5"} mutableCopy];
         NSNumber *resetTimestamp =
             [self timestampFromUsageResetValue:limit[@"resets_at"]];
@@ -998,6 +1087,15 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
     NSNumber *sevenDayReset = limits[@"seven_day"][@"resets_at"];
     NSNumber *pastReset =
         @([NSDate date].timeIntervalSince1970 - 60.0);
+    BOOL rolled = NO;
+    NSNumber *nextReset =
+        [self nextResetTimestamp:pastReset
+                         period:5.0 * 60.0 * 60.0
+                         rolled:&rolled];
+    NSDictionary *clamped = [self normalizedStatusFromUsage:@{
+        @"five_hour" : @{@"utilization" : @140},
+        @"seven_day" : @{@"utilization" : @(-5)},
+    }];
     return [limits[@"five_hour"][@"used_percentage"] isEqual:@12] &&
         [fiveHourReset isKindOfClass:NSNumber.class] &&
         [limits[@"seven_day"][@"used_percentage"] isEqual:@34] &&
@@ -1007,7 +1105,13 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
         [self compactResetDateTimeFromTimestamp:fiveHourReset].length > 0 &&
         [self compactResetDateTimeFromTimestamp:sevenDayReset].length > 0 &&
         [self compactResetDateTimeFromTimestamp:pastReset] == nil &&
-        [self compactDateTimeFromTimestamp:pastReset].length > 0;
+        [self compactDateTimeFromTimestamp:pastReset].length > 0 &&
+        rolled &&
+        [nextReset doubleValue] > [NSDate date].timeIntervalSince1970 &&
+        [clamped[@"rate_limits"][@"five_hour"][@"used_percentage"]
+            isEqual:@100] &&
+        [clamped[@"rate_limits"][@"seven_day"][@"used_percentage"]
+            isEqual:@0];
 }
 
 + (nullable NSNumber *)timestampFromUsageResetValue:(id)value {
@@ -1028,6 +1132,7 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
 
 - (NSAttributedString *)usageSegment:(NSString *)label
                              percent:(double)percent {
+    percent = ClaudeUsageClampedPercent(percent);
     NSColor *color = percent >= 80
         ? self.theme.ansiColors[1]
         : (percent >= 50
@@ -1039,6 +1144,22 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
                 NSFontAttributeName : self.usageLabel.font,
                 NSForegroundColorAttributeName : color,
             }];
+}
+
++ (nullable NSNumber *)nextResetTimestamp:(nullable NSNumber *)timestamp
+                                   period:(NSTimeInterval)period
+                                   rolled:(BOOL *)rolled {
+    if (rolled != NULL) *rolled = NO;
+    if (![timestamp isKindOfClass:NSNumber.class] || period <= 0) return nil;
+    NSTimeInterval value = timestamp.doubleValue;
+    NSTimeInterval now = [NSDate date].timeIntervalSince1970;
+    if (!isfinite(value)) return nil;
+    if (value <= now + 1.0) {
+        NSTimeInterval intervals = floor((now - value) / period) + 1.0;
+        value += MAX(1.0, intervals) * period;
+        if (rolled != NULL) *rolled = YES;
+    }
+    return @(value);
 }
 
 + (nullable NSString *)compactResetDateTimeFromTimestamp:
@@ -1069,28 +1190,18 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
     NSNumber *timestamp = [window[@"resets_at"] isKindOfClass:NSNumber.class]
         ? window[@"resets_at"]
         : nil;
-    if (timestamp != nil) {
-        NSDate *reset =
-            [NSDate dateWithTimeIntervalSince1970:timestamp.doubleValue];
-        if (reset.timeIntervalSinceNow <= 1.0) {
-            NSString *ended =
-                [ClaudeStatusBar compactDateTimeFromTimestamp:timestamp]
-                    ?: @"earlier";
-            [segment appendAttributedString:[[NSAttributedString alloc]
-                initWithString:
-                    [NSString stringWithFormat:@" · ended %@", ended]
-                    attributes:@{
-                        NSFontAttributeName : self.usageLabel.font,
-                        NSForegroundColorAttributeName :
-                            self.theme.statusBarActiveForeground,
-                    }]];
-            return segment;
-        }
-    }
+    NSTimeInterval period = [label isEqualToString:@"5h"]
+        ? 5.0 * 60.0 * 60.0
+        : 7.0 * 24.0 * 60.0 * 60.0;
+    BOOL rolled = NO;
+    timestamp = [ClaudeStatusBar nextResetTimestamp:timestamp
+                                             period:period
+                                             rolled:&rolled];
     NSString *resetDateTime =
         [ClaudeStatusBar compactResetDateTimeFromTimestamp:timestamp] ?: @"—";
     [segment appendAttributedString:[[NSAttributedString alloc]
-        initWithString:[NSString stringWithFormat:@" ↻ %@", resetDateTime]
+        initWithString:[NSString stringWithFormat:@" %@ %@",
+            rolled ? @"≈" : @"↻", resetDateTime]
             attributes:@{
                 NSFontAttributeName : self.usageLabel.font,
                 NSForegroundColorAttributeName :
@@ -1110,16 +1221,21 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
             @"%@ reset is not currently reported", label]];
         return;
     }
+    NSTimeInterval period = [label hasPrefix:@"5-hour"]
+        ? 5.0 * 60.0 * 60.0
+        : 7.0 * 24.0 * 60.0 * 60.0;
+    BOOL rolled = NO;
+    NSNumber *effective =
+        [ClaudeStatusBar nextResetTimestamp:timestamp
+                                     period:period
+                                     rolled:&rolled];
     NSString *dateTime =
-        [ClaudeStatusBar compactResetDateTimeFromTimestamp:timestamp];
-    if (dateTime.length == 0) {
-        [descriptions addObject:[NSString stringWithFormat:
-            @"%@ reported reset has passed; awaiting refreshed usage",
-            label]];
-        return;
-    }
-    [descriptions addObject:[NSString stringWithFormat:@"%@ resets %@",
-        label, dateTime]];
+        [ClaudeStatusBar compactResetDateTimeFromTimestamp:effective];
+    [descriptions addObject:[NSString stringWithFormat:
+        rolled
+            ? @"%@ next reset is estimated at %@ from the last reported cycle"
+            : @"%@ resets %@",
+        label, dateTime ?: @"—"]];
 }
 
 @end

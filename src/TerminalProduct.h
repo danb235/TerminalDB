@@ -21,6 +21,7 @@ typedef NS_ENUM(NSInteger, TerminalProductSection) {
 @property(nonatomic, copy, readonly) NSArray<NSDictionary *> *monitors;
 
 + (instancetype)sharedStore;
++ (instancetype)ephemeralStoreForTesting;
 - (NSDictionary *)saveRunbookNamed:(NSString *)name
                            command:(NSString *)command
                          directory:(NSString *)directory;
@@ -66,11 +67,14 @@ typedef NS_ENUM(NSInteger, TerminalProductSection) {
 @property(nonatomic, copy, nullable) NSDictionary *
     (^workspaceSnapshotProvider)(void);
 
++ (BOOL)runWindowSelfTestsWithTheme:(TerminalTheme *)theme
+                               store:(TerminalProductStore *)store;
 - (instancetype)initWithTheme:(TerminalTheme *)theme
                          store:(TerminalProductStore *)store;
 - (void)showSection:(TerminalProductSection)section
           directory:(NSString *)directory
        accountLabel:(nullable NSString *)accountLabel;
+- (void)promptToSaveCurrentWorkspace;
 - (void)refresh;
 
 @end

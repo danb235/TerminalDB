@@ -11,6 +11,7 @@ extern NSNotificationName const ClaudeAPIConfigurationDidChangeNotification;
 @property(nonatomic, copy, readonly) NSArray<NSDictionary *> *models;
 @property(nonatomic, copy, readonly, nullable) NSString *selectedModelID;
 
++ (BOOL)runConfigurationSelfTests;
 - (nullable NSString *)apiKey;
 - (BOOL)saveAPIKey:(NSString *)apiKey error:(NSError **)error;
 - (BOOL)removeAPIKeyWithError:(NSError **)error;

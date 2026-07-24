@@ -10,6 +10,17 @@
 
 @implementation TerminalPermissionCenter
 
+static BOOL TerminalCommandMatches(NSString *command, NSString *pattern) {
+    NSRegularExpression *expression =
+        [NSRegularExpression regularExpressionWithPattern:pattern
+                                                  options:0
+                                                    error:nil];
+    if (expression == nil) return NO;
+    return [expression firstMatchInString:command ?: @""
+                                  options:0
+                                    range:NSMakeRange(0, command.length)] != nil;
+}
+
 - (instancetype)initWithTheme:(TerminalTheme *)theme {
     self = [super init];
     if (self == nil) return nil;
@@ -46,33 +57,36 @@
         [environmentUpper isEqualToString:@"PROD"]) {
         return TerminalCommandRiskProduction;
     }
-    NSArray<NSString *> *destructive = @[
-        @"rm ", @"rm\t", @"rmdir ", @"unlink ", @"diskutil erase",
-        @"mkfs", @"dd ", @"git reset --hard", @"git clean -f",
-        @"drop database", @"drop table", @"truncate table",
-        @"kubectl delete", @"terraform destroy", @"sudo ",
-        @"shutdown", @"reboot", @"kill -9",
+    NSArray<NSString *> *destructivePatterns = @[
+        // Match command names at the start of any shell segment, including
+        // absolute executable paths, env assignments, sudo, and runbooks.
+        @"(?im)(?:^|[\\n;&|])\\s*(?:env\\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=[^\\s]+\\s+)*(?:sudo\\s+)?(?:/[^\\s;&|]+/)?(?:rm|rmdir|unlink|shred|mkfs(?:\\.[^\\s]+)?|dd|truncate|shutdown|reboot|halt|poweroff|pkill|killall)\\b",
+        @"(?im)(?:^|[\\n;&|])\\s*(?:sudo\\s+)?diskutil\\s+(?:erase|partition|apfs\\s+delete)\\b",
+        @"(?im)(?:^|[\\n;&|])\\s*(?:/[^\\s;&|]+/)?find\\b[^\\n;&|]*(?:\\s-delete\\b|\\s-exec\\s+(?:/[^\\s;&|]+/)?rm\\b)",
+        @"(?im)(?:^|[\\n;&|])\\s*(?:/[^\\s;&|]+/)?git\\b(?:\\s+-C\\s+[^\\s;&|]+)*\\s+(?:reset\\s+--hard\\b|clean\\s+-[^\\s;&|]*f)",
+        @"(?im)\\b(?:drop\\s+(?:database|table)|truncate\\s+table|kubectl\\s+delete|terraform\\s+destroy)\\b",
+        @"(?im)(?:^|[\\n;&|])\\s*sudo\\b",
     ];
-    for (NSString *needle in destructive) {
-        if ([lower hasPrefix:needle] ||
-            [lower containsString:[@" " stringByAppendingString:needle]]) {
+    for (NSString *pattern in destructivePatterns) {
+        if (TerminalCommandMatches(lower, pattern)) {
             return TerminalCommandRiskDestructive;
         }
     }
-    NSArray<NSString *> *writes = @[
-        @"mv ", @"cp ", @"mkdir ", @"touch ", @"chmod ", @"chown ",
-        @"git commit", @"git push", @"git merge", @"git rebase",
-        @"git apply", @"/usr/bin/git apply", @"patch ", @"/usr/bin/patch ",
-        @"npm install", @"brew install", @"pip install", @"cargo install",
-        @"kubectl apply", @"kubectl patch", @"terraform apply",
-        @"docker run", @"docker compose up", @"sed -i", @"tee ",
+    NSArray<NSString *> *writePatterns = @[
+        @"(?im)(?:^|[\\n;&|])\\s*(?:env\\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=[^\\s]+\\s+)*(?:/[^\\s;&|]+/)?(?:mv|cp|mkdir|touch|chmod|chown|patch|tee)\\b",
+        @"(?im)(?:^|[\\n;&|])\\s*(?:/[^\\s;&|]+/)?git\\b(?:\\s+-C\\s+[^\\s;&|]+)*\\s+(?:commit|push|merge|rebase|apply)\\b",
+        @"(?im)\\b(?:npm|pnpm|yarn|brew|pip3?|cargo)\\s+install\\b",
+        @"(?im)\\b(?:kubectl\\s+(?:apply|patch)|terraform\\s+apply|docker\\s+(?:run|compose\\s+up)|sed\\s+[^\\n;&|]*-i)\\b",
     ];
-    for (NSString *needle in writes) {
-        if ([lower hasPrefix:needle] ||
-            [lower containsString:[@" " stringByAppendingString:needle]] ||
-            [lower containsString:@">"]) {
+    for (NSString *pattern in writePatterns) {
+        if (TerminalCommandMatches(lower, pattern)) {
             return TerminalCommandRiskWrite;
         }
+    }
+    if (TerminalCommandMatches(
+            lower,
+            @"(?m)(?:^|[^>])(?:>>?|[0-9]+>)(?!&[0-9])")) {
+        return TerminalCommandRiskWrite;
     }
     NSString *validationError = nil;
     if ([TerminalInspector validateReadOnlyCommand:command
@@ -288,7 +302,29 @@
                      environment:@"PRODUCTION"] ==
                 TerminalCommandRiskProduction &&
            [self riskForCommand:@"git push"
-                     environment:@"LOCAL"] == TerminalCommandRiskWrite;
+                     environment:@"LOCAL"] == TerminalCommandRiskWrite &&
+           [self riskForCommand:@"/bin/rm -rf build"
+                     environment:@"LOCAL"] ==
+                TerminalCommandRiskDestructive &&
+           [self riskForCommand:@"find . -type f -delete"
+                     environment:@"LOCAL"] ==
+                TerminalCommandRiskDestructive &&
+           [self riskForCommand:@"git -C repo reset --hard HEAD~1"
+                     environment:@"LOCAL"] ==
+                TerminalCommandRiskDestructive &&
+           [self riskForCommand:@"pwd\n/bin/rm -rf build"
+                     environment:@"LOCAL"] ==
+                TerminalCommandRiskDestructive &&
+           [self riskForCommand:@"truncate -s 0 database.sqlite"
+                     environment:@"LOCAL"] ==
+                TerminalCommandRiskDestructive &&
+           [self riskForCommand:@"echo hello > report.txt"
+                     environment:@"LOCAL"] == TerminalCommandRiskWrite &&
+           [self riskForCommand:@"echo hello 2>&1"
+                     environment:@"LOCAL"] != TerminalCommandRiskWrite &&
+           [self riskForCommand:@"printf 'rm -rf is dangerous\\n'"
+                     environment:@"LOCAL"] !=
+                TerminalCommandRiskDestructive;
 }
 
 @end

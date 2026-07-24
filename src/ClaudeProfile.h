@@ -24,6 +24,7 @@ extern NSNotificationName const ClaudeProfilesDidChangeNotification;
 @property(nonatomic, copy, readonly) NSArray<ClaudeProfile *> *profiles;
 @property(nonatomic, strong, readonly, nullable) ClaudeProfile *lastSelectedProfile;
 
++ (BOOL)runStorageSelfTests;
 - (nullable ClaudeProfile *)profileWithIdentifier:(NSString *)identifier;
 - (nullable ClaudeProfile *)createProfileWithLabel:(NSString *)label
                                              error:(NSError **)error;

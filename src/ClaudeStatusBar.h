@@ -10,10 +10,11 @@ NS_ASSUME_NONNULL_BEGIN
 @protocol ClaudeStatusBarDelegate <NSObject>
 
 - (void)claudeStatusBar:(ClaudeStatusBar *)statusBar
-       didSelectProfile:(ClaudeProfile *)profile;
+       didSelectProfile:(nullable ClaudeProfile *)profile;
 - (void)claudeStatusBarDidRequestAddProfile:(ClaudeStatusBar *)statusBar;
 - (void)claudeStatusBar:(ClaudeStatusBar *)statusBar
  didRequestLoginProfile:(ClaudeProfile *)profile;
+- (void)claudeStatusBarDidRequestRemoveProfile:(ClaudeStatusBar *)statusBar;
 
 @end
 

@@ -8,6 +8,18 @@ NSNotificationName const ClaudeProfilesDidChangeNotification =
 static NSString *const ClaudeProfileStoreErrorDomain =
     @"com.terminaldb.app.ClaudeProfileStore";
 
+static BOOL ClaudeProfileIdentifierIsSafe(NSString *identifier) {
+    if (![identifier isKindOfClass:NSString.class] ||
+        identifier.length == 0 || identifier.length > 64) {
+        return NO;
+    }
+    NSCharacterSet *allowed = [NSCharacterSet
+        characterSetWithCharactersInString:
+            @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"];
+    return [identifier rangeOfCharacterFromSet:allowed.invertedSet].location ==
+        NSNotFound;
+}
+
 @interface ClaudeProfile ()
 @property(nonatomic, copy, readwrite) NSString *identifier;
 @property(nonatomic, copy, readwrite) NSString *label;
@@ -62,6 +74,19 @@ static NSString *const ClaudeProfileStoreErrorDomain =
 
 @implementation ClaudeProfileManager
 
++ (BOOL)runStorageSelfTests {
+    return ClaudeProfileIdentifierIsSafe(
+               @"01234567-89ab-cdef-0123-456789abcdef") &&
+        ClaudeProfileIdentifierIsSafe(@"work-profile-2") &&
+        !ClaudeProfileIdentifierIsSafe(@"../../outside") &&
+        !ClaudeProfileIdentifierIsSafe(@"profile/name") &&
+        !ClaudeProfileIdentifierIsSafe(@"") &&
+        !ClaudeProfileIdentifierIsSafe(
+            [@"x" stringByPaddingToLength:65
+                               withString:@"x"
+                          startingAtIndex:0]);
+}
+
 - (instancetype)init {
     self = [super init];
     if (self == nil) return nil;
@@ -106,6 +131,7 @@ static NSString *const ClaudeProfileStoreErrorDomain =
             : @[];
 
     NSMutableArray<ClaudeProfile *> *loaded = [NSMutableArray array];
+    NSMutableSet<NSString *> *seenIdentifiers = [NSMutableSet set];
     for (NSDictionary *saved in savedProfiles) {
         if (![saved isKindOfClass:NSDictionary.class]) continue;
         NSString *identifier =
@@ -114,7 +140,12 @@ static NSString *const ClaudeProfileStoreErrorDomain =
             [saved[@"label"] isKindOfClass:NSString.class]
                 ? saved[@"label"]
                 : nil;
-        if (identifier.length == 0 || label.length == 0) continue;
+        if (!ClaudeProfileIdentifierIsSafe(identifier) ||
+            label.length == 0 ||
+            [seenIdentifiers containsObject:identifier]) {
+            continue;
+        }
+        [seenIdentifiers addObject:identifier];
 
         ClaudeProfile *profile = [[ClaudeProfile alloc] init];
         profile.identifier = identifier;
