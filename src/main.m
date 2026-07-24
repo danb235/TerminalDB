@@ -2072,6 +2072,15 @@ static int TerminalDBExitStatus = 0;
     self.assistantDirectory = @"";
     self.assistantSystemPrompt = @"";
     self.assistantToolIterations = 0;
+    BOOL backgroundUIQA =
+        [NSProcessInfo.processInfo.arguments
+            containsObject:@"--background-tab-qa"] ||
+        [NSProcessInfo.processInfo.arguments containsObject:@"--visual-qa"];
+    if (backgroundUIQA) {
+        [self.assistantView
+            resetConversationWithModelName:@"QA model"];
+        return;
+    }
     NSString *apiKey = self.apiConfiguration.apiKey;
     NSString *model = self.apiConfiguration.selectedModelID;
     if (apiKey.length == 0 || model.length == 0) {

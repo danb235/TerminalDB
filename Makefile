@@ -13,11 +13,11 @@ SCRIPT_RESOURCES := \
 	Resources/Scripts/claude-status-bridge.sh \
 	Resources/Scripts/claude-tab-state.sh
 
-.PHONY: all run test qa-tabs qa-claude-state clean
+.PHONY: all run test qa-tabs qa-claude-state qa-signature clean
 
 all: $(BIN)
 
-$(BIN): $(SOURCES) Info.plist $(FONT_RESOURCES) $(LICENSE_RESOURCES) $(SCRIPT_RESOURCES)
+$(BIN): $(SOURCES) Info.plist Makefile $(FONT_RESOURCES) $(LICENSE_RESOURCES) $(SCRIPT_RESOURCES)
 	mkdir -p $(APP)/Contents/MacOS
 	mkdir -p $(APP)/Contents/Resources/Fonts
 	mkdir -p $(APP)/Contents/Resources/Licenses
@@ -31,14 +31,28 @@ $(BIN): $(SOURCES) Info.plist $(FONT_RESOURCES) $(LICENSE_RESOURCES) $(SCRIPT_RE
 	clang -fobjc-arc -Wall -Wextra -framework AppKit -framework Foundation \
 		-framework Security \
 		$(SOURCES) -o $(BIN)
+	codesign --force --deep --sign - \
+		--identifier com.terminaldb.app \
+		--requirements '=designated => identifier "com.terminaldb.app"' \
+		$(APP)
 
 run: all
 	open $(APP)
 
 test: all
 	$(BIN) --self-test
+	$(MAKE) qa-signature
 	$(MAKE) qa-tabs
 	$(MAKE) qa-claude-state
+
+qa-signature: all
+	@codesign --verify --deep --strict $(APP)
+	@requirement="$$(codesign -dr - $(APP) 2>&1)"; \
+		printf '%s\n' "$$requirement"; \
+		case "$$requirement" in \
+			*'designated => identifier "com.terminaldb.app"'*) ;; \
+			*) exit 1 ;; \
+		esac
 
 qa-tabs: all
 	@output="$$($(BIN) --background-tab-qa 2>&1)"; \
