@@ -10,6 +10,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)claudeAssistantView:(ClaudeAssistantView *)view
        didChooseRunCommand:(NSString *)command;
 - (void)claudeAssistantView:(ClaudeAssistantView *)view
+       didRequestRunCommand:(NSString *)command;
+- (void)claudeAssistantView:(ClaudeAssistantView *)view
           didSubmitFollowUp:(NSString *)prompt;
 - (void)claudeAssistantViewDidRequestNewConversation:
     (ClaudeAssistantView *)view;
@@ -32,6 +34,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)showError:(NSString *)message settingsAvailable:(BOOL)settingsAvailable;
 - (void)setDraftPrompt:(NSString *)prompt;
 - (void)focusComposer;
+- (void)addContextItem:(NSDictionary *)item;
+- (void)setContextItems:(NSArray<NSDictionary *> *)items;
+- (NSArray<NSDictionary *> *)contextItems;
+- (NSString *)attachedContextForPrompt;
 + (NSArray<NSString *> *)commandsFromMarkdown:(NSString *)markdown;
 
 @end

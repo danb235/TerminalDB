@@ -4,9 +4,18 @@
 
 @interface ClaudeCommandButton : NSButton
 @property(nonatomic, copy) NSString *command;
+@property(nonatomic, copy) NSString *actionKind;
 @end
 
 @implementation ClaudeCommandButton
+@end
+
+@interface ClaudeContextButton : NSButton
+@property(nonatomic, copy) NSString *contextIdentifier;
+@property(nonatomic) BOOL removable;
+@end
+
+@implementation ClaudeContextButton
 @end
 
 @interface ClaudePassthroughTextField : NSTextField
@@ -58,6 +67,8 @@
 @property(nonatomic, strong) ClaudePromptTextView *followUpField;
 @property(nonatomic, strong) NSTextField *composerPlaceholder;
 @property(nonatomic, strong) NSTextField *contextLabel;
+@property(nonatomic, strong) NSMutableArray<NSDictionary *> *mutableContextItems;
+@property(nonatomic, copy) NSArray<ClaudeContextButton *> *contextButtons;
 @property(nonatomic, strong) NSButton *sendButton;
 @property(nonatomic, copy) NSArray<NSDictionary *> *conversationMessages;
 @property(nonatomic, copy) NSString *response;
@@ -68,6 +79,7 @@
 @property(nonatomic) BOOL working;
 - (void)installInlineCommandButtons;
 - (void)positionInlineCommandButtons;
+- (void)rebuildContextButtons;
 @end
 
 @implementation ClaudeAssistantView
@@ -81,6 +93,21 @@
     _modelName = @"Claude";
     _commandButtons = @[];
     _inlineCommandMarkers = [NSMutableArray array];
+    _mutableContextItems = [NSMutableArray arrayWithArray:@[
+        @{
+            @"id" : @"terminal-output",
+            @"label" : @"Output",
+            @"icon" : @"▣",
+            @"removable" : @NO,
+        },
+        @{
+            @"id" : @"current-directory",
+            @"label" : @"Directory",
+            @"icon" : @"⌂",
+            @"removable" : @NO,
+        },
+    ]];
+    _contextButtons = @[];
     self.wantsLayer = YES;
 
     _titleLabel = [self labelWithFont:
@@ -206,12 +233,13 @@
 
     _contextLabel = [self labelWithFont:
         [NSFont systemFontOfSize:10 weight:NSFontWeightRegular]];
-    _contextLabel.stringValue = @"▣ visible output   ⌂ current directory";
+    _contextLabel.stringValue = @"Context";
     _contextLabel.textColor = theme.ansiColors[6];
     _contextLabel.toolTip =
         @"Each message includes this tab’s current directory and visible "
          "terminal output.";
     [self addSubview:_contextLabel];
+    [self rebuildContextButtons];
 
     _sendButton = [[NSButton alloc] initWithFrame:NSZeroRect];
     _sendButton.title = @"↑";
@@ -314,8 +342,23 @@
         NSMakeRect(padding + 14, composerY + 12,
                    MAX(20, width - padding * 2 - 28), 20);
     self.contextLabel.frame =
-        NSMakeRect(padding + 12, composerY + 88,
-                   MAX(40, width - padding * 2 - 64), 16);
+        NSMakeRect(padding + 12, composerY + 88, 42, 16);
+    CGFloat contextX = padding + 56;
+    CGFloat contextMaxX = width - padding - 48;
+    for (ClaudeContextButton *button in self.contextButtons) {
+        CGFloat buttonWidth =
+            MIN(170, MAX(62, [button.title sizeWithAttributes:@{
+                NSFontAttributeName : button.font
+            }].width + 20));
+        if (contextX + buttonWidth > contextMaxX) {
+            button.hidden = YES;
+            continue;
+        }
+        button.hidden = NO;
+        button.frame =
+            NSMakeRect(contextX, composerY + 84, buttonWidth, 24);
+        contextX += buttonWidth + 6;
+    }
     self.sendButton.frame =
         NSMakeRect(width - padding - 40, composerY + 79, 30, 30);
     [self positionInlineCommandButtons];
@@ -353,6 +396,20 @@
         @"Ask about this terminal, or describe what you want…";
     self.sendButton.enabled = YES;
     self.working = NO;
+    [self setContextItems:@[
+        @{
+            @"id" : @"terminal-output",
+            @"label" : @"Output",
+            @"icon" : @"▣",
+            @"removable" : @NO,
+        },
+        @{
+            @"id" : @"current-directory",
+            @"label" : @"Directory",
+            @"icon" : @"⌂",
+            @"removable" : @NO,
+        },
+    ]];
     [self.progress stopAnimation:nil];
     [self removeCommandButtons];
     [self updateComposerPlaceholder];
@@ -435,6 +492,101 @@
     [self focusComposer];
 }
 
+- (NSArray<NSDictionary *> *)contextItems {
+    return [self.mutableContextItems copy];
+}
+
+- (void)setContextItems:(NSArray<NSDictionary *> *)items {
+    [self.mutableContextItems removeAllObjects];
+    for (NSDictionary *item in items) {
+        if (![item isKindOfClass:NSDictionary.class]) continue;
+        NSString *identifier = item[@"id"];
+        if (identifier.length == 0) continue;
+        [self.mutableContextItems addObject:[item copy]];
+    }
+    [self rebuildContextButtons];
+}
+
+- (void)addContextItem:(NSDictionary *)item {
+    NSString *identifier = item[@"id"];
+    if (identifier.length == 0) return;
+    NSIndexSet *matches = [self.mutableContextItems
+        indexesOfObjectsPassingTest:
+            ^BOOL(NSDictionary *candidate, NSUInteger index, BOOL *stop) {
+        (void)index;
+        (void)stop;
+        return [candidate[@"id"] isEqualToString:identifier];
+    }];
+    if (matches.count > 0) {
+        [self.mutableContextItems removeObjectsAtIndexes:matches];
+    }
+    [self.mutableContextItems addObject:[item copy]];
+    [self rebuildContextButtons];
+}
+
+- (NSString *)attachedContextForPrompt {
+    NSMutableArray<NSString *> *sections = [NSMutableArray array];
+    for (NSDictionary *item in self.mutableContextItems) {
+        NSString *payload = item[@"payload"];
+        if (payload.length == 0) continue;
+        NSString *label = item[@"label"] ?: @"Attached context";
+        [sections addObject:[NSString stringWithFormat:
+            @"[%@]\n%@", label, payload]];
+    }
+    return [sections componentsJoinedByString:@"\n\n"];
+}
+
+- (void)rebuildContextButtons {
+    for (ClaudeContextButton *button in self.contextButtons) {
+        [button removeFromSuperview];
+    }
+    NSMutableArray<ClaudeContextButton *> *buttons =
+        [NSMutableArray array];
+    for (NSDictionary *item in self.mutableContextItems) {
+        ClaudeContextButton *button =
+            [[ClaudeContextButton alloc] initWithFrame:NSZeroRect];
+        button.contextIdentifier = item[@"id"] ?: @"";
+        button.removable = [item[@"removable"] boolValue];
+        NSString *icon = item[@"icon"] ?: @"●";
+        NSString *label = item[@"label"] ?: @"Context";
+        button.title = button.removable
+            ? [NSString stringWithFormat:@"%@ %@  ×", icon, label]
+            : [NSString stringWithFormat:@"%@ %@", icon, label];
+        button.font =
+            [NSFont systemFontOfSize:10 weight:NSFontWeightMedium];
+        button.bezelStyle = NSBezelStyleInline;
+        button.controlSize = NSControlSizeSmall;
+        button.contentTintColor = self.theme.ansiColors[6];
+        button.toolTip = item[@"detail"] ?: label;
+        button.target = self;
+        button.action = @selector(contextButtonSelected:);
+        [button setAccessibilityLabel:
+            button.removable
+                ? [NSString stringWithFormat:@"Remove context: %@", label]
+                : [NSString stringWithFormat:@"Included context: %@", label]];
+        [self addSubview:button];
+        [buttons addObject:button];
+    }
+    self.contextButtons = buttons;
+    [self setNeedsLayout:YES];
+}
+
+- (void)contextButtonSelected:(ClaudeContextButton *)sender {
+    if (!sender.removable) return;
+    NSIndexSet *matches = [self.mutableContextItems
+        indexesOfObjectsPassingTest:
+            ^BOOL(NSDictionary *candidate, NSUInteger index, BOOL *stop) {
+        (void)index;
+        (void)stop;
+        return [candidate[@"id"]
+            isEqualToString:sender.contextIdentifier];
+    }];
+    if (matches.count > 0) {
+        [self.mutableContextItems removeObjectsAtIndexes:matches];
+        [self rebuildContextButtons];
+    }
+}
+
 - (void)focusComposer {
     if (self.hidden || self.window == nil) return;
     __weak typeof(self) weakSelf = self;
@@ -470,8 +622,8 @@
                                     to:(NSMutableAttributedString *)rendered {
     if (command.length == 0) return;
     NSTextAttachment *attachment = [[NSTextAttachment alloc] init];
-    attachment.image = [[NSImage alloc] initWithSize:NSMakeSize(62, 22)];
-    attachment.bounds = NSMakeRect(0, -5, 62, 22);
+    attachment.image = [[NSImage alloc] initWithSize:NSMakeSize(132, 22)];
+    attachment.bounds = NSMakeRect(0, -5, 132, 22);
     NSUInteger location = rendered.length;
     [rendered appendAttributedString:
         [NSAttributedString attributedStringWithAttachment:attachment]];
@@ -783,23 +935,43 @@
                 : @"";
         if (command.length == 0) continue;
 
-        ClaudeCommandButton *button =
+        ClaudeCommandButton *paste =
             [[ClaudeCommandButton alloc] initWithFrame:NSZeroRect];
-        button.title = @"Paste ↗";
-        button.bezelStyle = NSBezelStyleRounded;
-        button.controlSize = NSControlSizeMini;
-        button.alignment = NSTextAlignmentCenter;
-        button.font =
+        paste.title = @"Paste";
+        paste.bezelStyle = NSBezelStyleRounded;
+        paste.controlSize = NSControlSizeMini;
+        paste.alignment = NSTextAlignmentCenter;
+        paste.font =
             [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold];
-        button.contentTintColor = self.theme.ansiColors[2];
-        button.target = self;
-        button.action = @selector(commandSelected:);
-        button.command = command;
-        button.toolTip = [NSString stringWithFormat:
+        paste.contentTintColor = self.theme.ansiColors[6];
+        paste.target = self;
+        paste.action = @selector(commandSelected:);
+        paste.command = command;
+        paste.actionKind = @"paste";
+        paste.toolTip = [NSString stringWithFormat:
             @"Paste into the active terminal without running it:\n%@", command];
-        [button setAccessibilityLabel:@"Paste command into terminal"];
-        [self.responseTextView addSubview:button];
-        [buttons addObject:button];
+        [paste setAccessibilityLabel:@"Paste command into terminal"];
+        [self.responseTextView addSubview:paste];
+        [buttons addObject:paste];
+
+        ClaudeCommandButton *run =
+            [[ClaudeCommandButton alloc] initWithFrame:NSZeroRect];
+        run.title = @"Run…";
+        run.bezelStyle = NSBezelStyleRounded;
+        run.controlSize = NSControlSizeMini;
+        run.alignment = NSTextAlignmentCenter;
+        run.font = [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold];
+        run.contentTintColor = self.theme.ansiColors[2];
+        run.target = self;
+        run.action = @selector(commandSelected:);
+        run.command = command;
+        run.actionKind = @"run";
+        run.toolTip = [NSString stringWithFormat:
+            @"Review permissions, target, and risk before running:\n%@",
+            command];
+        [run setAccessibilityLabel:@"Review and run command"];
+        [self.responseTextView addSubview:run];
+        [buttons addObject:run];
     }
     self.commandButtons = buttons;
     [self positionInlineCommandButtons];
@@ -811,8 +983,8 @@
     if (layoutManager == nil || textContainer == nil) return;
     [layoutManager ensureLayoutForTextContainer:textContainer];
 
-    NSUInteger count =
-        MIN(self.inlineCommandMarkers.count, self.commandButtons.count);
+    NSUInteger count = MIN(self.inlineCommandMarkers.count,
+                           self.commandButtons.count / 2);
     for (NSUInteger index = 0; index < count; index++) {
         NSDictionary *marker = self.inlineCommandMarkers[index];
         NSUInteger location = [marker[@"location"] unsignedIntegerValue];
@@ -826,12 +998,12 @@
         NSPoint textOrigin = self.responseTextView.textContainerOrigin;
         markerRect.origin.x += textOrigin.x;
         markerRect.origin.y += textOrigin.y;
-        self.commandButtons[index].frame =
-            NSMakeRect(markerRect.origin.x,
-                       markerRect.origin.y +
-                           floor((markerRect.size.height - 20) / 2.0),
-                       MAX(62, markerRect.size.width),
-                       20);
+        CGFloat y = markerRect.origin.y +
+            floor((markerRect.size.height - 20) / 2.0);
+        NSButton *paste = self.commandButtons[index * 2];
+        NSButton *run = self.commandButtons[index * 2 + 1];
+        paste.frame = NSMakeRect(markerRect.origin.x, y, 58, 20);
+        run.frame = NSMakeRect(markerRect.origin.x + 64, y, 62, 20);
     }
 }
 
@@ -845,7 +1017,11 @@
 
 - (void)commandSelected:(ClaudeCommandButton *)sender {
     NSString *command = sender.command;
-    if (command.length > 0) {
+    if (command.length > 0 &&
+        [sender.actionKind isEqualToString:@"run"]) {
+        [self.delegate claudeAssistantView:self
+                     didRequestRunCommand:command];
+    } else if (command.length > 0) {
         [self.delegate claudeAssistantView:self
                       didChooseRunCommand:command];
     }
