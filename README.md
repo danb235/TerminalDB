@@ -27,6 +27,10 @@ tabs start with the most recently selected profile.
 Each tab is also a fully independent terminal session. It has its own login
 shell, PTY, working directory, foreground process, scrollback, and selected
 Claude profile, so switching accounts in one tab does not alter another tab.
+The terminal draws a solid theme-colored block at the PTY cursor position so
+the active input location remains visible after the shell prompt. When focus
+moves elsewhere in the window, the block becomes an outline, and full-screen
+terminal programs can hide or show it with the standard cursor mode.
 
 ## AI chat
 

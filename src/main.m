@@ -37,10 +37,130 @@ static int TerminalDBExitStatus = 0;
 @property(nonatomic) BOOL applicationCursorKeys;
 @property(nonatomic) BOOL bracketedPaste;
 @property(nonatomic) BOOL inputEnabled;
+@property(nonatomic) NSUInteger terminalCursorIndex;
+@property(nonatomic) BOOL terminalCursorVisible;
+@property(nonatomic, strong) NSColor *terminalCursorColor;
 @property(nonatomic, copy, nullable) void (^userDidSendInput)(void);
+- (NSRect)terminalCursorRect;
 @end
 
 @implementation TerminalView
+
+- (void)setTerminalCursorIndex:(NSUInteger)terminalCursorIndex {
+    if (_terminalCursorIndex == terminalCursorIndex) return;
+    _terminalCursorIndex = terminalCursorIndex;
+    self.needsDisplay = YES;
+}
+
+- (void)setTerminalCursorVisible:(BOOL)terminalCursorVisible {
+    if (_terminalCursorVisible == terminalCursorVisible) return;
+    _terminalCursorVisible = terminalCursorVisible;
+    self.needsDisplay = YES;
+}
+
+- (NSRect)terminalCursorRect {
+    NSLayoutManager *layoutManager = self.layoutManager;
+    NSTextContainer *textContainer = self.textContainer;
+    NSFont *font = self.font;
+    if (layoutManager == nil || textContainer == nil || font == nil) {
+        return NSZeroRect;
+    }
+
+    [layoutManager ensureLayoutForTextContainer:textContainer];
+    CGFloat cellWidth = MAX(1.0,
+        [@" " sizeWithAttributes:@{NSFontAttributeName : font}].width);
+    CGFloat lineHeight = MAX(1.0,
+        font.ascender - font.descender + font.leading);
+    CGFloat lineHeightMultiple =
+        self.defaultParagraphStyle.lineHeightMultiple;
+    if (lineHeightMultiple > 0) lineHeight *= lineHeightMultiple;
+    NSPoint origin = self.textContainerOrigin;
+    NSUInteger length = self.textStorage.length;
+    NSUInteger cursor = MIN(self.terminalCursorIndex, length);
+    NSRect glyphRect = NSZeroRect;
+
+    if (cursor < length) {
+        NSRange glyphRange = [layoutManager
+            glyphRangeForCharacterRange:NSMakeRange(cursor, 1)
+                    actualCharacterRange:nil];
+        if (glyphRange.location != NSNotFound && glyphRange.length > 0) {
+            glyphRect = [layoutManager
+                boundingRectForGlyphRange:glyphRange
+                         inTextContainer:textContainer];
+        }
+    } else if (length > 0 &&
+               [self.textStorage.string characterAtIndex:length - 1] != '\n') {
+        NSRange glyphRange = [layoutManager
+            glyphRangeForCharacterRange:NSMakeRange(length - 1, 1)
+                    actualCharacterRange:nil];
+        if (glyphRange.location != NSNotFound && glyphRange.length > 0) {
+            glyphRect = [layoutManager
+                boundingRectForGlyphRange:glyphRange
+                         inTextContainer:textContainer];
+            glyphRect.origin.x = NSMaxX(glyphRect);
+            glyphRect.size.width = 0;
+        }
+    } else if (layoutManager.extraLineFragmentTextContainer ==
+               textContainer) {
+        glyphRect = layoutManager.extraLineFragmentRect;
+    }
+
+    if (NSIsEmptyRect(glyphRect)) {
+        NSString *contents = self.textStorage.string;
+        NSRange preceding = NSMakeRange(0, cursor);
+        NSRange newline = cursor > 0
+            ? [contents rangeOfString:@"\n"
+                              options:NSBackwardsSearch
+                                range:preceding]
+            : NSMakeRange(NSNotFound, 0);
+        NSUInteger lineStart =
+            newline.location == NSNotFound ? 0 : NSMaxRange(newline);
+        NSString *linePrefix = [contents
+            substringWithRange:NSMakeRange(lineStart, cursor - lineStart)];
+        CGFloat x = [linePrefix
+            sizeWithAttributes:@{NSFontAttributeName : font}].width;
+        NSUInteger line = 0;
+        for (NSUInteger index = 0; index < lineStart; index++) {
+            if ([contents characterAtIndex:index] == '\n') line++;
+        }
+        glyphRect = NSMakeRect(x, line * lineHeight, 0, lineHeight);
+    }
+    return NSMakeRect(origin.x + glyphRect.origin.x,
+                      origin.y + glyphRect.origin.y,
+                      cellWidth,
+                      MAX(lineHeight, glyphRect.size.height));
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+    [super drawRect:dirtyRect];
+    if (!self.inputEnabled || !self.terminalCursorVisible) return;
+
+    NSRect cursorRect = [self terminalCursorRect];
+    if (NSIsEmptyRect(cursorRect) ||
+        !NSIntersectsRect(dirtyRect, cursorRect)) {
+        return;
+    }
+    NSColor *color = self.terminalCursorColor ?: self.insertionPointColor;
+    if (self.window.isKeyWindow && self.window.firstResponder == self) {
+        [color setFill];
+        NSRectFill(cursorRect);
+    } else {
+        [[color colorWithAlphaComponent:0.7] setStroke];
+        NSFrameRectWithWidth(cursorRect, 1.0);
+    }
+}
+
+- (BOOL)becomeFirstResponder {
+    BOOL became = [super becomeFirstResponder];
+    if (became) self.needsDisplay = YES;
+    return became;
+}
+
+- (BOOL)resignFirstResponder {
+    BOOL resigned = [super resignFirstResponder];
+    if (resigned) self.needsDisplay = YES;
+    return resigned;
+}
 
 - (void)sendBytes:(const char *)bytes length:(size_t)length {
     if (self.pty < 0) return;
@@ -1004,6 +1124,9 @@ static int TerminalDBExitStatus = 0;
     self.terminalView.backgroundColor = self.defaultBackground;
     self.terminalView.textColor = self.defaultForeground;
     self.terminalView.insertionPointColor = self.theme.cursorColor;
+    self.terminalView.terminalCursorColor = self.theme.cursorColor;
+    self.terminalView.terminalCursorIndex = 0;
+    self.terminalView.terminalCursorVisible = YES;
     NSFont *font = [NSFont fontWithName:self.theme.fontName
                                   size:self.terminalFontSize];
     self.usingJetBrainsMono =
@@ -1627,6 +1750,8 @@ static int TerminalDBExitStatus = 0;
         self.textStorageEditing = NO;
         if (self.followSynchronizedOutput) [self scrollTerminalToBottom];
     }
+    self.terminalView.terminalCursorIndex = self.outputCursor;
+    self.terminalView.needsDisplay = YES;
 }
 
 - (void)flushVisibleData:(NSMutableData *)visible {
@@ -2500,6 +2625,8 @@ static int TerminalDBExitStatus = 0;
                         self.terminalView.bracketedPaste = enabled;
                     } else if (mode == 2026) {
                         self.synchronizedOutput = enabled;
+                    } else if (mode == 25) {
+                        self.terminalView.terminalCursorVisible = enabled;
                     }
                 }
             }
@@ -2725,6 +2852,7 @@ static int TerminalDBExitStatus = 0;
 - (void)appendText:(NSString *)text {
     self.outputCursor = self.terminalView.textStorage.length;
     [self writeTerminalText:text];
+    self.terminalView.terminalCursorIndex = self.outputCursor;
     [self scrollTerminalToBottom];
 }
 
@@ -3219,6 +3347,8 @@ static int TerminalDBExitStatus = 0;
                                                weight:NSFontWeightRegular];
         terminal.terminalView.pty = -1;
         terminal.terminalView.inputEnabled = YES;
+        terminal.terminalView.terminalCursorColor = theme.cursorColor;
+        terminal.terminalView.terminalCursorVisible = YES;
         [terminal resetTextAttributes];
         return terminal;
     };
@@ -3257,6 +3387,37 @@ static int TerminalDBExitStatus = 0;
     feed(absolute, absoluteBytes, sizeof(absoluteBytes) - 1);
     expect(@"absolute cursor and clear", absolute.terminalView.string,
            @"left     right");
+
+    AppDelegate *cursor = newTerminal();
+    const char promptBytes[] = "\033[32m\xe2\x9e\x9c\033[0m  ~ ";
+    feed(cursor, promptBytes, sizeof(promptBytes) - 1);
+    NSRect cursorRect = [cursor.terminalView terminalCursorRect];
+    BOOL visiblePromptCursor =
+        cursor.terminalView.terminalCursorVisible &&
+        cursor.terminalView.terminalCursorIndex ==
+            cursor.terminalView.string.length &&
+        cursorRect.size.width > 0 && cursorRect.size.height > 0 &&
+        cursorRect.origin.x > cursor.terminalView.textContainerOrigin.x;
+    const char hideCursor[] = "\033[?25l";
+    const char showCursor[] = "\033[?25h";
+    feed(cursor, hideCursor, sizeof(hideCursor) - 1);
+    BOOL cursorHidden = !cursor.terminalView.terminalCursorVisible;
+    feed(cursor, showCursor, sizeof(showCursor) - 1);
+    if (!visiblePromptCursor || !cursorHidden ||
+        !cursor.terminalView.terminalCursorVisible) {
+        fprintf(stderr,
+                "FAIL visible terminal block cursor "
+                "visible=%s hidden=%s shown=%s index=%lu length=%lu "
+                "rect={%.1f,%.1f,%.1f,%.1f}\n",
+                visiblePromptCursor ? "yes" : "no",
+                cursorHidden ? "yes" : "no",
+                cursor.terminalView.terminalCursorVisible ? "yes" : "no",
+                (unsigned long)cursor.terminalView.terminalCursorIndex,
+                (unsigned long)cursor.terminalView.string.length,
+                cursorRect.origin.x, cursorRect.origin.y,
+                cursorRect.size.width, cursorRect.size.height);
+        failures++;
+    }
 
     AppDelegate *picker = newTerminal();
     const char pickerInitial[] =
