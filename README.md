@@ -28,26 +28,27 @@ Each tab is also a fully independent terminal session. It has its own login
 shell, PTY, working directory, foreground process, scrollback, and selected
 Claude profile, so switching accounts in one tab does not alter another tab.
 
-## Natural-language terminal assistant
+## AI chat
 
-At a zsh prompt, input whose first word does not resolve to a command, alias,
-function, built-in, or shell keyword is treated as a natural-language request.
-TerminalDB sends the request and current working directory to the Claude
-Messages API, then streams the answer into a terminal-styled response panel.
-Ordinary commands continue to run through the shell unchanged.
+Select **✦ AI Chat** in the upper-right corner or choose **Claude → Show AI
+Chat** (Command-Shift-L) to open a collapsible chat pane beside the active
+terminal. Terminal input is always sent to the shell; TerminalDB does not try
+to classify commands as natural language.
+
+Each message sent from the chat includes a fresh snapshot of that tab's current
+working directory, window state, and visible terminal output. Claude can use
+this context to explain an error, help investigate the system, write code, or
+craft a command without the user copying terminal output manually. Terminal
+output is marked as untrusted reference data in the model instructions.
 
 Claude is prompted to explain its approach and place suggested shell commands
-in fenced code blocks. Each shell block gets a **Run command** button. The
-button inserts the command into the current prompt using the terminal's normal
-paste behavior; it deliberately does not press Return, so the user can review
-or edit the command before executing it. Non-shell code samples are never made
-runnable. Conversation context is retained independently in each tab.
+in fenced code blocks. Each shell block gets a **Paste command into terminal**
+button. The button uses the terminal's normal paste behavior and deliberately
+does not press Return, so the user can review or edit the command before
+executing it. Non-shell code samples are never made runnable.
 
-The response panel is also a conversation. Use the follow-up field to refine a
-command, ask Claude to explain a choice, or continue investigating without
-losing the earlier turns. Closing the panel or inserting a command preserves
-that tab's context, and the next natural-language request reopens the same
-transcript. Choose **New conversation** when the task changes; after
+Conversation context is retained independently in each tab, including while
+the pane is collapsed. Choose **New chat** when the task changes; after
 confirmation, TerminalDB clears only that tab's AI context. A newly opened
 terminal tab always starts with fresh context.
 
@@ -59,7 +60,7 @@ visible and the key can be edited or replaced directly.
 After a key is saved, TerminalDB loads the models available to that key from
 Anthropic's Models API. The model list refreshes on launch and whenever the
 settings window opens, so newly available models appear without an app update.
-The selected model is used for new terminal conversations.
+The selected model is used for new AI chats.
 
 The bottom status bar displays the selected account and subscription as static
 identity text on the left. The five-hour, seven-day, and separate Fable 5
@@ -103,10 +104,11 @@ make run
 The self-test suite exercises terminal cursor positioning and redraws, Claude's
 interactive picker layout, split UTF-8 input, Space, Return, Control-C, arrow
 keys, output-follow scrolling across successive commands, safe extraction of
-shell code blocks, and authenticated-profile onboarding state. It also runs a
-background AppKit integration check for native tab grouping, independent shell
-sessions, activity state, switching, and closing. The QA app uses accessory
-activation and does not bring test windows to the foreground.
+shell code blocks, AI transcript rendering, terminal-context attachment,
+command pasting without execution, and authenticated-profile onboarding state.
+It also runs a background AppKit integration check for native tab grouping,
+independent shell sessions, activity state, switching, and closing. The QA app
+uses accessory activation and does not bring test windows to the foreground.
 
 ## Tabs
 

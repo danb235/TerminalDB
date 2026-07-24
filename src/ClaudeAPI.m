@@ -554,7 +554,7 @@ static NSString *ClaudeAPIErrorMessage(NSData *data,
     if (identifier.length > 0) {
         [self.configuration selectModelID:identifier];
         self.statusLabel.stringValue =
-            @"This model will be used for new terminal conversations.";
+            @"This model will be used for new AI chats.";
         self.statusLabel.textColor = NSColor.secondaryLabelColor;
     }
 }
@@ -564,7 +564,7 @@ static NSString *ClaudeAPIErrorMessage(NSData *data,
     NSAlert *alert = [[NSAlert alloc] init];
     alert.messageText = @"Remove the Claude API key?";
     alert.informativeText =
-        @"TerminalDB will stop sending natural-language requests until "
+        @"TerminalDB will stop sending AI chat requests until "
          "another key is added.";
     [alert addButtonWithTitle:@"Remove Key"];
     [alert addButtonWithTitle:@"Cancel"];

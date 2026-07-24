@@ -29,6 +29,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)appendResponseText:(NSString *)text;
 - (void)finish;
 - (void)showError:(NSString *)message settingsAvailable:(BOOL)settingsAvailable;
+- (void)focusComposer;
 + (NSArray<NSString *> *)commandsFromMarkdown:(NSString *)markdown;
 
 @end
