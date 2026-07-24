@@ -2,11 +2,16 @@
 
 NSNotificationName const ClaudeAPIConfigurationDidChangeNotification =
     @"ClaudeAPIConfigurationDidChangeNotification";
+NSString *const ClaudeAIProviderSubscription = @"subscription";
+NSString *const ClaudeAIProviderAPI = @"api";
 
 static NSString *const ClaudeAPIKeyDefaultsKey = @"ClaudeAPIKey";
 static NSString *const ClaudeAPISelectedModelDefaultsKey =
     @"ClaudeAPISelectedModel";
 static NSString *const ClaudeAPIModelsDefaultsKey = @"ClaudeAPIModels";
+static NSString *const ClaudeAIProviderDefaultsKey = @"ClaudeAIProvider";
+static NSString *const ClaudeSubscriptionModelDefaultsKey =
+    @"ClaudeSubscriptionModel";
 static NSString *const ClaudeAPIErrorDomain = @"com.terminaldb.app.ClaudeAPI";
 static NSString *const ClaudeAPIVersion = @"2023-06-01";
 
@@ -65,6 +70,362 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
 @interface ClaudeAPIConfiguration ()
 @property(nonatomic, copy) NSArray<NSDictionary *> *models;
 @property(nonatomic, copy, nullable) NSString *selectedModelID;
+@property(nonatomic, copy) NSString *chatProvider;
+@property(nonatomic, copy) NSString *subscriptionModelID;
+@end
+
+@interface ClaudeCodeClient ()
+@property(nonatomic, copy) NSString *executable;
+@property(nonatomic, copy) NSString *configDirectory;
+@property(nonatomic, copy) NSString *workingDirectory;
+@property(nonatomic, copy) NSString *model;
+@property(nonatomic, copy, nullable) NSString *requestedSessionID;
+@property(nonatomic, copy, nullable) NSString *returnedSessionID;
+@property(nonatomic, copy, nullable) NSString *returnedModel;
+@property(nonatomic, strong, nullable) NSTask *task;
+@property(nonatomic, strong, nullable) NSPipe *inputPipe;
+@property(nonatomic, strong, nullable) NSPipe *outputPipe;
+@property(nonatomic, strong, nullable) NSPipe *errorPipe;
+@property(nonatomic, strong) NSMutableData *lineBuffer;
+@property(nonatomic, strong) NSMutableData *errorOutputBuffer;
+@property(nonatomic, strong) NSMutableString *streamedText;
+@property(nonatomic, copy, nullable) NSString *resultText;
+@property(nonatomic, copy, nullable) NSString *resultError;
+@property(nonatomic, copy, nullable) ClaudeAPITextDeltaBlock textDelta;
+@property(nonatomic, copy, nullable) ClaudeCodeCompletionBlock completion;
+@property(nonatomic) dispatch_queue_t parserQueue;
+@property(nonatomic) BOOL finished;
+@end
+
+@implementation ClaudeCodeClient
+
++ (nullable NSString *)textDeltaFromEvent:(NSDictionary *)event {
+    if (![event[@"type"] isEqualToString:@"stream_event"]) return nil;
+    NSDictionary *streamEvent =
+        [event[@"event"] isKindOfClass:NSDictionary.class]
+            ? event[@"event"] : nil;
+    if (![streamEvent[@"type"]
+            isEqualToString:@"content_block_delta"]) {
+        return nil;
+    }
+    NSDictionary *delta =
+        [streamEvent[@"delta"] isKindOfClass:NSDictionary.class]
+            ? streamEvent[@"delta"] : nil;
+    return [delta[@"type"] isEqualToString:@"text_delta"] &&
+            [delta[@"text"] isKindOfClass:NSString.class]
+        ? delta[@"text"] : nil;
+}
+
++ (BOOL)runStreamParsingSelfTests {
+    NSDictionary *event = @{
+        @"type" : @"stream_event",
+        @"event" : @{
+            @"type" : @"content_block_delta",
+            @"delta" : @{@"type" : @"text_delta", @"text" : @"hello"},
+        },
+    };
+    NSDictionary *irrelevant = @{
+        @"type" : @"stream_event",
+        @"event" : @{
+            @"type" : @"message_start",
+            @"message" : @{},
+        },
+    };
+    if (![[self textDeltaFromEvent:event] isEqualToString:@"hello"] ||
+        [self textDeltaFromEvent:irrelevant] != nil) {
+        return NO;
+    }
+
+    ClaudeCodeClient *client = [[ClaudeCodeClient alloc]
+        initWithExecutable:@"/bin/false"
+          configDirectory:@"/tmp"
+         workingDirectory:@"/tmp"
+                    model:@""
+                sessionID:nil];
+    NSString *first =
+        @"not-json\n{\"type\":\"stream_event\",\"event\":{\"type\":"
+         "\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",";
+    NSString *second =
+        @"\"text\":\"split\"}},\"session_id\":\"test-session\"}\n";
+    [client consumeOutputData:
+        [first dataUsingEncoding:NSUTF8StringEncoding] final:NO];
+    if (client.streamedText.length != 0) return NO;
+    [client consumeOutputData:
+        [second dataUsingEncoding:NSUTF8StringEncoding] final:NO];
+    return [client.streamedText isEqualToString:@"split"] &&
+        [client.returnedSessionID isEqualToString:@"test-session"];
+}
+
+- (instancetype)initWithExecutable:(NSString *)executable
+                  configDirectory:(NSString *)configDirectory
+                 workingDirectory:(NSString *)workingDirectory
+                            model:(NSString *)model
+                        sessionID:(NSString *)sessionID {
+    self = [super init];
+    if (self == nil) return nil;
+    _executable = [executable copy];
+    _configDirectory = [configDirectory copy];
+    _workingDirectory = [workingDirectory copy];
+    _model = [model copy];
+    _requestedSessionID = [sessionID copy];
+    _lineBuffer = [NSMutableData data];
+    _errorOutputBuffer = [NSMutableData data];
+    _streamedText = [NSMutableString string];
+    _parserQueue = dispatch_queue_create(
+        "com.terminaldb.claude-code-stream", DISPATCH_QUEUE_SERIAL);
+    return self;
+}
+
+- (void)streamPrompt:(NSString *)prompt
+        systemPrompt:(NSString *)systemPrompt
+           textDelta:(ClaudeAPITextDeltaBlock)textDelta
+          completion:(ClaudeCodeCompletionBlock)completion {
+    if (self.task != nil || self.finished) return;
+    self.textDelta = textDelta;
+    self.completion = completion;
+
+    NSMutableArray<NSString *> *arguments = [NSMutableArray arrayWithArray:@[
+        @"-p",
+        @"--output-format", @"stream-json",
+        @"--verbose",
+        @"--include-partial-messages",
+        @"--max-turns", @"1",
+        @"--tools", @"",
+        @"--disable-slash-commands",
+        @"--strict-mcp-config",
+    ]];
+    if (self.model.length > 0) {
+        [arguments addObjectsFromArray:@[@"--model", self.model]];
+    }
+    if (self.requestedSessionID.length > 0) {
+        [arguments addObjectsFromArray:
+            @[@"--resume", self.requestedSessionID]];
+    } else {
+        self.requestedSessionID = NSUUID.UUID.UUIDString;
+        [arguments addObjectsFromArray:
+            @[@"--session-id", self.requestedSessionID]];
+        if (systemPrompt.length > 0) {
+            [arguments addObjectsFromArray:
+                @[@"--system-prompt", systemPrompt]];
+        }
+    }
+
+    NSTask *task = [[NSTask alloc] init];
+    task.executableURL = [NSURL fileURLWithPath:self.executable];
+    task.arguments = arguments;
+    BOOL isDirectory = NO;
+    if ([NSFileManager.defaultManager
+            fileExistsAtPath:self.workingDirectory
+                 isDirectory:&isDirectory] && isDirectory) {
+        task.currentDirectoryURL =
+            [NSURL fileURLWithPath:self.workingDirectory isDirectory:YES];
+    }
+    NSMutableDictionary *environment =
+        [NSProcessInfo.processInfo.environment mutableCopy];
+    for (NSString *key in @[
+            @"ANTHROPIC_API_KEY",
+            @"ANTHROPIC_AUTH_TOKEN",
+            @"ANTHROPIC_BASE_URL",
+            @"CLAUDE_CODE_OAUTH_TOKEN",
+            @"CLAUDE_CODE_USE_BEDROCK",
+            @"CLAUDE_CODE_USE_VERTEX",
+            @"CLAUDE_CODE_USE_FOUNDRY",
+        ]) {
+        [environment removeObjectForKey:key];
+    }
+    environment[@"CLAUDE_CONFIG_DIR"] = self.configDirectory;
+    task.environment = environment;
+    self.inputPipe = [NSPipe pipe];
+    self.outputPipe = [NSPipe pipe];
+    self.errorPipe = [NSPipe pipe];
+    task.standardInput = self.inputPipe;
+    task.standardOutput = self.outputPipe;
+    task.standardError = self.errorPipe;
+    self.task = task;
+
+    __weak typeof(self) weakSelf = self;
+    self.outputPipe.fileHandleForReading.readabilityHandler =
+        ^(NSFileHandle *handle) {
+        NSData *data = handle.availableData;
+        ClaudeCodeClient *strongSelf = weakSelf;
+        if (strongSelf == nil || data.length == 0) return;
+        dispatch_async(strongSelf.parserQueue, ^{
+            [strongSelf consumeOutputData:data final:NO];
+        });
+    };
+    self.errorPipe.fileHandleForReading.readabilityHandler =
+        ^(NSFileHandle *handle) {
+        NSData *data = handle.availableData;
+        ClaudeCodeClient *strongSelf = weakSelf;
+        if (strongSelf == nil || data.length == 0) return;
+        dispatch_async(strongSelf.parserQueue, ^{
+            [strongSelf appendErrorData:data];
+        });
+    };
+    task.terminationHandler = ^(NSTask *completedTask) {
+        ClaudeCodeClient *strongSelf = weakSelf;
+        if (strongSelf == nil) return;
+        strongSelf.outputPipe.fileHandleForReading.readabilityHandler = nil;
+        strongSelf.errorPipe.fileHandleForReading.readabilityHandler = nil;
+        NSData *remaining =
+            [strongSelf.outputPipe.fileHandleForReading readDataToEndOfFile];
+        NSData *errorData =
+            [strongSelf.errorPipe.fileHandleForReading readDataToEndOfFile];
+        dispatch_async(strongSelf.parserQueue, ^{
+            if (remaining.length > 0) {
+                [strongSelf consumeOutputData:remaining final:NO];
+            }
+            [strongSelf appendErrorData:errorData];
+            [strongSelf consumeOutputData:[NSData data] final:YES];
+            NSString *stderrText = [[NSString alloc]
+                initWithData:strongSelf.errorOutputBuffer
+                    encoding:NSUTF8StringEncoding];
+            NSError *error = nil;
+            if (completedTask.terminationStatus != 0 ||
+                strongSelf.resultError.length > 0) {
+                NSString *message = strongSelf.resultError;
+                if (message.length == 0) {
+                    message = [stderrText
+                        stringByTrimmingCharactersInSet:
+                            NSCharacterSet.whitespaceAndNewlineCharacterSet];
+                }
+                if (message.length > 1200) {
+                    message = [message substringFromIndex:
+                        message.length - 1200];
+                }
+                error = ClaudeError(completedTask.terminationStatus,
+                    message.length > 0 ? message :
+                    @"Claude Code could not complete the subscription request.");
+            }
+            [strongSelf finishWithError:error];
+        });
+    };
+
+    NSError *launchError = nil;
+    if (![task launchAndReturnError:&launchError]) {
+        self.outputPipe.fileHandleForReading.readabilityHandler = nil;
+        self.errorPipe.fileHandleForReading.readabilityHandler = nil;
+        [self.inputPipe.fileHandleForWriting closeFile];
+        [self finishWithError:launchError];
+    } else {
+        NSData *promptData =
+            [prompt dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+        @try {
+            [self.inputPipe.fileHandleForWriting writeData:promptData];
+        } @catch (NSException *exception) {
+            [task terminate];
+            [self finishWithError:ClaudeError(
+                5, @"Claude Code closed its input before the request "
+                   "could be sent.")];
+        }
+        [self.inputPipe.fileHandleForWriting closeFile];
+    }
+}
+
+- (void)appendErrorData:(NSData *)data {
+    if (data.length == 0) return;
+    [self.errorOutputBuffer appendData:data];
+    const NSUInteger limit = 64 * 1024;
+    if (self.errorOutputBuffer.length > limit) {
+        NSData *tail = [self.errorOutputBuffer subdataWithRange:
+            NSMakeRange(self.errorOutputBuffer.length - limit, limit)];
+        [self.errorOutputBuffer setData:tail];
+    }
+}
+
+- (void)consumeOutputData:(NSData *)data final:(BOOL)final {
+    if (self.finished) return;
+    if (data.length > 0) [self.lineBuffer appendData:data];
+    NSData *newline = [@"\n" dataUsingEncoding:NSUTF8StringEncoding];
+    while (self.lineBuffer.length > 0) {
+        NSRange range = [self.lineBuffer
+            rangeOfData:newline
+                options:0
+                  range:NSMakeRange(0, self.lineBuffer.length)];
+        if (range.location == NSNotFound && !final) return;
+        NSUInteger length = range.location == NSNotFound
+            ? self.lineBuffer.length : range.location;
+        NSData *lineData =
+            [self.lineBuffer subdataWithRange:NSMakeRange(0, length)];
+        NSUInteger consumed = range.location == NSNotFound
+            ? length : NSMaxRange(range);
+        [self.lineBuffer replaceBytesInRange:NSMakeRange(0, consumed)
+                                    withBytes:NULL
+                                       length:0];
+        NSString *line = [[NSString alloc]
+            initWithData:lineData encoding:NSUTF8StringEncoding];
+        [self processOutputLine:line];
+    }
+}
+
+- (void)processOutputLine:(NSString *)line {
+    NSString *trimmed = [line stringByTrimmingCharactersInSet:
+        NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (trimmed.length == 0) return;
+    NSDictionary *event = [NSJSONSerialization
+        JSONObjectWithData:[trimmed dataUsingEncoding:NSUTF8StringEncoding]
+                   options:0 error:nil];
+    if (![event isKindOfClass:NSDictionary.class]) return;
+
+    NSString *sessionID =
+        [event[@"session_id"] isKindOfClass:NSString.class]
+            ? event[@"session_id"] : nil;
+    if (sessionID.length > 0) self.returnedSessionID = sessionID;
+    NSString *model =
+        [event[@"model"] isKindOfClass:NSString.class]
+            ? event[@"model"] : nil;
+    if (model.length > 0) self.returnedModel = model;
+
+    NSString *delta = [self.class textDeltaFromEvent:event];
+    if (delta.length > 0) {
+        [self.streamedText appendString:delta];
+        ClaudeAPITextDeltaBlock callback = self.textDelta;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (callback != nil) callback(delta);
+        });
+    }
+    if ([event[@"type"] isEqualToString:@"result"]) {
+        if ([event[@"result"] isKindOfClass:NSString.class]) {
+            self.resultText = event[@"result"];
+        }
+        if ([event[@"is_error"] boolValue]) {
+            self.resultError = self.resultText;
+        }
+    }
+}
+
+- (void)cancel {
+    @synchronized (self) {
+        if (self.finished) return;
+    }
+    [self.task terminate];
+    [self finishWithError:
+        ClaudeError(NSUserCancelledError, @"Claude request cancelled.")];
+}
+
+- (void)finishWithError:(NSError *)error {
+    @synchronized (self) {
+        if (self.finished) return;
+        self.finished = YES;
+    }
+    ClaudeCodeCompletionBlock completion = self.completion;
+    NSString *text = self.resultText.length > 0
+        ? self.resultText : [self.streamedText copy];
+    NSString *sessionID =
+        self.returnedSessionID ?: self.requestedSessionID;
+    NSString *model = self.returnedModel;
+    self.completion = nil;
+    self.textDelta = nil;
+    self.outputPipe.fileHandleForReading.readabilityHandler = nil;
+    self.errorPipe.fileHandleForReading.readabilityHandler = nil;
+    self.task = nil;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (completion != nil) {
+            completion(text ?: @"", sessionID, model, error);
+        }
+    });
+}
+
 @end
 
 @implementation ClaudeAPIConfiguration
@@ -80,6 +441,25 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
     _selectedModelID =
         [NSUserDefaults.standardUserDefaults
             stringForKey:ClaudeAPISelectedModelDefaultsKey];
+    NSString *savedProvider = [NSUserDefaults.standardUserDefaults
+        stringForKey:ClaudeAIProviderDefaultsKey];
+    if (![savedProvider isEqualToString:ClaudeAIProviderSubscription] &&
+        ![savedProvider isEqualToString:ClaudeAIProviderAPI]) {
+        savedProvider = self.hasAPIKey
+            ? ClaudeAIProviderAPI : ClaudeAIProviderSubscription;
+    }
+    _chatProvider = [savedProvider copy];
+    NSString *subscriptionModel = [NSUserDefaults.standardUserDefaults
+        stringForKey:ClaudeSubscriptionModelDefaultsKey] ?: @"";
+    BOOL validSubscriptionModel = NO;
+    for (NSDictionary *model in self.class.subscriptionModels) {
+        if ([model[@"id"] isEqualToString:subscriptionModel]) {
+            validSubscriptionModel = YES;
+            break;
+        }
+    }
+    _subscriptionModelID =
+        validSubscriptionModel ? [subscriptionModel copy] : @"";
     return self;
 }
 
@@ -93,11 +473,26 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
           @"created_at" : @123,
           @"unexpected" : @"discard"},
     ]);
+    NSArray *subscriptionModels = self.subscriptionModels;
+    BOOL subscriptionModelsValid =
+        subscriptionModels.count == 4 &&
+        [subscriptionModels.firstObject[@"id"] isEqualToString:@""] &&
+        [subscriptionModels.lastObject[@"id"] isEqualToString:@"fable"];
     return valid.count == 1 &&
         [valid.firstObject[@"id"] isEqualToString:@"claude-test"] &&
         [valid.firstObject[@"display_name"] isEqualToString:@"Test"] &&
         valid.firstObject[@"created_at"] == nil &&
-        valid.firstObject[@"unexpected"] == nil;
+        valid.firstObject[@"unexpected"] == nil &&
+        subscriptionModelsValid;
+}
+
++ (NSArray<NSDictionary *> *)subscriptionModels {
+    return @[
+        @{@"id" : @"", @"display_name" : @"Default (recommended)"},
+        @{@"id" : @"sonnet", @"display_name" : @"Sonnet"},
+        @{@"id" : @"opus", @"display_name" : @"Opus"},
+        @{@"id" : @"fable", @"display_name" : @"Fable"},
+    ];
 }
 
 - (nullable NSString *)apiKey {
@@ -140,6 +535,18 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
     return YES;
 }
 
+- (void)selectChatProvider:(NSString *)provider {
+    if (![provider isEqualToString:ClaudeAIProviderSubscription] &&
+        ![provider isEqualToString:ClaudeAIProviderAPI]) {
+        return;
+    }
+    if ([self.chatProvider isEqualToString:provider]) return;
+    self.chatProvider = provider;
+    [NSUserDefaults.standardUserDefaults
+        setObject:provider forKey:ClaudeAIProviderDefaultsKey];
+    [self notifyChanged];
+}
+
 - (void)selectModelID:(NSString *)modelID {
     if (modelID.length == 0 ||
         [self.selectedModelID isEqualToString:modelID]) {
@@ -148,6 +555,25 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
     self.selectedModelID = modelID;
     [NSUserDefaults.standardUserDefaults
         setObject:modelID forKey:ClaudeAPISelectedModelDefaultsKey];
+    [self notifyChanged];
+}
+
+- (void)selectSubscriptionModelID:(NSString *)modelID {
+    BOOL valid = NO;
+    for (NSDictionary *model in self.class.subscriptionModels) {
+        if ([model[@"id"] isEqualToString:modelID ?: @""]) {
+            valid = YES;
+            break;
+        }
+    }
+    if (!valid ||
+        [self.subscriptionModelID isEqualToString:modelID ?: @""]) {
+        return;
+    }
+    self.subscriptionModelID = modelID ?: @"";
+    [NSUserDefaults.standardUserDefaults
+        setObject:self.subscriptionModelID
+           forKey:ClaudeSubscriptionModelDefaultsKey];
     [self notifyChanged];
 }
 
@@ -161,6 +587,15 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
         return displayName.length > 0 ? displayName : modelID;
     }
     return modelID;
+}
+
+- (NSString *)displayNameForSubscriptionModelID:(NSString *)modelID {
+    for (NSDictionary *model in self.class.subscriptionModels) {
+        if ([model[@"id"] isEqualToString:modelID ?: @""]) {
+            return model[@"display_name"];
+        }
+    }
+    return @"Default (recommended)";
 }
 
 - (void)refreshModelsWithCompletion:
@@ -277,6 +712,9 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
 
 @interface ClaudeAPISettingsWindowController ()
 @property(nonatomic, strong) ClaudeAPIConfiguration *configuration;
+@property(nonatomic, strong) NSSegmentedControl *providerControl;
+@property(nonatomic, strong) NSTextField *providerDetailLabel;
+@property(nonatomic, strong) NSTextField *keyLabel;
 @property(nonatomic, strong) NSSecureTextField *keyField;
 @property(nonatomic, strong) NSTextField *keyStatusLabel;
 @property(nonatomic, strong) NSPopUpButton *modelButton;
@@ -284,13 +722,14 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
 @property(nonatomic, strong) NSButton *saveButton;
 @property(nonatomic, strong) NSButton *removeButton;
 @property(nonatomic, strong) NSProgressIndicator *progress;
+@property(nonatomic, copy) NSString *subscriptionStatus;
 @end
 
 @implementation ClaudeAPISettingsWindowController
 
 - (instancetype)initWithConfiguration:
     (ClaudeAPIConfiguration *)configuration {
-    NSRect frame = NSMakeRect(0, 0, 520, 286);
+    NSRect frame = NSMakeRect(0, 0, 620, 376);
     NSWindow *window = [[NSWindow alloc]
         initWithContentRect:frame
                   styleMask:NSWindowStyleMaskTitled |
@@ -301,7 +740,7 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
     if (self == nil) return nil;
 
     _configuration = configuration;
-    window.title = @"Claude API Settings";
+    window.title = @"AI Chat Settings";
     window.releasedWhenClosed = NO;
     window.appearance =
         [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
@@ -336,8 +775,8 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
 - (void)buildContent {
     NSView *content = self.window.contentView;
     NSTextField *title =
-        [self labelWithString:@"Natural-language terminal assistant"
-                       frame:NSMakeRect(24, 238, 472, 24)
+        [self labelWithString:@"Choose how TerminalDB talks to Claude"
+                       frame:NSMakeRect(24, 328, 572, 24)
                         font:[NSFont systemFontOfSize:16
                                               weight:NSFontWeightSemibold]];
     title.textColor = NSColor.labelColor;
@@ -345,25 +784,69 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
 
     NSTextField *explanation =
         [self labelWithString:
-            @"The API key is saved in this Mac’s TerminalDB preferences. "
-             "It is never added to the project."
-                       frame:NSMakeRect(24, 204, 472, 34)
+            @"Use a signed-in Claude Code subscription or bill AI chat to an "
+             "Anthropic API key. Your Claude accounts and usage tracking stay "
+             "available with either choice."
+                       frame:NSMakeRect(24, 286, 572, 38)
                         font:[NSFont systemFontOfSize:12]];
     explanation.maximumNumberOfLines = 2;
     explanation.lineBreakMode = NSLineBreakByWordWrapping;
     [content addSubview:explanation];
 
-    NSTextField *keyLabel =
-        [self labelWithString:@"Anthropic API key"
-                       frame:NSMakeRect(24, 170, 130, 20)
+    NSTextField *providerLabel =
+        [self labelWithString:@"AI provider"
+                       frame:NSMakeRect(24, 248, 130, 20)
                         font:[NSFont systemFontOfSize:12
                                               weight:NSFontWeightMedium]];
-    keyLabel.textColor = NSColor.labelColor;
-    [content addSubview:keyLabel];
+    providerLabel.textColor = NSColor.labelColor;
+    [content addSubview:providerLabel];
+
+    self.providerControl =
+        [[NSSegmentedControl alloc] initWithFrame:NSZeroRect];
+    self.providerControl.segmentCount = 2;
+    [self.providerControl setLabel:@"Claude Subscription" forSegment:0];
+    [self.providerControl setLabel:@"Anthropic API" forSegment:1];
+    self.providerControl.trackingMode =
+        NSSegmentSwitchTrackingSelectOne;
+    self.providerControl.target = self;
+    self.providerControl.action = @selector(providerSelected:);
+    self.providerControl.frame = NSMakeRect(154, 242, 442, 28);
+    [content addSubview:self.providerControl];
+
+    self.providerDetailLabel =
+        [self labelWithString:@""
+                       frame:NSMakeRect(154, 202, 442, 36)
+                        font:[NSFont systemFontOfSize:11]];
+    self.providerDetailLabel.maximumNumberOfLines = 2;
+    self.providerDetailLabel.lineBreakMode = NSLineBreakByWordWrapping;
+    [content addSubview:self.providerDetailLabel];
+
+    NSTextField *modelLabel =
+        [self labelWithString:@"Model"
+                       frame:NSMakeRect(24, 169, 130, 20)
+                        font:[NSFont systemFontOfSize:12
+                                              weight:NSFontWeightMedium]];
+    modelLabel.textColor = NSColor.labelColor;
+    [content addSubview:modelLabel];
+
+    self.modelButton =
+        [[NSPopUpButton alloc] initWithFrame:NSMakeRect(154, 163, 442, 28)
+                                  pullsDown:NO];
+    self.modelButton.target = self;
+    self.modelButton.action = @selector(modelSelected:);
+    [content addSubview:self.modelButton];
+
+    self.keyLabel =
+        [self labelWithString:@"Anthropic API key"
+                       frame:NSMakeRect(24, 121, 130, 20)
+                        font:[NSFont systemFontOfSize:12
+                                              weight:NSFontWeightMedium]];
+    self.keyLabel.textColor = NSColor.labelColor;
+    [content addSubview:self.keyLabel];
 
     self.keyField =
         [[NSSecureTextField alloc]
-            initWithFrame:NSMakeRect(154, 164, 342, 26)];
+            initWithFrame:NSMakeRect(154, 115, 442, 26)];
     self.keyField.placeholderString = @"sk-ant-…";
     self.keyField.font =
         [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
@@ -375,34 +858,18 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
 
     self.keyStatusLabel =
         [self labelWithString:@""
-                       frame:NSMakeRect(154, 142, 342, 18)
+                       frame:NSMakeRect(154, 93, 442, 18)
                         font:[NSFont systemFontOfSize:11]];
     [content addSubview:self.keyStatusLabel];
 
-    NSTextField *modelLabel =
-        [self labelWithString:@"Model"
-                       frame:NSMakeRect(24, 108, 130, 20)
-                        font:[NSFont systemFontOfSize:12
-                                              weight:NSFontWeightMedium]];
-    modelLabel.textColor = NSColor.labelColor;
-    [content addSubview:modelLabel];
-
-    self.modelButton =
-        [[NSPopUpButton alloc] initWithFrame:NSMakeRect(154, 102, 342, 28)
-                                  pullsDown:NO];
-    self.modelButton.target = self;
-    self.modelButton.action = @selector(modelSelected:);
-    [content addSubview:self.modelButton];
-
     self.statusLabel =
-        [self labelWithString:
-            @"Available models refresh automatically from Anthropic."
-                       frame:NSMakeRect(24, 66, 390, 24)
+        [self labelWithString:@""
+                       frame:NSMakeRect(24, 62, 520, 24)
                         font:[NSFont systemFontOfSize:11]];
     [content addSubview:self.statusLabel];
 
     self.progress = [[NSProgressIndicator alloc]
-        initWithFrame:NSMakeRect(478, 70, 16, 16)];
+        initWithFrame:NSMakeRect(578, 66, 16, 16)];
     self.progress.style = NSProgressIndicatorStyleSpinning;
     self.progress.controlSize = NSControlSizeSmall;
     self.progress.displayedWhenStopped = NO;
@@ -417,7 +884,7 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
     [content addSubview:self.removeButton];
 
     self.saveButton =
-        [[NSButton alloc] initWithFrame:NSMakeRect(286, 20, 146, 32)];
+        [[NSButton alloc] initWithFrame:NSMakeRect(386, 20, 146, 32)];
     self.saveButton.title = @"Save & Refresh";
     self.saveButton.bezelStyle = NSBezelStyleRounded;
     self.saveButton.target = self;
@@ -425,7 +892,7 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
     [content addSubview:self.saveButton];
 
     NSButton *done = [[NSButton alloc]
-        initWithFrame:NSMakeRect(438, 20, 58, 32)];
+        initWithFrame:NSMakeRect(538, 20, 58, 32)];
     done.title = @"Done";
     done.bezelStyle = NSBezelStyleRounded;
     done.keyEquivalent = @"\r";
@@ -434,14 +901,18 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
     [content addSubview:done];
 }
 
-- (void)present {
+- (void)presentWithSubscriptionStatus:(NSString *)status {
+    self.subscriptionStatus = status ?: @"No Claude Code account is selected.";
     [self reloadConfiguration];
     [self showWindow:nil];
     [self.window center];
     [self.window makeKeyAndOrderFront:nil];
-    if (self.keyField.stringValue.length > 0) {
+    if ([self.configuration.chatProvider
+            isEqualToString:ClaudeAIProviderAPI] &&
+        self.keyField.stringValue.length > 0) {
         [self refreshModels];
-    } else {
+    } else if ([self.configuration.chatProvider
+                   isEqualToString:ClaudeAIProviderAPI]) {
         [self.window makeFirstResponder:self.keyField];
     }
 }
@@ -452,6 +923,15 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
 }
 
 - (void)reloadConfiguration {
+    BOOL usesAPI = [self.configuration.chatProvider
+        isEqualToString:ClaudeAIProviderAPI];
+    self.providerControl.selectedSegment = usesAPI ? 1 : 0;
+    self.keyLabel.hidden = !usesAPI;
+    self.keyField.hidden = !usesAPI;
+    self.keyStatusLabel.hidden = !usesAPI;
+    self.removeButton.hidden = !usesAPI;
+    self.saveButton.hidden = !usesAPI;
+
     NSString *storedKey = self.configuration.apiKey;
     BOOL hasKey = storedKey.length > 0;
     self.keyField.stringValue = storedKey ?: @"";
@@ -460,11 +940,44 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
         : @"No API key is stored.";
     self.removeButton.enabled = hasKey;
 
+    self.providerDetailLabel.stringValue = usesAPI
+        ? @"AI chat is sent directly to Anthropic and billed to this API "
+           "key. Claude Code accounts and usage remain available."
+        : [NSString stringWithFormat:
+            @"AI chat uses the Claude Code subscription selected for this "
+             "terminal tab. %@",
+            self.subscriptionStatus ?: @"Choose an account from the Claude menu."];
+
     [self.modelButton removeAllItems];
+    if (!usesAPI) {
+        NSArray<NSDictionary *> *models =
+            ClaudeAPIConfiguration.subscriptionModels;
+        NSInteger selectedIndex = 0;
+        for (NSUInteger index = 0; index < models.count; index++) {
+            NSDictionary *model = models[index];
+            [self.modelButton addItemWithTitle:model[@"display_name"]];
+            self.modelButton.lastItem.representedObject = model[@"id"];
+            if ([model[@"id"] isEqualToString:
+                    self.configuration.subscriptionModelID]) {
+                selectedIndex = (NSInteger)index;
+            }
+        }
+        [self.modelButton selectItemAtIndex:selectedIndex];
+        self.modelButton.enabled = YES;
+        self.statusLabel.stringValue =
+            @"Changing provider or model starts a new chat.";
+        self.statusLabel.textColor = NSColor.secondaryLabelColor;
+        return;
+    }
+
     if (self.configuration.models.count == 0) {
         [self.modelButton addItemWithTitle:
             hasKey ? @"Refresh to load models" : @"Add a key to load models"];
         self.modelButton.enabled = NO;
+        self.statusLabel.stringValue = hasKey
+            ? @"Save & Refresh to load the models available to this key."
+            : @"Add a key to use the Anthropic API provider.";
+        self.statusLabel.textColor = NSColor.secondaryLabelColor;
         return;
     }
 
@@ -490,6 +1003,21 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
         }
     }
     [self.modelButton selectItemAtIndex:selectedIndex];
+    self.statusLabel.stringValue =
+        @"Available models come directly from Anthropic.";
+    self.statusLabel.textColor = NSColor.secondaryLabelColor;
+}
+
+- (void)providerSelected:(id)sender {
+    (void)sender;
+    NSString *provider = self.providerControl.selectedSegment == 1
+        ? ClaudeAIProviderAPI : ClaudeAIProviderSubscription;
+    [self.configuration selectChatProvider:provider];
+    [self reloadConfiguration];
+    if ([provider isEqualToString:ClaudeAIProviderAPI] &&
+        !self.configuration.hasAPIKey) {
+        [self.window makeFirstResponder:self.keyField];
+    }
 }
 
 - (void)saveAndRefresh:(id)sender {
@@ -549,9 +1077,20 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
             ? self.modelButton.selectedItem.representedObject
             : nil;
     if (identifier.length > 0) {
-        [self.configuration selectModelID:identifier];
+        if ([self.configuration.chatProvider
+                isEqualToString:ClaudeAIProviderAPI]) {
+            [self.configuration selectModelID:identifier];
+        } else {
+            [self.configuration selectSubscriptionModelID:identifier];
+        }
         self.statusLabel.stringValue =
             @"This model will be used for new AI chats.";
+        self.statusLabel.textColor = NSColor.secondaryLabelColor;
+    } else if ([self.configuration.chatProvider
+                   isEqualToString:ClaudeAIProviderSubscription]) {
+        [self.configuration selectSubscriptionModelID:@""];
+        self.statusLabel.stringValue =
+            @"Claude Code will choose the account’s default model.";
         self.statusLabel.textColor = NSColor.secondaryLabelColor;
     }
 }
@@ -561,8 +1100,8 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
     NSAlert *alert = [[NSAlert alloc] init];
     alert.messageText = @"Remove the Claude API key?";
     alert.informativeText =
-        @"TerminalDB will stop sending AI chat requests until "
-         "another key is added.";
+        @"The API provider will be unavailable until another key is added. "
+         "Claude subscription accounts are not changed.";
     [alert addButtonWithTitle:@"Remove Key"];
     [alert addButtonWithTitle:@"Cancel"];
     if ([alert runModal] != NSAlertFirstButtonReturn) return;
@@ -572,6 +1111,11 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
         self.statusLabel.stringValue = error.localizedDescription;
         self.statusLabel.textColor = NSColor.systemRedColor;
         return;
+    }
+    if ([self.configuration.chatProvider
+            isEqualToString:ClaudeAIProviderAPI]) {
+        [self.configuration
+            selectChatProvider:ClaudeAIProviderSubscription];
     }
     self.statusLabel.stringValue =
         @"The API key was removed from TerminalDB preferences.";

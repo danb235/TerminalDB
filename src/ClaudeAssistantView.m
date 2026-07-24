@@ -137,20 +137,20 @@
 
     _headerSettingsButton =
         [self headerButtonWithTitle:@""
-                           toolTip:@"Claude API key and model settings"
+                           toolTip:@"AI provider, account, key, and model settings"
                              action:@selector(settingsSelected:)];
     NSImage *settingsImage =
         [NSImage imageWithSystemSymbolName:@"gearshape"
-                  accessibilityDescription:@"Claude API Settings"];
+                  accessibilityDescription:@"AI Chat Settings"];
     settingsImage = [settingsImage imageWithSymbolConfiguration:
         [NSImageSymbolConfiguration configurationWithPointSize:13
                                                         weight:NSFontWeightMedium]];
     _headerSettingsButton.image = settingsImage;
     _headerSettingsButton.imagePosition = NSImageOnly;
-    [_headerSettingsButton setAccessibilityLabel:@"Claude API Settings"];
+    [_headerSettingsButton setAccessibilityLabel:@"AI Chat Settings"];
 
     _settingsButton = [[NSButton alloc] initWithFrame:NSZeroRect];
-    _settingsButton.title = @"Open API Settings";
+    _settingsButton.title = @"Open AI Chat Settings";
     _settingsButton.bezelStyle = NSBezelStyleRounded;
     _settingsButton.controlSize = NSControlSizeSmall;
     _settingsButton.target = self;
@@ -424,14 +424,14 @@
     self.response =
         message.length > 0
             ? message
-            : @"Add an Anthropic API key and choose a model to use AI chat.";
+            : @"Choose a Claude subscription or add an Anthropic API key.";
     self.statusLabel.stringValue = @"Claude · Setup required";
     self.statusLabel.textColor = self.theme.ansiColors[3];
     self.settingsButton.hidden = NO;
     self.followUpField.string = @"";
     self.followUpField.editable = NO;
     self.composerPlaceholder.stringValue =
-        @"Add an API key and choose a model to start chatting…";
+        @"Choose an AI provider to start chatting…";
     self.composerPlaceholder.hidden = NO;
     self.sendButton.enabled = NO;
     self.working = NO;

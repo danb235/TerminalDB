@@ -237,8 +237,8 @@ static double ClaudeUsageClampedPercent(double percent) {
         [content addSubview:title];
         NSTextField *subtitle = [self
             usageWindowLabel:
-                @"Subscription usage is per Claude Code account. Anthropic "
-                 "API chat credentials and model selection remain separate."
+                @"Subscription usage is per Claude Code account. AI chat can "
+                 "use this subscription or a separately managed API key."
                          size:12
                        weight:NSFontWeightRegular
                         color:self.theme.statusBarActiveForeground

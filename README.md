@@ -45,7 +45,8 @@ one native window:
   the exact command, output, exit status, and duration.
 - Every completed command becomes a structured block with output, target,
   environment, approval, status, timing, bookmarks, annotations, and actions.
-- Claude Code accounts and Anthropic API credentials remain visibly separate.
+- AI chat can use either a Claude Code subscription or an Anthropic API key,
+  while account identity and usage remain visible and independently managed.
 
 ## Features
 
@@ -66,9 +67,10 @@ one native window:
 - **New chat** for a deliberate context reset
 - Visible context chips for directory, terminal output, command blocks, and
   monitored work; removable attachments never hide what Claude can see
-- Streamed Anthropic Messages API responses
-- Model list loaded dynamically from Anthropic's Models API
-- Graceful setup guidance when no API key or model is configured
+- Streamed responses from either the Anthropic Messages API or the selected
+  Claude Code subscription
+- Dynamic API model discovery plus Claude Code model aliases
+- Graceful, provider-specific setup and sign-in guidance
 
 ### Permissioned command and patch workflow
 
@@ -157,9 +159,11 @@ monitoring surfaces:
 - macOS 13 Ventura or newer
 - Apple Command Line Tools
 - `zsh` as the interactive shell
-- An Anthropic API key for AI chat
-- Optional: [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) for
-  subscription-account isolation and usage tracking
+- At least one AI provider:
+  - a signed-in Claude Code subscription account; or
+  - an Anthropic API key
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) is
+  required when using a subscription to power AI chat
 
 Install the command-line tools if needed:
 
@@ -191,32 +195,52 @@ runtime, notarization, and a release-specific bundle/version process.
 
 ## Configure AI chat
 
-1. Open **TerminalDB → Settings…**, **AI → AI Chat Settings…**, or the gear
+1. Add and sign in to a Claude Code account from
+   **AI → Claude Code Account for This Tab**, or have an Anthropic API key
+   ready.
+2. Open **TerminalDB → Settings…**, **AI → AI Chat Settings…**, or the gear
    in the AI pane.
-2. Paste an Anthropic API key.
-3. Choose **Save & Refresh**.
-4. Select one of the models returned for that key.
+3. Choose **Claude Subscription** or **Anthropic API** as the AI provider.
+4. For a subscription, choose Default, Sonnet, Opus, or Fable. For the API,
+   add the key, choose **Save & Refresh**, and select a model returned for
+   that key.
 5. Open the AI pane with the title-bar sidebar button or
    **Shift-Command-L**.
 
-The selected model is also available under **AI → AI Chat Model**. Use
-**Refresh Available Models** to load newly available models without updating
-TerminalDB.
+The provider and model are also available under the **AI** menu. API models
+are loaded dynamically from Anthropic; subscription models use aliases
+supported by the installed Claude Code version. Changing provider, model, or
+subscription account starts a fresh chat so context never crosses billing or
+identity boundaries.
 
 ### API chat versus Claude Code
 
-These are intentionally separate credentials and billing surfaces:
+AI provider selection and Claude Code account management are intentionally
+independent. Selecting the API for chat does not disconnect the subscription
+account used by the active terminal tab:
 
 | Capability | Anthropic API key | Claude Code account |
 | --- | --- | --- |
-| Used for | TerminalDB's AI chat | `claude` sessions launched in a tab |
+| Powers AI chat | Yes, when selected | Yes, when Claude Subscription is selected |
+| Powers interactive `claude` sessions | No | Yes |
 | Billing | Anthropic API usage | Claude subscription |
-| Selection | One saved key and model | One profile per terminal tab |
+| Selection | One saved key and API model | One profile per terminal tab plus a subscription model |
 | Storage | TerminalDB preferences | Isolated Claude config and Keychain item |
 | Usage shown | Not currently shown | 5h, 7d, and Fable subscription windows |
-| Removal effect | Disables API chat | Removes only that local TerminalDB profile |
+| Removal effect | Makes the API provider unavailable | Removes only that local TerminalDB profile |
 
-Adding or removing one credential type never changes the other.
+When both are configured, the user can switch chat providers at any time
+while retaining Claude account selection and usage tracking. When only one is
+configured, that provider can power the complete AI pane.
+
+Subscription chat is invoked through the installed Claude Code CLI using the
+selected profile's isolated configuration directory. TerminalDB removes API
+credential environment variables from that child process, disables Claude
+Code's built-in tools and slash commands, and keeps terminal inspection behind
+TerminalDB's own read-only validator. This prevents selecting a subscription
+from silently bypassing the app's command transcript and permission model.
+User prompts and terminal context are passed to Claude Code over standard
+input, not exposed as command-line arguments.
 
 ## Use Claude Code accounts
 
@@ -292,7 +316,7 @@ TerminalDB deliberately keeps its implementation small and inspectable:
 | --- | --- |
 | `src/main.m` | App lifecycle, PTY, terminal parser/renderer, tabs, menus, shell integration |
 | `src/ClaudeAssistantView.*` | AI conversation UI, streaming transcript, inline command actions |
-| `src/ClaudeAPI.*` | API-key configuration, dynamic models, Anthropic message streaming |
+| `src/ClaudeAPI.*` | Provider configuration, API models, Anthropic API and Claude Code streaming |
 | `src/TerminalInspector.*` | Read-only command validation and sandboxed inspection |
 | `src/ClaudeProfile.*` | Isolated Claude Code profiles and local profile persistence |
 | `src/ClaudeStatusBar.*` | Active account, sign-in state, usage normalization and refresh |
@@ -313,7 +337,7 @@ scoped to the current macOS account.
 
 | Data | Location | Notes |
 | --- | --- | --- |
-| API key and selected model | TerminalDB `NSUserDefaults` preferences | Key is masked in the UI but is not Keychain-protected |
+| AI provider, API key, and models | TerminalDB `NSUserDefaults` preferences | Key is masked in the UI but is not Keychain-protected |
 | Command ledger | `~/Library/Application Support/TerminalDB/command-history.json` | Mode `0600`, capped at 5,000 records |
 | Runbooks and workspaces | `~/Library/Application Support/TerminalDB/product-state.json` | Local persistent workflow state |
 | Claude profiles | `~/Library/Application Support/TerminalDB/ClaudeProfiles/` | Separate configuration directory per profile |
@@ -338,13 +362,15 @@ not eliminate it.
 - Inspection processes use a bounded environment, output limit, and duration.
 - The interactive shell remains separate from inspection processes.
 
-### Context sent to Anthropic
+### Context sent to Claude
 
 When an AI message is sent, TerminalDB includes the active tab's current
 directory and visible terminal output plus any removable context chips shown
 in the composer. That content may include source code, paths, command output,
 or secrets already visible in the terminal. Review the chips and screen before
-sending and follow your organization's data-handling policy.
+sending and follow your organization's data-handling policy. Depending on the
+selected provider, the request is sent through either Anthropic's API or the
+signed-in Claude Code subscription.
 
 Terminal output is marked as untrusted reference data in the system prompt,
 but prompt injection remains possible. Treat generated advice and commands as
@@ -429,8 +455,14 @@ return a different set for different Anthropic accounts.
 
 ### AI chat says setup is required
 
-Open **TerminalDB → Settings…** and verify that both an API key and model are
-configured. Claude Code subscription sign-in does not configure API chat.
+Open **AI → AI Chat Settings…** and check the selected provider:
+
+- **Claude Subscription** needs Claude Code installed and a signed-in account
+  selected for the active tab.
+- **Anthropic API** needs a saved API key and a model loaded for that key.
+
+If both are available, switching providers starts a clean conversation and
+does not remove either credential.
 
 ### Claude Code is signed out
 
