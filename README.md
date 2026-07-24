@@ -1,235 +1,457 @@
 # TerminalDB
 
-TerminalDB is an original native macOS terminal application built with AppKit,
-Objective-C, and the system pseudo-terminal APIs.
+<p align="center">
+  <img src="Design/terminaldb-icon-preview.png" width="128" alt="TerminalDB prompt-and-ledger app icon">
+</p>
 
-It intentionally uses only the Apple Command Line Tools: there is no Xcode
-project and no dependency manager.
+<p align="center">
+  <strong>A native macOS terminal with a context-aware Claude assistant and a local command ledger.</strong>
+</p>
 
-TerminalDB uses its original **Graphite Ledger** visual system: deep graphite
-surfaces, cyan terminal/context signals, acid-lime live/success states, amber
-cautions, and coral failures. The design is native AppKit and does not load or
-imitate an installed terminal, editor, or third-party design system.
+<p align="center">
+  <img alt="macOS 13+" src="https://img.shields.io/badge/macOS-13%2B-22262b">
+  <img alt="Objective-C" src="https://img.shields.io/badge/Objective--C-AppKit-52d0dd">
+  <img alt="Build with Make" src="https://img.shields.io/badge/build-make-b4e34d">
+  <img alt="Project status: alpha" src="https://img.shields.io/badge/status-alpha-e5b454">
+</p>
 
-JetBrains Mono is TerminalDB's bundled application font. It is included under
-the SIL Open Font License, so users do not need to install any font separately.
-The terminal uses 13.5-point type with 1.24 line spacing.
+TerminalDB combines an independent PTY-backed shell, a collapsible AI chat,
+multiple isolated Claude Code accounts, live subscription-usage tracking, and
+a searchable local record of completed commands. It is written directly
+against AppKit and macOS system APIs with no Xcode project, package manager, or
+runtime framework dependency.
 
-The app icon is the TerminalDB prompt-and-ledger mark: a cyan command chevron
-feeding a three-row ledger whose active row is lime. The repository includes
-the SVG master, generated `.icns`, and the complete clickable design reference
-under `Design/`.
+> [!IMPORTANT]
+> TerminalDB is early alpha software. Test it with non-critical workflows,
+> review every generated command before running it, and read the
+> [security and privacy](#security-and-privacy) section before adding an API
+> key.
 
-## Command ledger
+![TerminalDB native interface with command ledger, terminal, AI chat, and usage status](Design/terminaldb-native-qa.png)
 
-TerminalDB wraps the live shell with a compact command-ledger header. Native
-zsh lifecycle markers report when a command begins and when the next prompt
-returns, including the command, directory, exit code, and duration. The latest
-block remains available for **Ask AI**, **Paste**, and **History** without
-altering normal PTY behavior.
+## Why TerminalDB?
 
-Completed commands are stored in a local TerminalDB command history on this
-Mac. The history window supports live search across commands, paths, and
-captured output, shows full metadata and output, and can paste a prior command
-back into the terminal or attach it to AI chat. Common API keys, bearer tokens,
-and password assignments are redacted before persistence; output is bounded
-and old records roll off after 5,000 entries.
+Command-line work often alternates between understanding a system, composing a
+command, running it, and interpreting the result. TerminalDB keeps that loop in
+one native window:
 
-When Claude Code is installed, TerminalDB can keep multiple persistent Claude
-account profiles without an application-imposed account limit. Every profile
-has its own Claude configuration directory and macOS Keychain credential item.
-A profile is selected per tab from the native **Claude** application menu, so
-two TerminalDB tabs or windows can use different Claude subscriptions at the
-same time without changing the Claude account used by Terminal, iTerm, or
-another application. New TerminalDB tabs start with the most recently selected
-profile.
+- The terminal remains a normal interactive shell; natural-language detection
+  never intercepts terminal input.
+- AI chat receives the current directory and visible terminal output only when
+  the user sends a message.
+- Suggested shell commands have an adjacent **Paste ↗** action that inserts the
+  command without pressing Return.
+- Read-only questions can use a constrained inspection sidecar that reports
+  the exact command, output, exit status, and duration.
+- The command ledger makes the latest command and prior results easy to
+  revisit, paste, search, or explain.
+- Claude Code accounts and Anthropic API credentials remain visibly separate.
 
-Each tab is also a fully independent terminal session. It has its own login
-shell, PTY, working directory, foreground process, scrollback, and selected
-Claude profile, so switching accounts in one tab does not alter another tab.
-The terminal draws a solid theme-colored block at the PTY cursor position so
-the active input location remains visible after the shell prompt. When focus
-moves elsewhere in the window, the block becomes an outline, and full-screen
-terminal programs can hide or show it with the standard cursor mode.
+## Features
 
-## AI chat
+### Native terminal sessions
 
-Select the standard right-sidebar icon in the upper-right corner or choose
-**View → Show AI Chat** (Command-Shift-L) to open a collapsible chat pane
-beside the active terminal. The icon is built into the window title bar and
-toggles the pane in either direction. Terminal input is always sent to the
-shell; TerminalDB does not try to classify commands as natural language.
+- Independent login shell, PTY, working directory, foreground process, and
+  scrollback for every tab
+- UTF-8, ANSI/256/truecolor output, alternate-screen programs, bracketed paste,
+  cursor modes, and xterm navigation keys
+- Native macOS windows and tabs, including reordering, detaching, and merging
+- Event-driven tab titles for shell commands and Claude Code lifecycle states
+- Graphite Ledger visual system with bundled JetBrains Mono
 
-Each message sent from the chat includes a fresh snapshot of that tab's current
-working directory, window state, and visible terminal output. Claude can use
-this context to explain an error, help investigate the system, write code, or
-craft a command without the user copying terminal output manually. Terminal
-output is marked as untrusted reference data in the model instructions.
+### Context-aware AI chat
 
-For factual questions such as “count the JPEGs in this directory,” Claude can
-run a tightly validated, read-only inspection in a separate sidecar process.
-The chat shows the exact command, working directory, combined output, exit
-status, duration, and whether output was truncated. Inspections use a strict
-command allowlist and a macOS sandbox that denies file writes and network
-access. They never type into, press Return in, or otherwise interrupt the
-interactive terminal session.
+- Collapsible right-side conversation pane with per-tab context
+- Ongoing conversations that survive pane collapse
+- **New chat** for a deliberate context reset
+- Current directory and visible terminal output attached at send time
+- Streamed Anthropic Messages API responses
+- Model list loaded dynamically from Anthropic's Models API
+- Graceful setup guidance when no API key or model is configured
 
-Every inspected command can also be pasted into the terminal. Commands that
-change state, need broader access, or fail inspection validation are never run
-automatically; Claude instead places them in fenced shell blocks. Each block
-gets its own inline **Paste ↗** button immediately beside the command. The button
-uses the terminal's normal paste behavior and deliberately does not press
-Return, so the user can review or edit the command before executing it.
-Non-shell code samples are never made runnable.
+### Review-first command workflow
 
-Conversation context is retained independently in each tab, including while
-the pane is collapsed. Choose **New chat** when the task changes; after
-confirmation, TerminalDB clears only that tab's AI context. A newly opened
-terminal tab always starts with fresh context.
+- A separate inline **Paste ↗** button for each shell code block
+- Pasted commands are never submitted automatically
+- Read-only inspection commands run outside the interactive PTY
+- Inspection output includes command, directory, exit code, duration, and
+  truncation state
+- Mutating or unsupported inspections are blocked and returned as suggestions
 
-Open **TerminalDB → Settings…**, choose **Claude → AI Chat Settings…**, select
-the gear in the AI-chat header, or press **Command-,** to add an Anthropic API
-key. Choose the active model directly from **Claude → AI Chat Model**. That
-submenu is populated from Anthropic's Models API and can be refreshed without
-opening Settings. The active model remains visible under the AI Chat heading.
-The key is stored only in this Mac's TerminalDB preferences. It is not written
-to project files, logs, or generated shell integration. This intentionally
-favors frictionless local persistence over Keychain protection; anyone with
-access to the macOS account can read the preference value.
+### Command ledger
 
-When no key or model is configured, the chat pane explains the required setup,
-provides a direct settings button, and keeps the composer disabled until the
-configuration is ready.
+- Live **READY**, **RUNNING**, and exit-state header above the terminal
+- Current command, directory, inferred environment, exit status, and duration
+- One-click **Ask AI**, **Explain / Fix**, **Paste**, and **History** actions
+- Search across prior commands, paths, and captured output
+- Local JSON persistence with bounded records and output
+- Best-effort redaction of common API keys, bearer tokens, and password
+  assignments before history is written
 
-The settings field reads the saved value back from TerminalDB preferences but
-uses a single-line secure control so the key is masked on screen. The stored
-key can still be replaced directly.
-Local development builds use a stable ad-hoc designated requirement for the
-TerminalDB bundle identifier. Distributed builds should replace the ad-hoc
-signature with the project’s normal Apple Developer signature.
-After a key is saved, TerminalDB loads the models available to that key from
-Anthropic's Models API. The model list refreshes on launch and whenever the
-settings window opens, so newly available models appear without an app update.
-The selected model is used for new AI chats.
+### Claude Code account management
 
-The bottom status bar displays the selected account and subscription as
-persistent identity text on the left, plus the active environment. Selecting
-the bar opens direct account switching, add/sign-in actions, usage refresh, and
-an explicit reminder that API-chat credentials are separate. The five-hour,
-seven-day, and separate Fable 5
-weekly usage meters are right-aligned against the opposite edge. The 5-hour and
-7-day meters include their next reset date and time when Anthropic reports one;
-an em dash indicates that no reset is currently reported. If the most recently
-reported reset has already passed, the meter labels it as ended with the
-reported date and time instead of presenting it as the next reset. Usage
-refreshes every five minutes from Anthropic's OAuth usage service without
-making a model request. The access token is read from the selected profile's
-macOS Keychain item into memory and is never written by TerminalDB. Because
-Anthropic does not currently document this endpoint as a public API, the
-Claude Code status-line feed remains a fallback.
+- No application-imposed account limit
+- A different Claude Code account can be selected for each terminal tab
+- Add, sign in, switch, and remove profiles without changing another terminal
+  application's Claude configuration
+- Active account and subscription remain visible in the bottom status strip
+- 5-hour, 7-day, and Fable usage with reported reset dates
+- Usage refresh on demand and automatically every five minutes
 
-Account actions live under **Claude → Claude Code Account for This Tab**. The
-submenu shows compact checked account choices and separates switching from
-adding, signing in, and removing a local account. Each tab retains its own
-selection. Usage refresh remains a separate top-level Claude action.
+![Claude Code account and usage states from the TerminalDB design reference](Design/terminaldb-status-usage-design.png)
 
-To enroll an account, open **Claude → Claude Code Account for This Tab** and
-choose **Add Claude Code Account…**,
-give the profile a memorable name, and complete Claude's browser sign-in. The
-normal `claude` command in that TerminalDB window is then automatically scoped
-to the selected profile. TerminalDB also records Claude's per-profile
-first-run-complete state after authentication, so an authenticated account does
-not re-enter Claude's login wizard. Authenticated profiles do not show another
-sign-in action. If a profile becomes logged out, **Sign In to _Profile_…**
-appears automatically.
+## Project status
 
-To remove a profile, select it for the current tab and choose **Remove
-“_Profile_” from TerminalDB…** in the same submenu. After confirmation,
-TerminalDB permanently deletes that local profile's configuration and
-TerminalDB-specific Claude Code credential, then moves affected tabs to the
-remaining default profile. This removes the account only from TerminalDB; it
-does not cancel or change the Claude subscription or its billing.
+TerminalDB is under active development and currently targets developers
+building the application from source. There is no notarized binary release,
+automatic updater, migration guarantee, or stable public API yet.
+
+The design source covers the broader product direction, interaction states,
+menus, accessibility behavior, environment safety, history, runbooks, and
+monitoring surfaces:
+
+- [Interactive design export](Design/TerminalDB.dc.html)
+- [App icon SVG master](Design/terminaldb-icon.svg)
+- [Claude Design project](https://claude.ai/design/p/0e421271-5e0c-43e1-b34a-e52926506c66?file=TerminalDB.dc.html)
 
 ## Requirements
 
-- macOS 13 or newer
+- macOS 13 Ventura or newer
 - Apple Command Line Tools
+- `zsh` as the interactive shell
+- An Anthropic API key for AI chat
+- Optional: [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) for
+  subscription-account isolation and usage tracking
 
-## Build and run
+Install the command-line tools if needed:
 
 ```sh
+xcode-select --install
+```
+
+## Quick start
+
+Clone, build, test, and launch:
+
+```sh
+git clone https://github.com/danb235/TerminalDB.git
+cd TerminalDB
 make
 make test
+open build/TerminalDB.app
+```
+
+During development, `make run` rebuilds and opens the app:
+
+```sh
 make run
 ```
 
-The self-test suite exercises terminal cursor positioning and redraws, Claude's
-interactive picker layout, split UTF-8 input, Space, Return, Control-C, arrow
-keys, output-follow scrolling across successive commands, safe extraction of
-shell code blocks, AI transcript rendering, terminal-context attachment,
-read-only command validation and sandbox execution, inspection-result
-rendering, command pasting without execution, and authenticated-profile
-onboarding and removal state.
-It also runs a background AppKit integration check for native tab grouping,
-independent shell sessions, activity state, AI-pane expansion and collapse,
-menu organization, account/model selection actions, switching, and closing.
+The generated bundle is `build/TerminalDB.app`. It is ad-hoc signed for local
+development. A distributed build should use an Apple Developer ID, hardened
+runtime, notarization, and a release-specific bundle/version process.
+
+## Configure AI chat
+
+1. Open **TerminalDB → Settings…**, **Claude → AI Chat Settings…**, or the gear
+   in the AI pane.
+2. Paste an Anthropic API key.
+3. Choose **Save & Refresh**.
+4. Select one of the models returned for that key.
+5. Open the AI pane with the title-bar sidebar button or
+   **Shift-Command-L**.
+
+The selected model is also available under **Claude → AI Chat Model**. Use
+**Refresh Available Models** to load newly available models without updating
+TerminalDB.
+
+### API chat versus Claude Code
+
+These are intentionally separate credentials and billing surfaces:
+
+| Capability | Anthropic API key | Claude Code account |
+| --- | --- | --- |
+| Used for | TerminalDB's AI chat | `claude` sessions launched in a tab |
+| Billing | Anthropic API usage | Claude subscription |
+| Selection | One saved key and model | One profile per terminal tab |
+| Storage | TerminalDB preferences | Isolated Claude config and Keychain item |
+| Usage shown | Not currently shown | 5h, 7d, and Fable subscription windows |
+| Removal effect | Disables API chat | Removes only that local TerminalDB profile |
+
+Adding or removing one credential type never changes the other.
+
+## Use Claude Code accounts
+
+Open **Claude → Claude Code Account for This Tab** to:
+
+- select an existing account for the active tab;
+- add and authenticate another account;
+- sign back in when a profile expires; or
+- remove the selected profile from TerminalDB.
+
+Each profile receives a TerminalDB-owned `CLAUDE_CONFIG_DIR`. This isolates its
+settings and credential from other TerminalDB profiles and from Claude Code
+running in Terminal, iTerm, or another application.
+
+The bottom status strip always shows the active account and subscription.
+Selecting the strip opens a compact account switcher and usage summary.
+Reported 5-hour and 7-day reset timestamps are shown only as future resets;
+stale past timestamps are labeled as ended until refreshed.
+
+Removing a profile deletes its local TerminalDB Claude configuration and
+TerminalDB-specific credential after confirmation. It does **not** cancel the
+Claude subscription or change billing.
+
+## Command ledger and history
+
+TerminalDB installs temporary zsh lifecycle hooks for its own PTY. A pre-exec
+marker starts a command record, and the next prompt supplies the exit code and
+finishes it. Normal shell behavior and the user's persistent shell
+configuration remain in control.
+
+Completed records contain:
+
+- command text;
+- working directory;
+- captured output;
+- exit code and duration;
+- timestamp, host, and inferred environment; and
+- a stable record identifier.
+
+Open **View → Command History** or press **Command-Y** to search and inspect
+records. Clearing TerminalDB history does not change `.zsh_history`.
+
+## Keyboard shortcuts
+
+| Action | Shortcut |
+| --- | --- |
+| New window | Command-N |
+| New tab | Command-T |
+| Close tab | Command-W |
+| Close window | Shift-Command-W |
+| Show or hide AI chat | Shift-Command-L |
+| Command history | Command-Y |
+| Clear scrollback | Command-K |
+| Settings | Command-, |
+| Increase terminal text | Command-+ |
+| Decrease terminal text | Command-minus |
+| Reset terminal text | Command-0 |
+| Previous tab | Shift-Command-[ |
+| Next tab | Shift-Command-] |
+
+## Architecture
+
+TerminalDB deliberately keeps its implementation small and inspectable:
+
+| Component | Responsibility |
+| --- | --- |
+| `src/main.m` | App lifecycle, PTY, terminal parser/renderer, tabs, menus, shell integration |
+| `src/ClaudeAssistantView.*` | AI conversation UI, streaming transcript, inline command actions |
+| `src/ClaudeAPI.*` | API-key configuration, dynamic models, Anthropic message streaming |
+| `src/TerminalInspector.*` | Read-only command validation and sandboxed inspection |
+| `src/ClaudeProfile.*` | Isolated Claude Code profiles and local profile persistence |
+| `src/ClaudeStatusBar.*` | Active account, sign-in state, usage normalization and refresh |
+| `src/TerminalLedger.*` | Command lifecycle header, redacted history store, history window |
+| `src/TerminalTheme.*` | Graphite Ledger colors, type, and terminal appearance |
+| `Resources/` | Font, license, icon, and shell bridge assets |
+| `Design/` | Interactive product design and visual QA artifacts |
+
+The build uses `clang`, AppKit, Foundation, and system pseudo-terminal APIs
+directly. There is no generated Xcode project or third-party runtime library.
+
+## Data storage
+
+TerminalDB does not provide cloud synchronization. Local application data is
+scoped to the current macOS account.
+
+| Data | Location | Notes |
+| --- | --- | --- |
+| API key and selected model | TerminalDB `NSUserDefaults` preferences | Key is masked in the UI but is not Keychain-protected |
+| Command ledger | `~/Library/Application Support/TerminalDB/command-history.json` | Mode `0600`, capped at 5,000 records |
+| Claude profiles | `~/Library/Application Support/TerminalDB/ClaudeProfiles/` | Separate configuration directory per profile |
+| Claude Code credentials | macOS Keychain | Created and read through the profile's Claude Code flow |
+| Temporary shell markers | A TerminalDB-created temporary directory | Removed with the terminal session |
+
+## Security and privacy
+
+Terminal software and AI-assisted command generation both operate near
+sensitive data. TerminalDB's current safeguards are designed to reduce risk,
+not eliminate it.
+
+### Command execution boundaries
+
+- AI-generated commands are pasted for review and are not executed by the
+  paste action.
+- Automatic inspections accept only a constrained read-only command set.
+- Inspections run under `sandbox-exec` with file writes and network access
+  denied.
+- Inspection processes use a bounded environment, output limit, and duration.
+- The interactive shell remains separate from inspection processes.
+
+### Context sent to Anthropic
+
+When an AI message is sent, TerminalDB includes the active tab's current
+directory and visible terminal output. That content may include source code,
+paths, command output, or secrets already visible in the terminal. Review the
+screen before sending and follow your organization's data-handling policy.
+
+Terminal output is marked as untrusted reference data in the system prompt,
+but prompt injection remains possible. Treat generated advice and commands as
+untrusted until reviewed.
+
+### Local secrets
+
+The Anthropic API key is persisted in TerminalDB preferences so local
+development builds do not repeatedly trigger Keychain authorization dialogs.
+The field is visually masked, and the value is excluded from project files,
+logs, shell integration, and the command ledger. Anyone who can read the
+macOS account's preferences may still recover it.
+
+The ledger applies best-effort secret redaction before writing records.
+Redaction cannot recognize every secret format. Avoid printing secrets to the
+terminal, clear the ledger after sensitive work, and rotate any credential
+that may have been exposed.
+
+### Vulnerability reports
+
+Do not disclose a suspected vulnerability in a public issue. Use GitHub's
+private vulnerability-reporting or Security Advisory flow when it is enabled
+for the repository, or contact the repository owner privately.
+
+## Build and test
+
+Available Make targets:
+
+```sh
+make                 # Build the app bundle
+make run             # Build and launch
+make test            # Run all self-tests and background integration QA
+make qa-signature    # Verify the development signature requirement
+make qa-tabs         # Exercise tabs, shells, titles, menus, and AI pane
+make qa-claude-state # Exercise Claude Code lifecycle bridge behavior
+make clean           # Remove the generated build directory
+```
+
+`make test` covers terminal parsing and cursor behavior, split UTF-8 input,
+clipboard and control-key behavior, output following, code-block extraction,
+AI transcript and terminal context, inspection validation and rendering,
+command pasting without execution, ledger redaction/environment handling,
+usage normalization, profile authentication/removal, code signing, and
+background AppKit tab integration.
+
 QA app processes use accessory activation and keep their windows behind the
 active application.
 
-## Tabs
-
-TerminalDB uses the native macOS tab bar for a browser-style experience:
-
-- **Command-T** or the tab-bar **+** button opens a new tab and login shell
-- **Command-W** or the tab close button closes only the selected tab
-- **Command-Shift-[** and **Command-Shift-]** select the previous or next tab
-- tabs can be reordered, detached into windows, and merged using normal macOS
-  window behavior
-- each tab can select a different persisted Claude account from its status bar
-
-An animated activity mark appears only while work is actively progressing.
-For Claude Code, its documented lifecycle state is authoritative: the spinner
-runs during `Working` and is hidden for `Ready` and `Needs input`. For ordinary
-commands, recent PTY output drives the animation. Quiet foreground programs do
-not show a stopped loading glyph; their workload remains visible in the tab
-title.
-
-Tab names are concise, event-driven descriptions of the current workload.
-TerminalDB's per-tab zsh integration reports the current directory at each
-prompt and the executable name before each command, producing titles such as
-`TerminalDB`, `npm · TerminalDB`, or `ssh · TerminalDB`. Applications may
-override this through the standard OSC 0/2 title sequences.
-
-Claude Code receives an additional, TerminalDB-owned settings file with
-documented lifecycle hooks. Those hooks update only a private per-tab state
-file, allowing titles such as `Claude · TerminalDB · Working`, `Ready`, or
-`Needs input`. TerminalDB never stores or displays the prompt, command
-arguments, hook JSON, or arbitrary screen output in a title. Control
-characters are removed, whitespace is collapsed, and long application-supplied
-titles are truncated before display.
-
 ## Terminal compatibility
 
-TerminalDB reports `TERM=xterm-256color` and implements the everyday
-iTerm-style baseline used by shells and command-line tools:
+TerminalDB reports `TERM=xterm-256color` and implements a practical everyday
+xterm/iTerm-style baseline:
 
-- UTF-8 input and output, ANSI colors, 256 colors, and truecolor
-- cursor movement, screen and line erasing, and in-place TUI redraws
-- primary/alternate-screen switching and restoration for tools such as
-  `less` and `vim`
-- normal and application cursor keys, xterm function/navigation keys, and
-  Control-key input
-- normal and bracketed paste, selection and macOS clipboard copy/paste
-- automatic output following, with preserved scrollback when the user scrolls
-  up and a return to the live prompt when the user types
-- PTY resize updates with `SIGWINCH`, device/cursor reports, bells, and
-  OSC 0/1/2 application and window titles
+- UTF-8, ANSI colors, 256 colors, and truecolor
+- cursor movement, erasing, and in-place TUI redraws
+- primary and alternate screen switching
+- normal and application cursor keys
+- xterm function and navigation keys
+- selection, clipboard copy/paste, and bracketed paste
+- PTY resizing with `SIGWINCH`
+- OSC 0/1/2 application and window titles
+- automatic output following with preserved user scrollback
 
-This is a practical compatibility target rather than full iTerm2 parity.
-Mouse-reporting protocols, complete DEC scrolling-region semantics, Unicode
-cell-width tables for every emoji/CJK edge case, hyperlinks, inline images,
-and split panes remain future work.
+Known compatibility gaps include mouse-reporting protocols, complete DEC
+scrolling-region semantics, exhaustive Unicode cell-width handling,
+hyperlinks, inline images, and split panes.
 
-The current baseline launches the user's login shell in a PTY, accepts keyboard
-input, displays styled ANSI output, resizes the PTY with the window, and
-supports independent native tabs.
+## Troubleshooting
+
+### No models appear
+
+Confirm the API key is valid, select **Save & Refresh**, then use
+**Claude → AI Chat Model → Refresh Available Models**. The models endpoint may
+return a different set for different Anthropic accounts.
+
+### AI chat says setup is required
+
+Open **TerminalDB → Settings…** and verify that both an API key and model are
+configured. Claude Code subscription sign-in does not configure API chat.
+
+### Claude Code is signed out
+
+Choose the profile under **Claude → Claude Code Account for This Tab**, then
+select **Sign In to _Profile_…**. Other tabs keep their existing account.
+
+### Usage is unavailable or stale
+
+Use **Claude → Refresh Claude Code Usage** or select the bottom status strip.
+TerminalDB reads Claude Code status data and also uses Anthropic's currently
+undocumented OAuth usage endpoint as a best-effort source. Service changes may
+temporarily make usage unavailable without affecting the subscription itself.
+
+### The app is blocked after downloading a build
+
+The current project produces a local ad-hoc-signed development bundle, not a
+notarized public release. Build from source. Do not bypass Gatekeeper for an
+untrusted binary.
+
+## Design and accessibility
+
+Graphite Ledger is TerminalDB's own visual system: deep graphite surfaces,
+cyan context signals, acid-lime live/success states, amber warnings, and coral
+failures. Terminal and command metadata use bundled JetBrains Mono under the
+SIL Open Font License.
+
+The design target includes keyboard access, explicit focus indicators, text
+alternatives for color-coded states, VoiceOver labels for icon-only controls,
+reduced-motion behavior, and a compact layout that preserves terminal
+readability. Accessibility issues are treated as product bugs.
+
+## Contributing
+
+Contributions will be welcome once the repository is opened publicly.
+
+Before proposing a change:
+
+1. Search existing issues and discussions.
+2. Keep changes focused and preserve normal PTY behavior.
+3. Do not commit API keys, access tokens, captured user output, or personal
+   Claude profile data.
+4. Run `make test`.
+5. Include manual QA notes for terminal, account, usage, or accessibility
+   changes.
+6. Update documentation when behavior, storage, or security boundaries change.
+
+Code should compile cleanly with `-Wall -Wextra`, use AppKit conventions, avoid
+new dependencies unless they materially improve the product, and include a
+proportionate regression test.
+
+## Roadmap
+
+The current design explores several high-value directions that are not all
+implemented yet:
+
+- richer command-block inspection and structured output;
+- environment-aware confirmation policy for remote and production sessions;
+- session history, bookmarks, export, and privacy controls;
+- task monitors and approval notifications;
+- reusable command runbooks and parameterized workflows;
+- project context and environment profiles;
+- optional split panes;
+- release signing, notarization, updates, and crash diagnostics; and
+- broader terminal-protocol compatibility.
+
+Roadmap items are directional and do not imply a release commitment.
+
+## License
+
+An open-source license has not been selected yet. Until a `LICENSE` file is
+added, copyright law reserves all rights and the source is available for
+evaluation only.
+
+Before making the repository public, select an OSI-approved license that
+matches the project's intended contribution and redistribution model.
+
+## Acknowledgements
+
+- [Anthropic](https://www.anthropic.com/) for Claude and Claude Code
+- [JetBrains Mono](https://www.jetbrains.com/lp/mono/) for the bundled terminal
+  font
+- The macOS AppKit, Foundation, and POSIX terminal APIs
