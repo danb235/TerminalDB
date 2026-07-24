@@ -655,6 +655,8 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
     NSDictionary *limits = normalized[@"rate_limits"];
     NSNumber *fiveHourReset = limits[@"five_hour"][@"resets_at"];
     NSNumber *sevenDayReset = limits[@"seven_day"][@"resets_at"];
+    NSNumber *pastReset =
+        @([NSDate date].timeIntervalSince1970 - 60.0);
     return [limits[@"five_hour"][@"used_percentage"] isEqual:@12] &&
         [fiveHourReset isKindOfClass:NSNumber.class] &&
         [limits[@"seven_day"][@"used_percentage"] isEqual:@34] &&
@@ -663,8 +665,8 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
         [limits[@"fable_five"][@"resets_at"] isKindOfClass:NSNumber.class] &&
         [self compactResetDateTimeFromTimestamp:fiveHourReset].length > 0 &&
         [self compactResetDateTimeFromTimestamp:sevenDayReset].length > 0 &&
-        [self compactResetDateTimeFromTimestamp:
-            @([NSDate date].timeIntervalSince1970 - 60.0)] == nil;
+        [self compactResetDateTimeFromTimestamp:pastReset] == nil &&
+        [self compactDateTimeFromTimestamp:pastReset].length > 0;
 }
 
 + (nullable NSNumber *)timestampFromUsageResetValue:(id)value {
@@ -708,6 +710,16 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
     return [formatter stringFromDate:date];
 }
 
++ (nullable NSString *)compactDateTimeFromTimestamp:
+    (nullable NSNumber *)timestamp {
+    if (![timestamp isKindOfClass:NSNumber.class]) return nil;
+    NSDate *date = [NSDate
+        dateWithTimeIntervalSince1970:timestamp.doubleValue];
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    [formatter setLocalizedDateFormatFromTemplate:@"Mdjmm"];
+    return [formatter stringFromDate:date];
+}
+
 - (NSAttributedString *)usageWindowSegment:(NSString *)label
                                    percent:(double)percent
                                     window:(NSDictionary *)window {
@@ -716,6 +728,24 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
     NSNumber *timestamp = [window[@"resets_at"] isKindOfClass:NSNumber.class]
         ? window[@"resets_at"]
         : nil;
+    if (timestamp != nil) {
+        NSDate *reset =
+            [NSDate dateWithTimeIntervalSince1970:timestamp.doubleValue];
+        if (reset.timeIntervalSinceNow <= 1.0) {
+            NSString *ended =
+                [ClaudeStatusBar compactDateTimeFromTimestamp:timestamp]
+                    ?: @"earlier";
+            [segment appendAttributedString:[[NSAttributedString alloc]
+                initWithString:
+                    [NSString stringWithFormat:@" · ended %@", ended]
+                    attributes:@{
+                        NSFontAttributeName : self.usageLabel.font,
+                        NSForegroundColorAttributeName :
+                            self.theme.statusBarActiveForeground,
+                    }]];
+            return segment;
+        }
+    }
     NSString *resetDateTime =
         [ClaudeStatusBar compactResetDateTimeFromTimestamp:timestamp] ?: @"—";
     [segment appendAttributedString:[[NSAttributedString alloc]

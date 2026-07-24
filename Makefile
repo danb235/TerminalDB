@@ -29,7 +29,6 @@ $(BIN): $(SOURCES) Info.plist Makefile $(FONT_RESOURCES) $(LICENSE_RESOURCES) $(
 	chmod 755 $(APP)/Contents/Resources/Scripts/claude-status-bridge.sh
 	chmod 755 $(APP)/Contents/Resources/Scripts/claude-tab-state.sh
 	clang -fobjc-arc -Wall -Wextra -framework AppKit -framework Foundation \
-		-framework Security \
 		$(SOURCES) -o $(BIN)
 	codesign --force --deep --sign - \
 		--identifier com.terminaldb.app \

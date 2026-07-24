@@ -1,13 +1,9 @@
 #import "ClaudeAPI.h"
 
-#import <Security/Security.h>
-
 NSNotificationName const ClaudeAPIConfigurationDidChangeNotification =
     @"ClaudeAPIConfigurationDidChangeNotification";
 
-static NSString *const ClaudeAPIKeychainService =
-    @"com.terminaldb.app.claude-api";
-static NSString *const ClaudeAPIKeychainAccount = @"default";
+static NSString *const ClaudeAPIKeyDefaultsKey = @"ClaudeAPIKey";
 static NSString *const ClaudeAPISelectedModelDefaultsKey =
     @"ClaudeAPISelectedModel";
 static NSString *const ClaudeAPIModelsDefaultsKey = @"ClaudeAPIModels";
@@ -20,12 +16,6 @@ static NSError *ClaudeError(NSInteger code, NSString *message) {
                            userInfo:@{
         NSLocalizedDescriptionKey : message ?: @"Claude API request failed.",
     }];
-}
-
-static NSError *ClaudeKeychainError(OSStatus status) {
-    CFStringRef copied = SecCopyErrorMessageString(status, NULL);
-    NSString *description = CFBridgingRelease(copied);
-    return ClaudeError(status, description ?: @"macOS Keychain error.");
 }
 
 static NSString *ClaudeAPIErrorMessage(NSData *data,
@@ -78,24 +68,9 @@ static NSString *ClaudeAPIErrorMessage(NSData *data,
     return self;
 }
 
-- (NSDictionary *)keychainQuery {
-    return @{
-        (__bridge id)kSecClass : (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrService : ClaudeAPIKeychainService,
-        (__bridge id)kSecAttrAccount : ClaudeAPIKeychainAccount,
-    };
-}
-
 - (nullable NSString *)apiKey {
-    NSMutableDictionary *query = [[self keychainQuery] mutableCopy];
-    query[(__bridge id)kSecReturnData] = @YES;
-    query[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitOne;
-    CFTypeRef copied = NULL;
-    OSStatus status =
-        SecItemCopyMatching((__bridge CFDictionaryRef)query, &copied);
-    if (status != errSecSuccess || copied == NULL) return nil;
-    NSData *data = CFBridgingRelease(copied);
-    return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    return [NSUserDefaults.standardUserDefaults
+        stringForKey:ClaudeAPIKeyDefaultsKey];
 }
 
 - (BOOL)hasAPIKey {
@@ -113,35 +88,16 @@ static NSString *ClaudeAPIErrorMessage(NSData *data,
         return NO;
     }
 
-    NSData *data = [trimmed dataUsingEncoding:NSUTF8StringEncoding];
-    NSDictionary *query = [self keychainQuery];
-    OSStatus status =
-        SecItemUpdate((__bridge CFDictionaryRef)query,
-                      (__bridge CFDictionaryRef)@{
-            (__bridge id)kSecValueData : data,
-        });
-    if (status == errSecItemNotFound) {
-        NSMutableDictionary *item = [query mutableCopy];
-        item[(__bridge id)kSecValueData] = data;
-        item[(__bridge id)kSecAttrAccessible] =
-            (__bridge id)kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly;
-        status = SecItemAdd((__bridge CFDictionaryRef)item, NULL);
-    }
-    if (status != errSecSuccess) {
-        if (error != NULL) *error = ClaudeKeychainError(status);
-        return NO;
-    }
+    [NSUserDefaults.standardUserDefaults
+        setObject:trimmed forKey:ClaudeAPIKeyDefaultsKey];
     [self notifyChanged];
     return YES;
 }
 
 - (BOOL)removeAPIKeyWithError:(NSError **)error {
-    OSStatus status =
-        SecItemDelete((__bridge CFDictionaryRef)[self keychainQuery]);
-    if (status != errSecSuccess && status != errSecItemNotFound) {
-        if (error != NULL) *error = ClaudeKeychainError(status);
-        return NO;
-    }
+    (void)error;
+    [NSUserDefaults.standardUserDefaults
+        removeObjectForKey:ClaudeAPIKeyDefaultsKey];
     [self notifyChanged];
     return YES;
 }
@@ -351,8 +307,8 @@ static NSString *ClaudeAPIErrorMessage(NSData *data,
 
     NSTextField *explanation =
         [self labelWithString:
-            @"The API key stays in macOS Keychain. It is never saved in "
-             "TerminalDB’s project or preferences."
+            @"The API key is saved in this Mac’s TerminalDB preferences. "
+             "It is never added to the project."
                        frame:NSMakeRect(24, 204, 472, 34)
                         font:[NSFont systemFontOfSize:12]];
     explanation.maximumNumberOfLines = 2;
@@ -459,7 +415,7 @@ static NSString *ClaudeAPIErrorMessage(NSData *data,
     BOOL hasKey = storedKey.length > 0;
     self.keyField.stringValue = storedKey ?: @"";
     self.keyStatusLabel.stringValue = hasKey
-        ? @"Stored in macOS Keychain. Edit and save to replace it."
+        ? @"Saved in TerminalDB preferences. Edit and save to replace it."
         : @"No API key is stored.";
     self.removeButton.enabled = hasKey;
 
@@ -576,7 +532,8 @@ static NSString *ClaudeAPIErrorMessage(NSData *data,
         self.statusLabel.textColor = NSColor.systemRedColor;
         return;
     }
-    self.statusLabel.stringValue = @"The API key was removed from Keychain.";
+    self.statusLabel.stringValue =
+        @"The API key was removed from TerminalDB preferences.";
     self.statusLabel.textColor = NSColor.secondaryLabelColor;
     [self reloadConfiguration];
 }

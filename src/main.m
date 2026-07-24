@@ -2029,8 +2029,8 @@ static int TerminalDBExitStatus = 0;
     NSString *message = apiKey.length == 0
         ? @"No Anthropic API key is configured.\n\n"
            "Open API Settings, paste your key, save it, and choose a Claude "
-           "model. TerminalDB stores the key in macOS Keychain and never adds "
-           "it to the project."
+           "model. TerminalDB saves the key in this Mac's preferences and "
+           "never adds it to the project."
         : @"Your Anthropic API key is saved, but no Claude model is selected."
            "\n\nOpen API Settings, refresh the available models, and choose "
            "the model to use for this chat.";
