@@ -396,7 +396,7 @@ static int TerminalDBExitStatus = 0;
 - (void)installApplicationMenu {
     NSMenu *mainMenu = [[NSMenu alloc] initWithTitle:@""];
 
-    NSMenuItem *applicationItem = [[NSMenuItem alloc] initWithTitle:@""
+    NSMenuItem *applicationItem = [[NSMenuItem alloc] initWithTitle:@"TerminalDB"
                                                              action:nil
                                                       keyEquivalent:@""];
     NSMenu *applicationMenu = [[NSMenu alloc] initWithTitle:@"TerminalDB"];
@@ -412,7 +412,7 @@ static int TerminalDBExitStatus = 0;
     applicationItem.submenu = applicationMenu;
     [mainMenu addItem:applicationItem];
 
-    NSMenuItem *fileItem = [[NSMenuItem alloc] initWithTitle:@""
+    NSMenuItem *fileItem = [[NSMenuItem alloc] initWithTitle:@"File"
                                                       action:nil
                                                keyEquivalent:@""];
     NSMenu *fileMenu = [[NSMenu alloc] initWithTitle:@"File"];
@@ -433,7 +433,7 @@ static int TerminalDBExitStatus = 0;
     fileItem.submenu = fileMenu;
     [mainMenu addItem:fileItem];
 
-    NSMenuItem *claudeItem = [[NSMenuItem alloc] initWithTitle:@""
+    NSMenuItem *claudeItem = [[NSMenuItem alloc] initWithTitle:@"Claude"
                                                         action:nil
                                                  keyEquivalent:@""];
     self.claudeMenu = [[NSMenu alloc] initWithTitle:@"Claude"];
@@ -448,7 +448,7 @@ static int TerminalDBExitStatus = 0;
     claudeItem.submenu = self.claudeMenu;
     [mainMenu addItem:claudeItem];
 
-    NSMenuItem *windowItem = [[NSMenuItem alloc] initWithTitle:@""
+    NSMenuItem *windowItem = [[NSMenuItem alloc] initWithTitle:@"Window"
                                                         action:nil
                                                  keyEquivalent:@""];
     NSMenu *windowMenu = [[NSMenu alloc] initWithTitle:@"Window"];
@@ -534,6 +534,13 @@ static int TerminalDBExitStatus = 0;
         keyEquivalent:@""];
     newChat.target = root;
     [menu addItem:newChat];
+
+    NSMenuItem *apiSettings = [[NSMenuItem alloc]
+        initWithTitle:@"Claude API Settings…"
+               action:@selector(showClaudeAPISettings:)
+        keyEquivalent:@","];
+    apiSettings.target = root;
+    [menu addItem:apiSettings];
     [menu addItem:NSMenuItem.separatorItem];
 
     ClaudeProfile *selected = controller.selectedProfile;
@@ -799,6 +806,7 @@ static int TerminalDBExitStatus = 0;
         BOOL selectedAccountChecked = NO;
         BOOL hasAddAccountAction = NO;
         BOOL hasRefreshUsageAction = NO;
+        BOOL hasAPISettingsAction = NO;
         for (NSMenuItem *item in self.claudeMenu.itemArray) {
             if (item.action == @selector(selectClaudeProfileFromMenu:) &&
                 [item.representedObject
@@ -811,13 +819,17 @@ static int TerminalDBExitStatus = 0;
             } else if (item.action ==
                        @selector(refreshClaudeUsageFromMenu:)) {
                 hasRefreshUsageAction = YES;
+            } else if (item.action ==
+                       @selector(showClaudeAPISettings:)) {
+                hasAPISettingsAction = YES;
             }
         }
         BOOL claudeMenuWorks =
             staticIdentity &&
             selectedAccountChecked &&
             hasAddAccountAction &&
-            hasRefreshUsageAction;
+            hasRefreshUsageAction &&
+            hasAPISettingsAction;
 
         BOOL sidebarIconsAvailable =
             second.assistantToggleButton.image != nil &&
@@ -1922,7 +1934,7 @@ static int TerminalDBExitStatus = 0;
                 ? toolUse[@"id"]
                 : @"";
         [strongSelf.assistantView
-            showToolStatus:@"Claude · Running read-only inspection…"];
+            showToolStatus:@"Running read-only inspection…"];
         [strongSelf.terminalInspector
             runCommand:command
              directory:strongSelf.assistantDirectory
@@ -3279,6 +3291,10 @@ static int TerminalDBExitStatus = 0;
         [conversationView valueForKey:@"followUpField"];
     NSView *composerPlaceholder =
         [conversationView valueForKey:@"composerPlaceholder"];
+    NSButton *headerSettingsButton =
+        [conversationView valueForKey:@"headerSettingsButton"];
+    NSTextField *assistantStatusLabel =
+        [conversationView valueForKey:@"statusLabel"];
     BOOL hasNewChatButton = NO;
     for (NSView *subview in conversationView.subviews) {
         if ([subview isKindOfClass:NSButton.class] &&
@@ -3299,6 +3315,10 @@ static int TerminalDBExitStatus = 0;
             rangeOfString:@"CLAUDE\nTry this:"].location == NSNotFound ||
         !followUpField.editable ||
         [composerPlaceholder hitTest:NSMakePoint(1, 1)] != nil ||
+        ![[headerSettingsButton accessibilityLabel]
+            isEqualToString:@"Claude API Settings"] ||
+        [assistantStatusLabel.stringValue
+            rangeOfString:@"Test model · Ready"].location == NSNotFound ||
         !hasNewChatButton) {
         fprintf(stderr, "FAIL assistant conversation transcript\n");
         failures++;
@@ -3329,7 +3349,8 @@ static int TerminalDBExitStatus = 0;
     int assistantSockets[2] = {-1, -1};
     if (commandButtons.count != 1 ||
         ![commandButtons.firstObject.title
-            isEqualToString:@"Paste command into terminal"] ||
+            isEqualToString:@"Paste"] ||
+        commandButtons.firstObject.superview != conversationTextView ||
         socketpair(AF_UNIX, SOCK_STREAM, 0, assistantSockets) != 0) {
         fprintf(stderr, "FAIL assistant command action setup\n");
         failures++;
@@ -3353,6 +3374,32 @@ static int TerminalDBExitStatus = 0;
         }
         close(assistantSockets[0]);
         close(assistantSockets[1]);
+    }
+
+    ClaudeAssistantView *multiCommandView = [[ClaudeAssistantView alloc]
+        initWithFrame:NSMakeRect(0, 0, 760, 340)
+                theme:theme];
+    [multiCommandView beginWithModelName:@"Test model"
+                                messages:@[
+        @{@"role" : @"user", @"content" : @"Show both commands"},
+    ]];
+    [multiCommandView appendResponseText:
+        @"First:\n```sh\ncd ~/Projects\n```\n"
+         "Then:\n```sh\nfind . -name '*.doc'\n```"];
+    [multiCommandView finish];
+    NSArray<NSButton *> *multiCommandButtons =
+        [multiCommandView valueForKey:@"commandButtons"];
+    if (multiCommandButtons.count != 2 ||
+        ![[multiCommandButtons[0] valueForKey:@"command"]
+            isEqualToString:@"cd ~/Projects"] ||
+        ![[multiCommandButtons[1] valueForKey:@"command"]
+            isEqualToString:@"find . -name '*.doc'"] ||
+        multiCommandButtons[0].superview !=
+            [multiCommandView valueForKey:@"responseTextView"] ||
+        multiCommandButtons[1].superview !=
+            [multiCommandView valueForKey:@"responseTextView"]) {
+        fprintf(stderr, "FAIL inline assistant command actions\n");
+        failures++;
     }
 
     NSString *inspectionCommand =

@@ -53,19 +53,21 @@ interactive terminal session.
 Every inspected command can also be pasted into the terminal. Commands that
 change state, need broader access, or fail inspection validation are never run
 automatically; Claude instead places them in fenced shell blocks. Each block
-gets a **Paste command into terminal** button. The button uses the terminal's
-normal paste behavior and deliberately does not press Return, so the user can
-review or edit the command before executing it. Non-shell code samples are
-never made runnable.
+gets its own inline **Paste** button immediately beside the command. The button
+uses the terminal's normal paste behavior and deliberately does not press
+Return, so the user can review or edit the command before executing it.
+Non-shell code samples are never made runnable.
 
 Conversation context is retained independently in each tab, including while
 the pane is collapsed. Choose **New chat** when the task changes; after
 confirmation, TerminalDB clears only that tab's AI context. A newly opened
 terminal tab always starts with fresh context.
 
-Open **TerminalDB → Claude API Settings…** (Command-,) to add an Anthropic API
-key. The key is stored only as a generic password in macOS Keychain. It is not
-written to project files, user defaults, logs, or generated shell integration.
+Open **Claude → Claude API Settings…**, select the gear in the AI-chat header,
+or press **Command-,** to add an Anthropic API key and select a model. The
+active model remains visible under the AI Chat heading. The key is stored only
+as a generic password in macOS Keychain. It is not written to project files,
+user defaults, logs, or generated shell integration.
 The settings field reads the saved value back from Keychain so persistence is
 visible and the key can be edited or replaced directly.
 After a key is saved, TerminalDB loads the models available to that key from
@@ -77,8 +79,9 @@ The bottom status bar displays the selected account and subscription as static
 identity text on the left. The five-hour, seven-day, and separate Fable 5
 weekly usage meters are right-aligned against the opposite edge. The 5-hour and
 7-day meters include their next reset date and time when Anthropic reports one;
-an em dash indicates that no reset is currently scheduled or reported. Usage
-refreshes every five minutes from Anthropic's OAuth usage service without
+an em dash indicates that no future reset is currently reported. Expired
+timestamps are never presented as the next reset. Usage refreshes every five
+minutes from Anthropic's OAuth usage service without
 making a model request. The access token is read from the selected profile's
 macOS Keychain item into memory and is never written by TerminalDB. Because
 Anthropic does not currently document this endpoint as a public API, the

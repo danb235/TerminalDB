@@ -299,6 +299,7 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
 
     NSDictionary *status = nil;
     NSString *sourcePath = nil;
+    NSDate *sourceModifiedAt = nil;
     for (NSString *candidate in
             @[profile.statusCachePath, profile.statusLineCachePath]) {
         NSData *candidateData = [NSData dataWithContentsOfFile:candidate];
@@ -314,9 +315,19 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
                 : nil;
         if ([candidateLimits[@"five_hour"] isKindOfClass:NSDictionary.class] ||
             [candidateLimits[@"seven_day"] isKindOfClass:NSDictionary.class]) {
-            status = candidateStatus;
-            sourcePath = candidate;
-            break;
+            NSDate *modifiedAt =
+                [NSFileManager.defaultManager
+                    attributesOfItemAtPath:candidate error:nil]
+                    [NSFileModificationDate];
+            if (status == nil ||
+                (modifiedAt != nil &&
+                 (sourceModifiedAt == nil ||
+                  [modifiedAt compare:sourceModifiedAt] ==
+                      NSOrderedDescending))) {
+                status = candidateStatus;
+                sourcePath = candidate;
+                sourceModifiedAt = modifiedAt;
+            }
         }
     }
     if (status == nil) {
@@ -611,20 +622,29 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
 }
 
 + (BOOL)runUsageNormalizationSelfTests {
+    NSISO8601DateFormatter *resetFormatter =
+        [[NSISO8601DateFormatter alloc] init];
+    resetFormatter.formatOptions = NSISO8601DateFormatWithInternetDateTime;
+    NSString *fiveHourResetString = [resetFormatter stringFromDate:
+        [NSDate dateWithTimeIntervalSinceNow:60.0 * 60.0]];
+    NSString *sevenDayResetString = [resetFormatter stringFromDate:
+        [NSDate dateWithTimeIntervalSinceNow:7.0 * 24.0 * 60.0 * 60.0]];
+    NSString *fableResetString = [resetFormatter stringFromDate:
+        [NSDate dateWithTimeIntervalSinceNow:6.0 * 24.0 * 60.0 * 60.0]];
     NSDictionary *sample = @{
         @"five_hour" : @{
             @"utilization" : @12,
-            @"resets_at" : @"2026-07-23T20:00:00Z",
+            @"resets_at" : fiveHourResetString,
         },
         @"seven_day" : @{
             @"utilization" : @34,
-            @"resets_at" : @"2026-07-27T20:00:00Z",
+            @"resets_at" : sevenDayResetString,
         },
         @"limits" : @[
             @{
                 @"kind" : @"weekly_scoped",
                 @"percent" : @56,
-                @"resets_at" : @"2026-07-28T20:00:00Z",
+                @"resets_at" : fableResetString,
                 @"scope" : @{
                     @"model" : @{@"display_name" : @"Fable"},
                 },
@@ -642,7 +662,9 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
         [limits[@"fable_five"][@"used_percentage"] isEqual:@56] &&
         [limits[@"fable_five"][@"resets_at"] isKindOfClass:NSNumber.class] &&
         [self compactResetDateTimeFromTimestamp:fiveHourReset].length > 0 &&
-        [self compactResetDateTimeFromTimestamp:sevenDayReset].length > 0;
+        [self compactResetDateTimeFromTimestamp:sevenDayReset].length > 0 &&
+        [self compactResetDateTimeFromTimestamp:
+            @([NSDate date].timeIntervalSince1970 - 60.0)] == nil;
 }
 
 + (nullable NSNumber *)timestampFromUsageResetValue:(id)value {
@@ -680,6 +702,7 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
     (nullable NSNumber *)timestamp {
     if (![timestamp isKindOfClass:NSNumber.class]) return nil;
     NSDate *date = [NSDate dateWithTimeIntervalSince1970:timestamp.doubleValue];
+    if (date.timeIntervalSinceNow <= 1.0) return nil;
     NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
     [formatter setLocalizedDateFormatFromTemplate:@"Mdjmm"];
     return [formatter stringFromDate:date];
@@ -718,6 +741,12 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
     }
     NSString *dateTime =
         [ClaudeStatusBar compactResetDateTimeFromTimestamp:timestamp];
+    if (dateTime.length == 0) {
+        [descriptions addObject:[NSString stringWithFormat:
+            @"%@ reported reset has passed; awaiting refreshed usage",
+            label]];
+        return;
+    }
     [descriptions addObject:[NSString stringWithFormat:@"%@ resets %@",
         label, dateTime]];
 }

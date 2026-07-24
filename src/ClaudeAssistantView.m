@@ -49,6 +49,7 @@
 @property(nonatomic, strong) NSTextField *statusLabel;
 @property(nonatomic, strong) NSProgressIndicator *progress;
 @property(nonatomic, strong) NSButton *startConversationButton;
+@property(nonatomic, strong) NSButton *headerSettingsButton;
 @property(nonatomic, strong) NSButton *settingsButton;
 @property(nonatomic, strong) NSScrollView *responseScrollView;
 @property(nonatomic, strong) NSTextView *responseTextView;
@@ -60,8 +61,13 @@
 @property(nonatomic, strong) NSButton *sendButton;
 @property(nonatomic, copy) NSArray<NSDictionary *> *conversationMessages;
 @property(nonatomic, copy) NSString *response;
+@property(nonatomic, copy) NSString *modelName;
 @property(nonatomic, copy) NSArray<NSButton *> *commandButtons;
+@property(nonatomic, strong)
+    NSMutableArray<NSDictionary *> *inlineCommandMarkers;
 @property(nonatomic) BOOL working;
+- (void)installInlineCommandButtons;
+- (void)positionInlineCommandButtons;
 @end
 
 @implementation ClaudeAssistantView
@@ -72,7 +78,9 @@
     _theme = theme;
     _conversationMessages = @[];
     _response = @"";
+    _modelName = @"Claude";
     _commandButtons = @[];
+    _inlineCommandMarkers = [NSMutableArray array];
     self.wantsLayer = YES;
 
     _titleLabel = [self labelWithFont:
@@ -99,6 +107,20 @@
                              action:@selector(newConversationSelected:)];
     _startConversationButton.font =
         [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+
+    _headerSettingsButton =
+        [self headerButtonWithTitle:@""
+                           toolTip:@"Claude API key and model settings"
+                             action:@selector(settingsSelected:)];
+    NSImage *settingsImage =
+        [NSImage imageWithSystemSymbolName:@"gearshape"
+                  accessibilityDescription:@"Claude API Settings"];
+    settingsImage = [settingsImage imageWithSymbolConfiguration:
+        [NSImageSymbolConfiguration configurationWithPointSize:13
+                                                        weight:NSFontWeightMedium]];
+    _headerSettingsButton.image = settingsImage;
+    _headerSettingsButton.imagePosition = NSImageOnly;
+    [_headerSettingsButton setAccessibilityLabel:@"Claude API Settings"];
 
     _settingsButton = [[NSButton alloc] initWithFrame:NSZeroRect];
     _settingsButton.title = @"Open API Settings";
@@ -250,18 +272,17 @@
     CGFloat width = self.bounds.size.width;
     CGFloat height = self.bounds.size.height;
 
-    self.titleLabel.frame = NSMakeRect(padding, 8, MAX(80, width - 118), 19);
+    self.titleLabel.frame = NSMakeRect(padding, 8, MAX(80, width - 150), 19);
     self.progress.frame = NSMakeRect(padding, 31, 14, 14);
     CGFloat statusX = self.working ? padding + 20 : padding;
     self.statusLabel.frame =
         NSMakeRect(statusX, 29, MAX(80, width - statusX - 14), 17);
     self.startConversationButton.frame =
-        NSMakeRect(width - 90, 8, 76, 26);
+        NSMakeRect(width - 118, 8, 76, 26);
+    self.headerSettingsButton.frame =
+        NSMakeRect(width - 40, 8, 26, 26);
 
     CGFloat commandHeight = 0;
-    if (self.commandButtons.count > 0) {
-        commandHeight = self.commandButtons.count * 36 + 4;
-    }
     if (!self.settingsButton.hidden) commandHeight += 36;
 
     CGFloat composerY = height - padding - composerHeight;
@@ -272,15 +293,10 @@
                    MAX(40, width - padding * 2),
                    MAX(40, commandsY - headerHeight - 5));
 
-    CGFloat buttonY = commandsY;
-    for (NSButton *button in self.commandButtons) {
-        button.frame =
-            NSMakeRect(padding, buttonY, MAX(80, width - padding * 2), 30);
-        buttonY += 36;
-    }
     if (!self.settingsButton.hidden) {
         self.settingsButton.frame =
-            NSMakeRect(padding, buttonY, MAX(80, width - padding * 2), 30);
+            NSMakeRect(padding, commandsY,
+                       MAX(80, width - padding * 2), 30);
     }
 
     self.composerBox.frame =
@@ -301,14 +317,16 @@
                    MAX(40, width - padding * 2 - 64), 16);
     self.sendButton.frame =
         NSMakeRect(width - padding - 40, composerY + 73, 30, 30);
+    [self positionInlineCommandButtons];
 }
 
 - (void)beginWithModelName:(NSString *)modelName
                   messages:(NSArray<NSDictionary *> *)messages {
+    self.modelName = modelName.length > 0 ? modelName : @"Claude";
     self.conversationMessages = [messages copy] ?: @[];
     self.response = @"";
     self.statusLabel.stringValue =
-        [NSString stringWithFormat:@"%@ · Working…", modelName];
+        [NSString stringWithFormat:@"%@ · Working…", self.modelName];
     self.statusLabel.textColor = self.theme.statusBarActiveForeground;
     self.settingsButton.hidden = YES;
     self.followUpField.editable = NO;
@@ -321,10 +339,11 @@
 }
 
 - (void)resetConversationWithModelName:(NSString *)modelName {
+    self.modelName = modelName.length > 0 ? modelName : @"Claude";
     self.conversationMessages = @[];
     self.response = @"";
     self.statusLabel.stringValue =
-        [NSString stringWithFormat:@"%@ · New chat", modelName];
+        [NSString stringWithFormat:@"%@ · New chat", self.modelName];
     self.statusLabel.textColor = self.theme.statusBarActiveForeground;
     self.settingsButton.hidden = YES;
     self.followUpField.string = @"";
@@ -342,13 +361,16 @@
 - (void)appendResponseText:(NSString *)text {
     if (text.length == 0) return;
     self.response = [self.response stringByAppendingString:text];
-    self.statusLabel.stringValue = @"Claude · Streaming response…";
+    self.statusLabel.stringValue =
+        [NSString stringWithFormat:@"%@ · Streaming…", self.modelName];
     [self renderResponse];
 }
 
 - (void)showToolStatus:(NSString *)status {
     self.statusLabel.stringValue =
-        status.length > 0 ? status : @"Claude · Inspecting terminal…";
+        [NSString stringWithFormat:@"%@ · %@",
+            self.modelName,
+            status.length > 0 ? status : @"Inspecting terminal…"];
     self.statusLabel.textColor = self.theme.statusBarActiveForeground;
     self.working = YES;
     [self.progress startAnimation:nil];
@@ -357,39 +379,10 @@
 - (void)finish {
     [self.progress stopAnimation:nil];
     self.working = NO;
-    self.statusLabel.stringValue = @"Claude · Ready";
+    self.statusLabel.stringValue =
+        [NSString stringWithFormat:@"%@ · Ready", self.modelName];
     self.followUpField.editable = YES;
     self.sendButton.enabled = YES;
-    NSMutableArray<NSString *> *commands = [NSMutableArray array];
-    for (NSDictionary *message in
-            [self.conversationMessages reverseObjectEnumerator]) {
-        NSString *role =
-            [message[@"role"] isKindOfClass:NSString.class]
-                ? message[@"role"]
-                : @"";
-        id content = message[@"content"];
-        if ([role isEqualToString:@"user"] &&
-            [content isKindOfClass:NSString.class]) {
-            break;
-        }
-        if (![role isEqualToString:@"terminal"] ||
-            ![content isKindOfClass:NSDictionary.class]) {
-            continue;
-        }
-        NSString *command =
-            [content[@"command"] isKindOfClass:NSString.class]
-                ? content[@"command"]
-                : nil;
-        if (command.length > 0 && ![commands containsObject:command]) {
-            [commands insertObject:command atIndex:0];
-        }
-    }
-    for (NSString *command in
-            [ClaudeAssistantView commandsFromMarkdown:self.response]) {
-        if (commands.count >= 3) break;
-        if (![commands containsObject:command]) [commands addObject:command];
-    }
-    [self installCommandButtons:commands];
     [self renderResponse];
     [self setNeedsLayout:YES];
     [self focusComposer];
@@ -400,7 +393,8 @@
     [self.progress stopAnimation:nil];
     self.working = NO;
     self.response = message ?: @"Claude request failed.";
-    self.statusLabel.stringValue = @"Claude · Request failed";
+    self.statusLabel.stringValue =
+        [NSString stringWithFormat:@"%@ · Request failed", self.modelName];
     self.statusLabel.textColor = self.theme.ansiColors[1];
     self.settingsButton.hidden = !settingsAvailable;
     self.followUpField.editable = YES;
@@ -422,6 +416,38 @@
     dispatch_after(
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)),
         dispatch_get_main_queue(), focus);
+}
+
+- (NSString *)commandFromFenceLines:(NSArray<NSString *> *)lines
+                           language:(NSString *)language {
+    NSSet<NSString *> *shellLanguages = [NSSet setWithArray:
+        @[@"", @"sh", @"bash", @"zsh", @"shell", @"terminal", @"console"]];
+    if (![shellLanguages containsObject:language.lowercaseString]) return nil;
+    NSMutableArray<NSString *> *cleanLines = [NSMutableArray array];
+    for (NSString *line in lines) {
+        [cleanLines addObject:[line hasPrefix:@"$ "]
+            ? [line substringFromIndex:2]
+            : line];
+    }
+    NSString *command = [[cleanLines componentsJoinedByString:@"\n"]
+        stringByTrimmingCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    return command.length > 0 && command.length <= 8000 ? command : nil;
+}
+
+- (void)appendCommandButtonPlaceholder:(NSString *)command
+                                    to:(NSMutableAttributedString *)rendered {
+    if (command.length == 0) return;
+    NSTextAttachment *attachment = [[NSTextAttachment alloc] init];
+    attachment.image = [[NSImage alloc] initWithSize:NSMakeSize(62, 22)];
+    attachment.bounds = NSMakeRect(0, -5, 62, 22);
+    NSUInteger location = rendered.length;
+    [rendered appendAttributedString:
+        [NSAttributedString attributedStringWithAttachment:attachment]];
+    [self.inlineCommandMarkers addObject:@{
+        @"location" : @(location),
+        @"command" : command,
+    }];
 }
 
 - (void)appendContent:(NSString *)content
@@ -464,15 +490,42 @@
         initWithString:assistant ? @"CLAUDE\n" : @"YOU\n"
             attributes:heading]];
 
-    __block BOOL inCode = NO;
+    BOOL inCode = NO;
+    NSString *fenceLanguage = @"";
+    NSMutableArray<NSString *> *fenceLines = [NSMutableArray array];
     NSArray<NSString *> *lines =
         [content componentsSeparatedByString:@"\n"];
     for (NSUInteger index = 0; index < lines.count; index++) {
         NSString *line = lines[index];
         if ([line hasPrefix:@"```"]) {
-            inCode = !inCode;
+            if (!inCode) {
+                fenceLanguage = [[line substringFromIndex:3]
+                    stringByTrimmingCharactersInSet:
+                        NSCharacterSet.whitespaceAndNewlineCharacterSet];
+                [fenceLines removeAllObjects];
+                inCode = YES;
+            } else {
+                NSString *command = assistant
+                    ? [self commandFromFenceLines:fenceLines
+                                         language:fenceLanguage]
+                    : nil;
+                if (command.length > 0) {
+                    [rendered appendAttributedString:[[NSAttributedString alloc]
+                        initWithString:@"  " attributes:code]];
+                    [self appendCommandButtonPlaceholder:command to:rendered];
+                }
+                inCode = NO;
+                fenceLanguage = @"";
+                [fenceLines removeAllObjects];
+                if (index + 1 < lines.count) {
+                    [rendered appendAttributedString:
+                        [[NSAttributedString alloc]
+                            initWithString:@"\n" attributes:base]];
+                }
+            }
             continue;
         }
+        if (inCode) [fenceLines addObject:line];
         NSString *output = line;
         if (!inCode) {
             output = [output stringByReplacingOccurrencesOfString:@"**"
@@ -480,7 +533,10 @@
         }
         [rendered appendAttributedString:[[NSAttributedString alloc]
             initWithString:output attributes:inCode ? code : base]];
-        if (index + 1 < lines.count) {
+        BOOL nextClosesFence =
+            inCode && index + 1 < lines.count &&
+            [lines[index + 1] hasPrefix:@"```"];
+        if (index + 1 < lines.count && !nextClosesFence) {
             [rendered appendAttributedString:[[NSAttributedString alloc]
                 initWithString:@"\n" attributes:inCode ? code : base]];
         }
@@ -555,7 +611,13 @@
                                : @"TERMINAL INSPECTION\n"
             attributes:heading]];
     [rendered appendAttributedString:[[NSAttributedString alloc]
-        initWithString:[NSString stringWithFormat:@"$ %@\n%@", command, output]
+        initWithString:[NSString stringWithFormat:@"$ %@", command]
+            attributes:code]];
+    [rendered appendAttributedString:[[NSAttributedString alloc]
+        initWithString:@"  " attributes:code]];
+    [self appendCommandButtonPlaceholder:command to:rendered];
+    [rendered appendAttributedString:[[NSAttributedString alloc]
+        initWithString:[NSString stringWithFormat:@"\n%@", output]
             attributes:code]];
     NSString *footer = blocked
         ? [NSString stringWithFormat:@"\nNot run · %@", directory]
@@ -572,6 +634,8 @@
 }
 
 - (void)renderResponse {
+    [self removeCommandButtons];
+    [self.inlineCommandMarkers removeAllObjects];
     NSMutableAttributedString *rendered =
         [[NSMutableAttributedString alloc] init];
     NSDictionary *separator = @{
@@ -625,6 +689,7 @@
                 attributes:empty]];
     }
     [self.responseTextView.textStorage setAttributedString:rendered];
+    [self installInlineCommandButtons];
     [self.responseTextView scrollRangeToVisible:
         NSMakeRange(self.responseTextView.string.length, 0)];
 }
@@ -678,32 +743,65 @@
     return commands;
 }
 
-- (void)installCommandButtons:(NSArray<NSString *> *)commands {
-    [self removeCommandButtons];
+- (void)installInlineCommandButtons {
     NSMutableArray<NSButton *> *buttons = [NSMutableArray array];
-    for (NSUInteger index = 0; index < commands.count; index++) {
+    for (NSDictionary *marker in self.inlineCommandMarkers) {
+        NSString *command =
+            [marker[@"command"] isKindOfClass:NSString.class]
+                ? marker[@"command"]
+                : @"";
+        if (command.length == 0) continue;
+
         ClaudeCommandButton *button =
             [[ClaudeCommandButton alloc] initWithFrame:NSZeroRect];
-        button.title = commands.count == 1
-            ? @"Paste command into terminal"
-            : [NSString stringWithFormat:@"Paste command %lu into terminal",
-                (unsigned long)index + 1];
+        button.title = @"Paste";
         button.bezelStyle = NSBezelStyleRounded;
-        button.controlSize = NSControlSizeSmall;
-        button.alignment = NSTextAlignmentLeft;
+        button.controlSize = NSControlSizeMini;
+        button.alignment = NSTextAlignmentCenter;
         button.font =
-            [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+            [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold];
         button.contentTintColor = self.theme.ansiColors[2];
         button.target = self;
         button.action = @selector(commandSelected:);
-        button.command = commands[index];
-        button.toolTip =
-            @"Paste into the active terminal. Review it, then press Return.";
-        [self addSubview:button];
+        button.command = command;
+        button.toolTip = [NSString stringWithFormat:
+            @"Paste into the active terminal without running it:\n%@", command];
+        [button setAccessibilityLabel:@"Paste command into terminal"];
+        [self.responseTextView addSubview:button];
         [buttons addObject:button];
     }
     self.commandButtons = buttons;
-    [self setNeedsLayout:YES];
+    [self positionInlineCommandButtons];
+}
+
+- (void)positionInlineCommandButtons {
+    NSLayoutManager *layoutManager = self.responseTextView.layoutManager;
+    NSTextContainer *textContainer = self.responseTextView.textContainer;
+    if (layoutManager == nil || textContainer == nil) return;
+    [layoutManager ensureLayoutForTextContainer:textContainer];
+
+    NSUInteger count =
+        MIN(self.inlineCommandMarkers.count, self.commandButtons.count);
+    for (NSUInteger index = 0; index < count; index++) {
+        NSDictionary *marker = self.inlineCommandMarkers[index];
+        NSUInteger location = [marker[@"location"] unsignedIntegerValue];
+        if (location >= self.responseTextView.string.length) continue;
+        NSRange glyphRange = [layoutManager
+            glyphRangeForCharacterRange:NSMakeRange(location, 1)
+                  actualCharacterRange:NULL];
+        NSRect markerRect = [layoutManager
+            boundingRectForGlyphRange:glyphRange
+                       inTextContainer:textContainer];
+        NSPoint textOrigin = self.responseTextView.textContainerOrigin;
+        markerRect.origin.x += textOrigin.x;
+        markerRect.origin.y += textOrigin.y;
+        self.commandButtons[index].frame =
+            NSMakeRect(markerRect.origin.x,
+                       markerRect.origin.y +
+                           floor((markerRect.size.height - 20) / 2.0),
+                       MAX(58, markerRect.size.width),
+                       20);
+    }
 }
 
 - (void)removeCommandButtons {
