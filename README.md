@@ -54,6 +54,8 @@ terminal tab always starts with fresh context.
 Open **TerminalDB → Claude API Settings…** (Command-,) to add an Anthropic API
 key. The key is stored only as a generic password in macOS Keychain. It is not
 written to project files, user defaults, logs, or generated shell integration.
+The settings field reads the saved value back from Keychain so persistence is
+visible and the key can be edited or replaced directly.
 After a key is saved, TerminalDB loads the models available to that key from
 Anthropic's Models API. The model list refreshes on launch and whenever the
 settings window opens, so newly available models appear without an app update.

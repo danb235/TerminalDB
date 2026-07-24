@@ -283,7 +283,7 @@ static NSString *ClaudeAPIErrorMessage(NSData *data,
 
 @interface ClaudeAPISettingsWindowController ()
 @property(nonatomic, strong) ClaudeAPIConfiguration *configuration;
-@property(nonatomic, strong) NSSecureTextField *keyField;
+@property(nonatomic, strong) NSTextField *keyField;
 @property(nonatomic, strong) NSTextField *keyStatusLabel;
 @property(nonatomic, strong) NSPopUpButton *modelButton;
 @property(nonatomic, strong) NSTextField *statusLabel;
@@ -368,8 +368,10 @@ static NSString *ClaudeAPIErrorMessage(NSData *data,
     [content addSubview:keyLabel];
 
     self.keyField =
-        [[NSSecureTextField alloc] initWithFrame:NSMakeRect(154, 164, 342, 26)];
+        [[NSTextField alloc] initWithFrame:NSMakeRect(154, 164, 342, 26)];
     self.keyField.placeholderString = @"sk-ant-…";
+    self.keyField.font =
+        [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
     self.keyField.target = self;
     self.keyField.action = @selector(saveAndRefresh:);
     [content addSubview:self.keyField];
@@ -440,7 +442,7 @@ static NSString *ClaudeAPIErrorMessage(NSData *data,
     [self showWindow:nil];
     [self.window center];
     [self.window makeKeyAndOrderFront:nil];
-    if (self.configuration.hasAPIKey) {
+    if (self.keyField.stringValue.length > 0) {
         [self refreshModels];
     } else {
         [self.window makeFirstResponder:self.keyField];
@@ -453,9 +455,11 @@ static NSString *ClaudeAPIErrorMessage(NSData *data,
 }
 
 - (void)reloadConfiguration {
-    BOOL hasKey = self.configuration.hasAPIKey;
+    NSString *storedKey = self.configuration.apiKey;
+    BOOL hasKey = storedKey.length > 0;
+    self.keyField.stringValue = storedKey ?: @"";
     self.keyStatusLabel.stringValue = hasKey
-        ? @"A key is stored securely. Leave this blank to keep it."
+        ? @"Stored in macOS Keychain. Edit and save to replace it."
         : @"No API key is stored.";
     self.removeButton.enabled = hasKey;
 
@@ -501,7 +505,6 @@ static NSString *ClaudeAPIErrorMessage(NSData *data,
             self.statusLabel.textColor = NSColor.systemRedColor;
             return;
         }
-        self.keyField.stringValue = @"";
     }
     if (!self.configuration.hasAPIKey) {
         self.statusLabel.stringValue = @"Enter an Anthropic API key first.";
