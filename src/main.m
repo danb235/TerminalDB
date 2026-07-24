@@ -3873,6 +3873,25 @@ static int TerminalDBExitStatus = 0;
         failures++;
     }
 
+    ClaudeAPIConfiguration *testAPIConfiguration =
+        [[ClaudeAPIConfiguration alloc] init];
+    ClaudeAPISettingsWindowController *testAPISettings =
+        [[ClaudeAPISettingsWindowController alloc]
+            initWithConfiguration:testAPIConfiguration];
+    BOOL secureAPIKeyField = NO;
+    for (NSView *subview in testAPISettings.window.contentView.subviews) {
+        if ([subview isKindOfClass:NSSecureTextField.class]) {
+            NSSecureTextField *secureField =
+                (NSSecureTextField *)subview;
+            secureAPIKeyField = secureField.usesSingleLineMode;
+            break;
+        }
+    }
+    if (!secureAPIKeyField) {
+        fprintf(stderr, "FAIL secure single-line API key field\n");
+        failures++;
+    }
+
     if (failures == 0) {
         fprintf(stdout, "TerminalDB terminal self-tests: passed\n");
         return YES;

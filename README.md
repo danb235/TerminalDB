@@ -75,8 +75,9 @@ When no key or model is configured, the chat pane explains the required setup,
 provides a direct settings button, and keeps the composer disabled until the
 configuration is ready.
 
-The settings field reads the saved value back from TerminalDB preferences so
-persistence is visible and the key can be edited or replaced directly.
+The settings field reads the saved value back from TerminalDB preferences but
+uses a single-line secure control so the key is masked on screen. The stored
+key can still be replaced directly.
 Local development builds use a stable ad-hoc designated requirement for the
 TerminalDB bundle identifier. Distributed builds should replace the ad-hoc
 signature with the project’s normal Apple Developer signature.

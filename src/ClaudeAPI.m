@@ -239,7 +239,7 @@ static NSString *ClaudeAPIErrorMessage(NSData *data,
 
 @interface ClaudeAPISettingsWindowController ()
 @property(nonatomic, strong) ClaudeAPIConfiguration *configuration;
-@property(nonatomic, strong) NSTextField *keyField;
+@property(nonatomic, strong) NSSecureTextField *keyField;
 @property(nonatomic, strong) NSTextField *keyStatusLabel;
 @property(nonatomic, strong) NSPopUpButton *modelButton;
 @property(nonatomic, strong) NSTextField *statusLabel;
@@ -324,10 +324,13 @@ static NSString *ClaudeAPIErrorMessage(NSData *data,
     [content addSubview:keyLabel];
 
     self.keyField =
-        [[NSTextField alloc] initWithFrame:NSMakeRect(154, 164, 342, 26)];
+        [[NSSecureTextField alloc]
+            initWithFrame:NSMakeRect(154, 164, 342, 26)];
     self.keyField.placeholderString = @"sk-ant-…";
     self.keyField.font =
         [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
+    self.keyField.usesSingleLineMode = YES;
+    self.keyField.lineBreakMode = NSLineBreakByClipping;
     self.keyField.target = self;
     self.keyField.action = @selector(saveAndRefresh:);
     [content addSubview:self.keyField];
