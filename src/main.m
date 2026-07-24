@@ -84,6 +84,7 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
     NSUInteger length = self.textStorage.length;
     NSUInteger cursor = MIN(self.terminalCursorIndex, length);
     NSRect glyphRect = NSZeroRect;
+    BOOL resolvedCursorPosition = NO;
 
     if (cursor < length) {
         NSRange glyphRange = [layoutManager
@@ -93,6 +94,7 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
             glyphRect = [layoutManager
                 boundingRectForGlyphRange:glyphRange
                          inTextContainer:textContainer];
+            resolvedCursorPosition = !NSIsEmptyRect(glyphRect);
         }
     } else if (length > 0 &&
                [self.textStorage.string characterAtIndex:length - 1] != '\n') {
@@ -104,14 +106,15 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
                 boundingRectForGlyphRange:glyphRange
                          inTextContainer:textContainer];
             glyphRect.origin.x = NSMaxX(glyphRect);
-            glyphRect.size.width = 0;
+            resolvedCursorPosition = !NSIsEmptyRect(glyphRect);
         }
     } else if (layoutManager.extraLineFragmentTextContainer ==
                textContainer) {
         glyphRect = layoutManager.extraLineFragmentRect;
+        resolvedCursorPosition = !NSIsEmptyRect(glyphRect);
     }
 
-    if (NSIsEmptyRect(glyphRect)) {
+    if (!resolvedCursorPosition) {
         NSString *contents = self.textStorage.string;
         NSRange preceding = NSMakeRange(0, cursor);
         NSRange newline = cursor > 0
@@ -6095,15 +6098,41 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
            @"left     right");
 
     AppDelegate *cursor = newTerminal();
+    NSFont *compactFont =
+        [NSFont fontWithName:cursor.theme.fontName size:7.0]
+            ?: [NSFont monospacedSystemFontOfSize:7.0
+                                           weight:NSFontWeightRegular];
+    NSAttributedString *mixedHeightPrefix = [[NSAttributedString alloc]
+        initWithString:@"metadata\nmetadata\nmetadata\n"
+            attributes:@{
+                NSFontAttributeName : compactFont,
+                NSParagraphStyleAttributeName : cursor.terminalParagraphStyle,
+            }];
+    [cursor.terminalView.textStorage
+        setAttributedString:mixedHeightPrefix];
+    cursor.outputCursor = cursor.terminalView.textStorage.length;
     const char promptBytes[] = "\033[32m\xe2\x9e\x9c\033[0m  ~ ";
     feed(cursor, promptBytes, sizeof(promptBytes) - 1);
     NSRect cursorRect = [cursor.terminalView terminalCursorRect];
+    NSLayoutManager *cursorLayout = cursor.terminalView.layoutManager;
+    [cursorLayout ensureLayoutForTextContainer:
+        cursor.terminalView.textContainer];
+    NSRange finalGlyphRange = [cursorLayout
+        glyphRangeForCharacterRange:
+            NSMakeRange(cursor.terminalView.string.length - 1, 1)
+                actualCharacterRange:nil];
+    NSRect finalGlyphRect = [cursorLayout
+        boundingRectForGlyphRange:finalGlyphRange
+                 inTextContainer:cursor.terminalView.textContainer];
+    CGFloat expectedCursorY =
+        cursor.terminalView.textContainerOrigin.y + finalGlyphRect.origin.y;
     BOOL visiblePromptCursor =
         cursor.terminalView.terminalCursorVisible &&
         cursor.terminalView.terminalCursorIndex ==
             cursor.terminalView.string.length &&
         cursorRect.size.width > 0 && cursorRect.size.height > 0 &&
-        cursorRect.origin.x > cursor.terminalView.textContainerOrigin.x;
+        cursorRect.origin.x > cursor.terminalView.textContainerOrigin.x &&
+        fabs(cursorRect.origin.y - expectedCursorY) < 0.5;
     const char hideCursor[] = "\033[?25l";
     const char showCursor[] = "\033[?25h";
     feed(cursor, hideCursor, sizeof(hideCursor) - 1);
