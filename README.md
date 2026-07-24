@@ -39,12 +39,12 @@ one native window:
   never intercepts terminal input.
 - AI chat receives the current directory and visible terminal output only when
   the user sends a message.
-- Suggested shell commands have an adjacent **Paste ↗** action that inserts the
-  command without pressing Return.
+- Suggested shell commands have adjacent **Paste** and permission-gated
+  **Run…** actions, so the relationship between command and action is explicit.
 - Read-only questions can use a constrained inspection sidecar that reports
   the exact command, output, exit status, and duration.
-- The command ledger makes the latest command and prior results easy to
-  revisit, paste, search, or explain.
+- Every completed command becomes a structured block with output, target,
+  environment, approval, status, timing, bookmarks, annotations, and actions.
 - Claude Code accounts and Anthropic API credentials remain visibly separate.
 
 ## Features
@@ -55,7 +55,7 @@ one native window:
   scrollback for every tab
 - UTF-8, ANSI/256/truecolor output, alternate-screen programs, bracketed paste,
   cursor modes, and xterm navigation keys
-- Native macOS windows and tabs, including reordering, detaching, and merging
+- Native macOS windows, tabs, and independent right/down split panes
 - Event-driven tab titles for shell commands and Claude Code lifecycle states
 - Graphite Ledger visual system with bundled JetBrains Mono
 
@@ -64,15 +64,26 @@ one native window:
 - Collapsible right-side conversation pane with per-tab context
 - Ongoing conversations that survive pane collapse
 - **New chat** for a deliberate context reset
-- Current directory and visible terminal output attached at send time
+- Visible context chips for directory, terminal output, command blocks, and
+  monitored work; removable attachments never hide what Claude can see
 - Streamed Anthropic Messages API responses
 - Model list loaded dynamically from Anthropic's Models API
 - Graceful setup guidance when no API key or model is configured
 
-### Review-first command workflow
+### Permissioned command and patch workflow
 
-- A separate inline **Paste ↗** button for each shell code block
-- Pasted commands are never submitted automatically
+- Separate inline **Paste** and **Run…** buttons for every shell code block
+- Ask-before-running, validated-read-only, and paste-only permission modes
+- Risk classification for read-only, unknown, write, destructive, remote, and
+  production commands
+- Target directory, host, environment, and risk shown before execution
+- Production approval requires an acknowledgement and typed target
+- Approval metadata recorded with the resulting command block
+- Unified diff proposals have **Copy** and **Apply…** actions; apply first runs
+  `git apply --check`, supports per-hunk selection, and then enters the normal
+  permission flow
+- The last approved AI patch remains available for validated reverse-apply
+  during the current app session
 - Read-only inspection commands run outside the interactive PTY
 - Inspection output includes command, directory, exit code, duration, and
   truncation state
@@ -82,8 +93,14 @@ one native window:
 
 - Live **READY**, **RUNNING**, and exit-state header above the terminal
 - Current command, directory, inferred environment, exit status, and duration
-- One-click **Ask AI**, **Explain / Fix**, **Paste**, and **History** actions
-- Search across prior commands, paths, and captured output
+- One-click **Ask AI**, **Explain / Fix**, **Paste**, **Rerun**, **Bookmark**,
+  **Runbook**, **Details**, and **History** actions
+- Search across commands, paths, output, projects, status, date, environment,
+  and bookmarks
+- Full inspector with metadata, output, approvals, annotations, related
+  history, and JSON/text export
+- Natural-language filter phrases, structured `status:`, `project:`, `host:`,
+  and `env:` queries, reusable saved searches, and recent directories
 - Local JSON persistence with bounded records and output
 - Best-effort redaction of common API keys, bearer tokens, and password
   assignments before history is written
@@ -97,6 +114,27 @@ one native window:
 - Active account and subscription remain visible in the bottom status strip
 - 5-hour, 7-day, and Fable usage with reported reset dates
 - Usage refresh on demand and automatically every five minutes
+- A dedicated account-and-usage window keeps the active account, plan,
+  sign-in state, all profiles, usage, and reset details separate from API chat
+
+### Workflows and project context
+
+- Monitor Center follows running commands, retains completed output in memory,
+  marks commands stalled after three minutes, and notifies on failures or
+  commands lasting at least 30 seconds
+- Parameterized multi-step runbooks can be created or edited, previewed,
+  pasted for review, or sent through permissioned execution
+- Workspaces save and restore tabs, splits, directories, Claude Code account
+  selection, model, AI-pane state, and conversation context
+- Nested split orientation is preserved, and workspaces can be renamed or
+  deleted
+- Restore conflicts default to opening a new window so current work is kept
+- Project Tools provide Git status/diff, file inventory, and test actions
+- Environment views explain local, SSH, container/Kubernetes, and production
+  protection states
+- Private Session keeps the active tab's new command blocks and workspace chat
+  context out of persistent storage
+- Eight-step first-run onboarding and twelve settings categories
 
 ![Claude Code account and usage states from the TerminalDB design reference](Design/terminaldb-status-usage-design.png)
 
@@ -153,7 +191,7 @@ runtime, notarization, and a release-specific bundle/version process.
 
 ## Configure AI chat
 
-1. Open **TerminalDB → Settings…**, **Claude → AI Chat Settings…**, or the gear
+1. Open **TerminalDB → Settings…**, **AI → AI Chat Settings…**, or the gear
    in the AI pane.
 2. Paste an Anthropic API key.
 3. Choose **Save & Refresh**.
@@ -161,7 +199,7 @@ runtime, notarization, and a release-specific bundle/version process.
 5. Open the AI pane with the title-bar sidebar button or
    **Shift-Command-L**.
 
-The selected model is also available under **Claude → AI Chat Model**. Use
+The selected model is also available under **AI → AI Chat Model**. Use
 **Refresh Available Models** to load newly available models without updating
 TerminalDB.
 
@@ -182,7 +220,7 @@ Adding or removing one credential type never changes the other.
 
 ## Use Claude Code accounts
 
-Open **Claude → Claude Code Account for This Tab** to:
+Open **AI → Claude Code Account for This Tab** to:
 
 - select an existing account for the active tab;
 - add and authenticate another account;
@@ -227,10 +265,13 @@ records. Clearing TerminalDB history does not change `.zsh_history`.
 | --- | --- |
 | New window | Command-N |
 | New tab | Command-T |
+| Split right | Command-D |
+| Split down | Shift-Command-D |
 | Close tab | Command-W |
 | Close window | Shift-Command-W |
 | Show or hide AI chat | Shift-Command-L |
 | Command history | Command-Y |
+| Runbooks | Shift-Command-R |
 | Clear scrollback | Command-K |
 | Settings | Command-, |
 | Increase terminal text | Command-+ |
@@ -252,6 +293,8 @@ TerminalDB deliberately keeps its implementation small and inspectable:
 | `src/ClaudeProfile.*` | Isolated Claude Code profiles and local profile persistence |
 | `src/ClaudeStatusBar.*` | Active account, sign-in state, usage normalization and refresh |
 | `src/TerminalLedger.*` | Command lifecycle header, redacted history store, history window |
+| `src/TerminalPermissions.*` | Risk classification, approvals, and production confirmation |
+| `src/TerminalProduct.*` | Runbooks, monitors, workspaces, project/environment/settings views |
 | `src/TerminalTheme.*` | Graphite Ledger colors, type, and terminal appearance |
 | `Resources/` | Font, license, icon, and shell bridge assets |
 | `Design/` | Interactive product design and visual QA artifacts |
@@ -268,6 +311,7 @@ scoped to the current macOS account.
 | --- | --- | --- |
 | API key and selected model | TerminalDB `NSUserDefaults` preferences | Key is masked in the UI but is not Keychain-protected |
 | Command ledger | `~/Library/Application Support/TerminalDB/command-history.json` | Mode `0600`, capped at 5,000 records |
+| Runbooks and workspaces | `~/Library/Application Support/TerminalDB/product-state.json` | Local persistent workflow state |
 | Claude profiles | `~/Library/Application Support/TerminalDB/ClaudeProfiles/` | Separate configuration directory per profile |
 | Claude Code credentials | macOS Keychain | Created and read through the profile's Claude Code flow |
 | Temporary shell markers | A TerminalDB-created temporary directory | Removed with the terminal session |
@@ -280,8 +324,10 @@ not eliminate it.
 
 ### Command execution boundaries
 
-- AI-generated commands are pasted for review and are not executed by the
-  paste action.
+- AI-generated commands are never executed by the **Paste** action.
+- **Run…** applies the selected permission mode and shows a target/risk review
+  unless the user explicitly enabled validated-read-only execution.
+- Destructive and production commands never receive reusable approvals.
 - Automatic inspections accept only a constrained read-only command set.
 - Inspections run under `sandbox-exec` with file writes and network access
   denied.
@@ -291,9 +337,10 @@ not eliminate it.
 ### Context sent to Anthropic
 
 When an AI message is sent, TerminalDB includes the active tab's current
-directory and visible terminal output. That content may include source code,
-paths, command output, or secrets already visible in the terminal. Review the
-screen before sending and follow your organization's data-handling policy.
+directory and visible terminal output plus any removable context chips shown
+in the composer. That content may include source code, paths, command output,
+or secrets already visible in the terminal. Review the chips and screen before
+sending and follow your organization's data-handling policy.
 
 Terminal output is marked as untrusted reference data in the system prompt,
 but prompt injection remains possible. Treat generated advice and commands as
@@ -335,7 +382,8 @@ make clean           # Remove the generated build directory
 `make test` covers terminal parsing and cursor behavior, split UTF-8 input,
 clipboard and control-key behavior, output following, code-block extraction,
 AI transcript and terminal context, inspection validation and rendering,
-command pasting without execution, ledger redaction/environment handling,
+per-command Paste/Run and patch actions, permission risk classification,
+ledger redaction/environment handling, runbook/workspace/monitor persistence,
 usage normalization, profile authentication/removal, code signing, and
 background AppKit tab integration.
 
@@ -359,14 +407,14 @@ xterm/iTerm-style baseline:
 
 Known compatibility gaps include mouse-reporting protocols, complete DEC
 scrolling-region semantics, exhaustive Unicode cell-width handling,
-hyperlinks, inline images, and split panes.
+hyperlinks, and inline images.
 
 ## Troubleshooting
 
 ### No models appear
 
 Confirm the API key is valid, select **Save & Refresh**, then use
-**Claude → AI Chat Model → Refresh Available Models**. The models endpoint may
+**AI → AI Chat Model → Refresh Available Models**. The models endpoint may
 return a different set for different Anthropic accounts.
 
 ### AI chat says setup is required
@@ -376,12 +424,12 @@ configured. Claude Code subscription sign-in does not configure API chat.
 
 ### Claude Code is signed out
 
-Choose the profile under **Claude → Claude Code Account for This Tab**, then
+Choose the profile under **AI → Claude Code Account for This Tab**, then
 select **Sign In to _Profile_…**. Other tabs keep their existing account.
 
 ### Usage is unavailable or stale
 
-Use **Claude → Refresh Claude Code Usage** or select the bottom status strip.
+Use **AI → Refresh Claude Code Usage** or select the bottom status strip.
 TerminalDB reads Claude Code status data and also uses Anthropic's currently
 undocumented OAuth usage endpoint as a best-effort source. Service changes may
 temporarily make usage unavailable without affecting the subscription itself.
@@ -425,29 +473,20 @@ proportionate regression test.
 
 ## Roadmap
 
-The current design explores several high-value directions that are not all
-implemented yet:
-
-- richer command-block inspection and structured output;
-- environment-aware confirmation policy for remote and production sessions;
-- session history, bookmarks, export, and privacy controls;
-- task monitors and approval notifications;
-- reusable command runbooks and parameterized workflows;
-- project context and environment profiles;
-- optional split panes;
-- release signing, notarization, updates, and crash diagnostics; and
+- virtualized structured command blocks embedded throughout terminal
+  scrollback rather than only the active ledger header and history window;
+- interactive agent responses to long-running process prompts and notification
+  actions;
+- richer multi-file editing, conflict resolution, and durable revert
+  checkpoints across app launches;
+- optional encrypted sync and team-shared runbook governance;
+- release signing, notarization, updates, migration tooling, and crash
+  diagnostics; and
 - broader terminal-protocol compatibility.
-
-Roadmap items are directional and do not imply a release commitment.
 
 ## License
 
-An open-source license has not been selected yet. Until a `LICENSE` file is
-added, copyright law reserves all rights and the source is available for
-evaluation only.
-
-Before making the repository public, select an OSI-approved license that
-matches the project's intended contribution and redistribution model.
+TerminalDB is available under the [MIT License](LICENSE).
 
 ## Acknowledgements
 

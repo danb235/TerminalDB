@@ -45,35 +45,39 @@ static NSColor *ThemeColor(NSString *hex) {
     theme.name = @"Graphite Ledger";
     theme.dark = YES;
 
-    theme.terminalBackground = ThemeColor(@"#101215");
-    theme.terminalForeground = ThemeColor(@"#d9e0e3");
-    theme.cursorColor = ThemeColor(@"#f3f6f7");
+    theme.terminalBackground = ThemeColor(@"#17171A");
+    theme.terminalForeground = ThemeColor(@"#E7E7E2");
+    theme.cursorColor = ThemeColor(@"#E7E7E2");
     theme.selectionBackground = ThemeColor(@"#52d0dd2e");
 
-    theme.statusBarBackground = ThemeColor(@"#0c0e10");
-    theme.statusBarForeground = ThemeColor(@"#687277");
-    theme.statusBarActiveForeground = ThemeColor(@"#a5afb3");
-    theme.statusBarBorder = ThemeColor(@"#282d31");
-    theme.titleBarBackground = ThemeColor(@"#171a1f");
-    theme.titleBarForeground = ThemeColor(@"#c8d0d3");
+    theme.statusBarBackground = ThemeColor(@"#141417");
+    theme.statusBarForeground = ThemeColor(@"#6B6B66");
+    theme.statusBarActiveForeground = ThemeColor(@"#A0A09A");
+    theme.statusBarBorder = ThemeColor(@"#2C2C33");
+    theme.titleBarBackground = ThemeColor(@"#232327");
+    theme.titleBarForeground = ThemeColor(@"#C9C9C3");
+    if (NSWorkspace.sharedWorkspace.accessibilityDisplayShouldIncreaseContrast) {
+        theme.statusBarBorder = ThemeColor(@"#4A4A52");
+        theme.statusBarActiveForeground = ThemeColor(@"#C9C9C3");
+    }
 
     theme.ansiColors = @[
-        ThemeColor(@"#101215"),
-        ThemeColor(@"#f16f74"),
-        ThemeColor(@"#b4e34d"),
-        ThemeColor(@"#e5b454"),
+        ThemeColor(@"#101013"),
+        ThemeColor(@"#EF6557"),
+        ThemeColor(@"#B4E34D"),
+        ThemeColor(@"#E3AC4E"),
         ThemeColor(@"#d88a55"),
         ThemeColor(@"#a78bd4"),
-        ThemeColor(@"#52d0dd"),
-        ThemeColor(@"#d9e0e3"),
-        ThemeColor(@"#687277"),
+        ThemeColor(@"#52D0DD"),
+        ThemeColor(@"#E7E7E2"),
+        ThemeColor(@"#6B6B66"),
         ThemeColor(@"#ff858a"),
-        ThemeColor(@"#c7f062"),
-        ThemeColor(@"#f0c66b"),
+        ThemeColor(@"#C7F062"),
+        ThemeColor(@"#F0C66B"),
         ThemeColor(@"#e29b68"),
         ThemeColor(@"#b9a0e8"),
-        ThemeColor(@"#72e2ec"),
-        ThemeColor(@"#f3f6f7"),
+        ThemeColor(@"#72E2EC"),
+        ThemeColor(@"#F3F6F7"),
     ];
 
     // The Graphite Ledger UI uses the system face for controls and

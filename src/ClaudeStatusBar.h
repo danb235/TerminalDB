@@ -32,6 +32,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)startMonitoring;
 - (void)selectProfile:(nullable ClaudeProfile *)profile;
 - (void)refreshNow;
+- (void)presentUsageWindow;
+- (void)showEnvironment:(NSString *)environment
+                   host:(nullable NSString *)host
+                 detail:(nullable NSString *)detail;
 + (BOOL)runUsageNormalizationSelfTests;
 
 @end

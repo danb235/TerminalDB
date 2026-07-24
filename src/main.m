@@ -44,6 +44,7 @@ static int TerminalDBExitStatus = 0;
 @property(nonatomic) BOOL terminalCursorVisible;
 @property(nonatomic, strong) NSColor *terminalCursorColor;
 @property(nonatomic, copy, nullable) void (^userDidSendInput)(void);
+@property(nonatomic, copy, nullable) void (^cycleRegionsHandler)(void);
 - (NSRect)terminalCursorRect;
 @end
 
@@ -269,6 +270,10 @@ static int TerminalDBExitStatus = 0;
     if (characters.length == 0) return;
 
     unichar key = [characters characterAtIndex:0];
+    if (key == NSF6FunctionKey && self.cycleRegionsHandler != nil) {
+        self.cycleRegionsHandler();
+        return;
+    }
     switch (key) {
         case NSUpArrowFunctionKey:
             [self sendUserBytes:
@@ -325,9 +330,6 @@ static int TerminalDBExitStatus = 0;
             return;
         case NSF5FunctionKey:
             [self sendUserBytes:"\033[15~" length:5];
-            return;
-        case NSF6FunctionKey:
-            [self sendUserBytes:"\033[17~" length:5];
             return;
         case NSF7FunctionKey:
             [self sendUserBytes:"\033[18~" length:5];
@@ -406,6 +408,7 @@ static int TerminalDBExitStatus = 0;
     NSApplicationDelegate,
     NSWindowDelegate,
     NSMenuDelegate,
+    NSTextViewDelegate,
     TerminalTabActionTarget,
     ClaudeStatusBarDelegate,
     ClaudeAssistantViewDelegate>
@@ -414,6 +417,7 @@ static int TerminalDBExitStatus = 0;
 @property(nonatomic, strong) NSMutableArray<AppDelegate *> *windowControllers;
 @property(nonatomic, strong) NSMenu *claudeMenu;
 @property(nonatomic, strong) NSMenu *viewMenu;
+@property(nonatomic, strong) NSMenu *historyMenu;
 @property(nonatomic, strong) ClaudeProfileManager *profileManager;
 @property(nonatomic, strong) ClaudeAPIConfiguration *apiConfiguration;
 @property(nonatomic, strong, nullable)
@@ -421,6 +425,10 @@ static int TerminalDBExitStatus = 0;
 @property(nonatomic, strong) TerminalTheme *theme;
 @property(nonatomic, strong, nullable) ClaudeProfile *selectedProfile;
 @property(nonatomic, strong) NSWindow *window;
+@property(nonatomic, strong) NSView *workspaceView;
+@property(nonatomic, strong) NSMutableArray<AppDelegate *> *splitControllers;
+@property(nonatomic, weak, nullable) AppDelegate *embeddedSplitOwner;
+@property(nonatomic) BOOL embeddedSplitVertical;
 @property(nonatomic, strong) NSProgressIndicator *tabActivityIndicator;
 @property(nonatomic, strong) NSTimer *tabActivityTimer;
 @property(nonatomic, strong, nullable) NSDate *foregroundProcessBeganAt;
@@ -479,6 +487,7 @@ static int TerminalDBExitStatus = 0;
 @property(nonatomic, strong, nullable) NSDate *activeLedgerStartedAt;
 @property(nonatomic) NSUInteger activeLedgerOutputStart;
 @property(nonatomic) BOOL privateSession;
+@property(nonatomic) BOOL focusMode;
 @property(nonatomic, strong) ClaudeAssistantView *assistantView;
 @property(nonatomic, strong) NSButton *assistantToggleButton;
 @property(nonatomic, strong)
@@ -486,6 +495,8 @@ static int TerminalDBExitStatus = 0;
 @property(nonatomic, strong, nullable) ClaudeAPIClient *assistantClient;
 @property(nonatomic, strong) TerminalInspector *terminalInspector;
 @property(nonatomic, strong) TerminalPermissionCenter *permissionCenter;
+@property(nonatomic, copy, nullable) NSDictionary *pendingExecutionApproval;
+@property(nonatomic, copy, nullable) NSString *lastAIApplyPatchPath;
 @property(nonatomic, strong) TerminalProductStore *productStore;
 @property(nonatomic, strong, nullable)
     TerminalProductWindowController *productWindowController;
@@ -520,6 +531,8 @@ static int TerminalDBExitStatus = 0;
 - (void)requestExecutionForCommand:(NSString *)command;
 - (void)showProductSection:(TerminalProductSection)section;
 - (void)saveRunbookFromRecord:(NSDictionary *)record;
+- (void)newTerminalSplitVertical:(BOOL)vertical;
+- (void)appendLedgerFooterForRecord:(NSDictionary *)record;
 @end
 
 @implementation AppDelegate
@@ -556,7 +569,7 @@ static int TerminalDBExitStatus = 0;
             [controller showAssistantPane];
             dispatch_after(
                 dispatch_time(DISPATCH_TIME_NOW,
-                    (int64_t)(0.45 * NSEC_PER_SEC)),
+                    (int64_t)(2.5 * NSEC_PER_SEC)),
                 dispatch_get_main_queue(), ^{
                 NSDictionary *visualRecord = @{
                     @"id" : @"qa-7f83",
@@ -576,6 +589,45 @@ static int TerminalDBExitStatus = 0;
                     @"annotations" : @[],
                 };
                 [controller.ledgerBar displayRecord:visualRecord];
+                if ([NSProcessInfo.processInfo.arguments
+                        containsObject:@"--visual-qa-scrollback"]) {
+                    NSString *scrollback =
+                        @"❯ find . -type f -iname '*.jpg'\n"
+                         "./photos/IMG_1092.jpg\n"
+                         "./photos/IMG_1178.JPG\n"
+                         "./exports/cover.jpg";
+                    [controller.terminalView.textStorage
+                        setAttributedString:[[NSAttributedString alloc]
+                            initWithString:scrollback
+                               attributes:@{
+                        NSFontAttributeName : controller.terminalView.font,
+                        NSForegroundColorAttributeName :
+                            controller.theme.terminalForeground,
+                        NSParagraphStyleAttributeName :
+                            controller.terminalParagraphStyle,
+                    }]];
+                    controller.activeLedgerCommand =
+                        visualRecord[@"command"];
+                    controller.activeLedgerOutputStart =
+                        [scrollback rangeOfString:@"./photos"].location;
+                    [controller appendLedgerFooterForRecord:visualRecord];
+                    NSAttributedString *prompt =
+                        [[NSAttributedString alloc]
+                            initWithString:@"➜  /  "
+                               attributes:@{
+                        NSFontAttributeName : controller.terminalView.font,
+                        NSForegroundColorAttributeName :
+                            controller.theme.ansiColors[6],
+                        NSParagraphStyleAttributeName :
+                            controller.terminalParagraphStyle,
+                    }];
+                    [controller.terminalView.textStorage
+                        appendAttributedString:prompt];
+                    controller.outputCursor =
+                        controller.terminalView.textStorage.length;
+                    controller.terminalView.terminalCursorIndex =
+                        controller.outputCursor;
+                }
                 [controller.assistantView beginWithModelName:@"Claude Sonnet 5"
                     messages:@[
                         @{@"role":@"user",
@@ -589,9 +641,32 @@ static int TerminalDBExitStatus = 0;
                      "without replacing existing files:\n\n"
                      "```sh\nmkdir -p sorted && echo 'review before move'\n```"];
                 [controller.assistantView finish];
+                if ([NSProcessInfo.processInfo.arguments
+                        containsObject:@"--visual-qa-section=history"]) {
+                    [controller showCommandHistory:nil];
+                    [controller.ledgerWindowController.window orderBack:nil];
+                } else if ([NSProcessInfo.processInfo.arguments
+                               containsObject:
+                                   @"--visual-qa-section=inspector"]) {
+                    [controller showCommandInspectorForRecord:visualRecord];
+                    [controller.commandInspectorController.window
+                        orderBack:nil];
+                }
             });
             for (NSString *argument in
                     NSProcessInfo.processInfo.arguments) {
+                if ([argument isEqualToString:@"--visual-qa-split=right"] ||
+                    [argument isEqualToString:@"--visual-qa-split=down"]) {
+                    BOOL vertical =
+                        [argument hasSuffix:@"right"];
+                    dispatch_after(
+                        dispatch_time(DISPATCH_TIME_NOW,
+                            (int64_t)(0.9 * NSEC_PER_SEC)),
+                        dispatch_get_main_queue(), ^{
+                            [controller newTerminalSplitVertical:vertical];
+                        });
+                    continue;
+                }
                 if (![argument hasPrefix:@"--visual-qa-section="]) continue;
                 NSString *name = [argument substringFromIndex:
                     @"--visual-qa-section=".length];
@@ -604,6 +679,15 @@ static int TerminalDBExitStatus = 0;
                     @"settings":@(TerminalProductSectionSettings),
                     @"onboarding":@(TerminalProductSectionOnboarding),
                 };
+                if ([name isEqualToString:@"usage"]) {
+                    dispatch_after(
+                        dispatch_time(DISPATCH_TIME_NOW,
+                            (int64_t)(0.7 * NSEC_PER_SEC)),
+                        dispatch_get_main_queue(), ^{
+                            [controller.claudeStatusBar presentUsageWindow];
+                        });
+                    continue;
+                }
                 NSNumber *section = sections[name];
                 if (section != nil) {
                     dispatch_after(
@@ -615,6 +699,13 @@ static int TerminalDBExitStatus = 0;
                         });
                 }
             }
+        } else if ([NSUserDefaults.standardUserDefaults
+                       boolForKey:@"TerminalDBRestoreWorkspaceOnLaunch"] &&
+                   self.productStore.workspaces.count > 0) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self showProductSection:
+                    TerminalProductSectionWorkspaces];
+            });
         } else if (![NSUserDefaults.standardUserDefaults
                        boolForKey:@"TerminalDBDidCompleteOnboarding"] &&
                    !self.apiConfiguration.hasAPIKey &&
@@ -694,12 +785,31 @@ static int TerminalDBExitStatus = 0;
                                              action:@selector(newTerminalTab:)
                                       keyEquivalent:@"t"];
     newTab.target = self;
+    NSMenuItem *splitRight =
+        [shellMenu addItemWithTitle:@"New Split Right"
+                             action:@selector(newTerminalSplitRight:)
+                      keyEquivalent:@"d"];
+    splitRight.target = self;
+    NSMenuItem *splitDown =
+        [shellMenu addItemWithTitle:@"New Split Down"
+                             action:@selector(newTerminalSplitDown:)
+                      keyEquivalent:@"d"];
+    splitDown.target = self;
+    splitDown.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagShift;
     NSMenuItem *workspaces =
         [shellMenu addItemWithTitle:@"Workspaces…"
                              action:@selector(showWorkspacesFromMenu:)
                       keyEquivalent:@"o"];
     workspaces.target = self;
     workspaces.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    NSMenuItem *runbooks =
+        [shellMenu addItemWithTitle:@"Runbooks…"
+                             action:@selector(showRunbooksFromMenu:)
+                      keyEquivalent:@"r"];
+    runbooks.target = self;
+    runbooks.keyEquivalentModifierMask =
         NSEventModifierFlagCommand | NSEventModifierFlagShift;
     [shellMenu addItem:NSMenuItem.separatorItem];
     NSMenuItem *privateSession =
@@ -758,6 +868,30 @@ static int TerminalDBExitStatus = 0;
     [editMenu addItemWithTitle:@"Select All"
                         action:@selector(selectAll:)
                  keyEquivalent:@"a"];
+    [editMenu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *findParent =
+        [editMenu addItemWithTitle:@"Find"
+                            action:nil
+                     keyEquivalent:@""];
+    NSMenu *findMenu = [[NSMenu alloc] initWithTitle:@"Find"];
+    NSMenuItem *find =
+        [findMenu addItemWithTitle:@"Find in Terminal…"
+                            action:@selector(findInTerminal:)
+                     keyEquivalent:@"f"];
+    find.target = self;
+    NSMenuItem *findNext =
+        [findMenu addItemWithTitle:@"Find Next"
+                            action:@selector(performFindPanelAction:)
+                     keyEquivalent:@"g"];
+    findNext.tag = NSFindPanelActionNext;
+    NSMenuItem *findPrevious =
+        [findMenu addItemWithTitle:@"Find Previous"
+                            action:@selector(performFindPanelAction:)
+                     keyEquivalent:@"g"];
+    findPrevious.tag = NSFindPanelActionPrevious;
+    findPrevious.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    findParent.submenu = findMenu;
     editItem.submenu = editMenu;
     [mainMenu addItem:editItem];
 
@@ -766,6 +900,12 @@ static int TerminalDBExitStatus = 0;
                                                keyEquivalent:@""];
     self.viewMenu = [[NSMenu alloc] initWithTitle:@"View"];
     self.viewMenu.delegate = self;
+    NSMenuItem *tabBar = [self.viewMenu
+        addItemWithTitle:@"Show Tab Bar"
+                  action:@selector(toggleTabBarFromMenu:)
+           keyEquivalent:@""];
+    tabBar.target = self;
+    [self.viewMenu addItem:NSMenuItem.separatorItem];
     NSMenuItem *initialChatToggle = [self.viewMenu
         addItemWithTitle:@"Show AI Chat"
                   action:@selector(toggleAIChatFromMenu:)
@@ -798,6 +938,20 @@ static int TerminalDBExitStatus = 0;
            keyEquivalent:@""];
     environments.target = self;
     [self.viewMenu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *focusMode = [self.viewMenu
+        addItemWithTitle:@"Focus Mode"
+                  action:@selector(toggleFocusModeFromMenu:)
+           keyEquivalent:@"f"];
+    focusMode.target = self;
+    focusMode.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    NSMenuItem *fullScreen = [self.viewMenu
+        addItemWithTitle:@"Enter Full Screen"
+                  action:@selector(toggleFullScreen:)
+           keyEquivalent:@"f"];
+    fullScreen.keyEquivalentModifierMask =
+        NSEventModifierFlagControl | NSEventModifierFlagCommand;
+    [self.viewMenu addItem:NSMenuItem.separatorItem];
     NSMenuItem *increaseText = [self.viewMenu
         addItemWithTitle:@"Increase Text Size"
                   action:@selector(increaseTerminalTextSize:)
@@ -816,7 +970,7 @@ static int TerminalDBExitStatus = 0;
     viewItem.submenu = self.viewMenu;
     [mainMenu addItem:viewItem];
 
-    NSMenuItem *claudeItem = [[NSMenuItem alloc] initWithTitle:@"Claude"
+    NSMenuItem *claudeItem = [[NSMenuItem alloc] initWithTitle:@"AI"
                                                         action:nil
                                                  keyEquivalent:@""];
     self.claudeMenu = [[NSMenu alloc] initWithTitle:@"Claude"];
@@ -824,25 +978,79 @@ static int TerminalDBExitStatus = 0;
     claudeItem.submenu = self.claudeMenu;
     [mainMenu addItem:claudeItem];
 
-    NSMenuItem *runbooksItem =
-        [[NSMenuItem alloc] initWithTitle:@"Runbooks"
+    NSMenuItem *historyItem =
+        [[NSMenuItem alloc] initWithTitle:@"History"
                                   action:nil
                            keyEquivalent:@""];
-    NSMenu *runbooksMenu = [[NSMenu alloc] initWithTitle:@"Runbooks"];
-    NSMenuItem *openRunbooks =
-        [runbooksMenu addItemWithTitle:@"Open Runbook Library…"
-                                action:@selector(showRunbooksFromMenu:)
-                         keyEquivalent:@"r"];
-    openRunbooks.target = self;
-    openRunbooks.keyEquivalentModifierMask =
-        NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    self.historyMenu = [[NSMenu alloc] initWithTitle:@"History"];
+    NSMenu *historyMenu = self.historyMenu;
+    NSMenuItem *searchHistory =
+        [historyMenu addItemWithTitle:@"Search History…"
+                               action:@selector(showCommandHistory:)
+                        keyEquivalent:@"y"];
+    searchHistory.target = self;
+    NSMenuItem *bookmarks =
+        [historyMenu addItemWithTitle:@"Bookmarks"
+                               action:@selector(showCommandHistory:)
+                        keyEquivalent:@"b"];
+    bookmarks.target = self;
+    bookmarks.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagOption;
     NSMenuItem *saveLast =
-        [runbooksMenu addItemWithTitle:@"Save Last Command as Runbook…"
-                                action:@selector(saveLastCommandAsRunbook:)
-                         keyEquivalent:@""];
+        [historyMenu addItemWithTitle:@"Save Last Command as Runbook…"
+                               action:@selector(saveLastCommandAsRunbook:)
+                        keyEquivalent:@""];
     saveLast.target = self;
-    runbooksItem.submenu = runbooksMenu;
-    [mainMenu addItem:runbooksItem];
+    [historyMenu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *bookmarkLast =
+        [historyMenu addItemWithTitle:@"Bookmark Last Command"
+                               action:@selector(bookmarkLastCommand:)
+                        keyEquivalent:@"b"];
+    bookmarkLast.target = self;
+    NSMenuItem *recentDirectories =
+        [historyMenu addItemWithTitle:@"Recent Directories"
+                               action:nil
+                        keyEquivalent:@""];
+    NSMenu *recentMenu =
+        [[NSMenu alloc] initWithTitle:@"Recent Directories"];
+    NSMutableOrderedSet<NSString *> *recent =
+        [NSMutableOrderedSet orderedSet];
+    for (NSDictionary *record in
+            [TerminalLedgerStore sharedStore].records) {
+        NSString *directory = record[@"directory"];
+        if (directory.length > 0) [recent addObject:directory];
+        if (recent.count >= 10) break;
+    }
+    if (recent.count == 0) {
+        NSMenuItem *empty = [recentMenu
+            addItemWithTitle:@"No Recent Directories"
+                      action:nil
+               keyEquivalent:@""];
+        empty.enabled = NO;
+    } else {
+        for (NSString *directory in recent) {
+            NSMenuItem *item = [recentMenu
+                addItemWithTitle:directory
+                          action:@selector(openRecentDirectoryFromMenu:)
+                   keyEquivalent:@""];
+            item.target = self;
+            item.representedObject = directory;
+        }
+    }
+    recentDirectories.submenu = recentMenu;
+    NSMenuItem *savedSearches =
+        [historyMenu addItemWithTitle:@"Saved Searches…"
+                               action:@selector(showCommandHistory:)
+                        keyEquivalent:@""];
+    savedSearches.target = self;
+    [historyMenu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *clearHistory =
+        [historyMenu addItemWithTitle:@"Clear History…"
+                               action:@selector(clearTerminalHistory:)
+                        keyEquivalent:@""];
+    clearHistory.target = self;
+    historyItem.submenu = historyMenu;
+    [mainMenu addItem:historyItem];
 
     NSMenuItem *windowItem = [[NSMenuItem alloc] initWithTitle:@"Window"
                                                         action:nil
@@ -871,6 +1079,22 @@ static int TerminalDBExitStatus = 0;
                             action:@selector(showTerminalDBHelp:)
                      keyEquivalent:@"?"];
     help.target = self;
+    NSMenuItem *shortcuts =
+        [helpMenu addItemWithTitle:@"Keyboard Shortcuts"
+                            action:@selector(showKeyboardShortcuts:)
+                     keyEquivalent:@""];
+    shortcuts.target = self;
+    NSMenuItem *privacyHelp =
+        [helpMenu addItemWithTitle:@"Privacy & Security"
+                            action:@selector(showPrivacyAndSecurity:)
+                     keyEquivalent:@""];
+    privacyHelp.target = self;
+    [helpMenu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *report =
+        [helpMenu addItemWithTitle:@"Report an Issue…"
+                            action:@selector(reportIssue:)
+                     keyEquivalent:@""];
+    report.target = self;
     helpItem.submenu = helpMenu;
     [mainMenu addItem:helpItem];
 
@@ -879,6 +1103,23 @@ static int TerminalDBExitStatus = 0;
 
 - (AppDelegate *)activeTerminalController {
     AppDelegate *root = [self rootController];
+    NSWindow *focusedWindow = NSApp.keyWindow ?: NSApp.mainWindow;
+    NSView *focusedView =
+        [focusedWindow.firstResponder isKindOfClass:NSView.class]
+            ? (NSView *)focusedWindow.firstResponder : nil;
+    if (focusedView != nil) {
+        for (AppDelegate *controller in root.windowControllers) {
+            NSView *candidate = focusedView;
+            while (candidate != nil) {
+                if (candidate == controller.workspaceView ||
+                    candidate == controller.terminalView ||
+                    candidate == controller.assistantView) {
+                    return controller;
+                }
+                candidate = candidate.superview;
+            }
+        }
+    }
     for (NSWindow *candidate in @[NSApp.keyWindow ?: NSNull.null,
                                   NSApp.mainWindow ?: NSNull.null]) {
         if (![candidate isKindOfClass:NSWindow.class]) continue;
@@ -898,12 +1139,75 @@ static int TerminalDBExitStatus = 0;
     [[self activeTerminalController] toggleAssistantPane:nil];
 }
 
+- (void)resumeAIChatFromMenu:(id)sender {
+    (void)sender;
+    AppDelegate *controller = [self activeTerminalController];
+    if (controller == nil) return;
+    [controller showAssistantPane];
+}
+
 - (void)newAIChatFromMenu:(id)sender {
     (void)sender;
     AppDelegate *controller = [self activeTerminalController];
     [controller showAssistantPane];
     [controller claudeAssistantViewDidRequestNewConversation:
         controller.assistantView];
+}
+
+- (NSDictionary *)workspaceSnapshotPaneForController:
+    (AppDelegate *)controller {
+    return @{
+        @"title" : controller.window.tab.title ?: @"Terminal",
+        @"directory" : [controller currentAssistantDirectory],
+        @"account_id" : controller.selectedProfile.identifier ?: @"",
+        @"account_label" : controller.selectedProfile.label ?: @"",
+        @"assistant_open" : @(!controller.assistantView.hidden),
+        @"chat_title" : controller.assistantMessages.count > 0
+            ? @"Saved AI conversation" : @"New chat",
+        @"chat_messages" : controller.privateSession
+            ? @[] : controller.assistantMessages ?: @[],
+    };
+}
+
+- (NSDictionary *)workspaceSnapshotTreeForController:
+                    (AppDelegate *)controller
+                                             splitCount:(NSUInteger *)count {
+    NSMutableDictionary *pane =
+        [[self workspaceSnapshotPaneForController:controller] mutableCopy];
+    pane[@"split_vertical"] = @(controller.embeddedSplitVertical);
+    NSMutableArray *children = [NSMutableArray array];
+    for (AppDelegate *split in controller.splitControllers) {
+        [children addObject:
+            [self workspaceSnapshotTreeForController:split
+                                           splitCount:count]];
+        if (count != NULL) (*count)++;
+    }
+    pane[@"children"] = children;
+    return pane;
+}
+
+- (void)restoreWorkspacePaneTree:(NSDictionary *)tree
+                  intoController:(AppDelegate *)target
+                       configure:
+    (void (^)(AppDelegate *, NSDictionary *))configure {
+    NSArray *children =
+        [tree[@"children"] isKindOfClass:NSArray.class]
+            ? tree[@"children"] : @[];
+    for (NSDictionary *childTree in children) {
+        BOOL vertical = childTree[@"split_vertical"] == nil ||
+            [childTree[@"split_vertical"] boolValue];
+        [target newTerminalSplitVertical:vertical];
+        AppDelegate *child = target.splitControllers.lastObject;
+        if (child == nil) continue;
+        configure(child, childTree);
+        [self restoreWorkspacePaneTree:childTree
+                       intoController:child
+                            configure:configure];
+    }
+    if ([tree[@"assistant_open"] boolValue] ||
+        [tree[@"chat_messages"] count] > 0) {
+        [target showAssistantPane];
+    }
 }
 
 - (void)showProductSection:(TerminalProductSection)section {
@@ -929,21 +1233,136 @@ static int TerminalDBExitStatus = 0;
             };
         root.productWindowController.restoreWorkspaceHandler =
             ^(NSDictionary *workspace) {
-                AppDelegate *active = [weakRoot activeTerminalController];
-                NSString *directory = workspace[@"directory"];
-                if (directory.length == 0) return;
-                NSString *quoted = [active shellQuotedString:directory];
-                [active pasteCommandForReview:
-                    [NSString stringWithFormat:@"cd %@", quoted]];
-                [active showAssistantPane];
-                [active.assistantView setDraftPrompt:
-                    [NSString stringWithFormat:
-                        @"Continue work in the “%@” workspace. The restored "
-                         "directory is %@ and the saved Claude Code account "
-                         "was %@.",
-                        workspace[@"name"] ?: @"workspace",
-                        directory,
-                        workspace[@"account"] ?: @"not recorded"]];
+                AppDelegate *rootController = weakRoot;
+                AppDelegate *active =
+                    [rootController activeTerminalController];
+                if (active == nil) return;
+                while (active.embeddedSplitOwner != nil) {
+                    active = active.embeddedSplitOwner;
+                }
+                BOOL hasCurrentLayout =
+                    active.window.tabGroup.windows.count > 1 ||
+                    active.splitControllers.count > 0 ||
+                    active.ledgerStore.records.count > 0;
+                if (hasCurrentLayout) {
+                    NSAlert *conflict = [[NSAlert alloc] init];
+                    conflict.messageText = [NSString stringWithFormat:
+                        @"Restore “%@”?", workspace[@"name"] ?: @"workspace"];
+                    conflict.informativeText =
+                        @"Open it in a new window to preserve the current "
+                         "layout, or reuse the active terminal.";
+                    [conflict addButtonWithTitle:@"Open in New Window"];
+                    [conflict addButtonWithTitle:@"Use Current Terminal"];
+                    [conflict addButtonWithTitle:@"Cancel"];
+                    NSModalResponse response = [conflict runModal];
+                    if (response == NSAlertThirdButtonReturn) return;
+                    if (response == NSAlertFirstButtonReturn) {
+                        active = [rootController createTerminalController];
+                        [rootController presentTerminalController:active];
+                    }
+                }
+                NSArray *savedTabs =
+                    [workspace[@"tabs"] isKindOfClass:NSArray.class]
+                        ? workspace[@"tabs"] : nil;
+                if (savedTabs.count == 0) {
+                    savedTabs = @[@{
+                        @"directory" : workspace[@"directory"] ?: NSHomeDirectory(),
+                        @"account_label" : workspace[@"account"] ?: @"",
+                        @"assistant_open" : @YES,
+                        @"chat_messages" : @[],
+                    }];
+                }
+                NSMutableArray<AppDelegate *> *restored =
+                    [NSMutableArray array];
+                void (^configurePane)(AppDelegate *, NSDictionary *) =
+                    ^(AppDelegate *target, NSDictionary *pane) {
+                    NSString *accountID = pane[@"account_id"];
+                    NSString *accountLabel = pane[@"account_label"];
+                    ClaudeProfile *profile = accountID.length > 0
+                        ? [rootController.profileManager
+                            profileWithIdentifier:accountID] : nil;
+                    if (profile == nil && accountLabel.length > 0) {
+                        for (ClaudeProfile *candidate in
+                                rootController.profileManager.profiles) {
+                            if ([candidate.label isEqualToString:accountLabel]) {
+                                profile = candidate;
+                                break;
+                            }
+                        }
+                    }
+                    if (profile != nil) {
+                        [target.claudeStatusBar selectProfile:profile];
+                        [target claudeStatusBar:target.claudeStatusBar
+                              didSelectProfile:profile];
+                    }
+                    NSString *directory = pane[@"directory"] ?:
+                        workspace[@"directory"] ?: NSHomeDirectory();
+                    NSString *quoted = [target shellQuotedString:directory];
+                    NSString *cd = [NSString stringWithFormat:@"cd %@\r", quoted];
+                    [target.terminalView sendBytes:cd.UTF8String
+                                           length:strlen(cd.UTF8String)];
+                    NSArray *messages =
+                        [pane[@"chat_messages"] isKindOfClass:NSArray.class]
+                            ? pane[@"chat_messages"] : @[];
+                    if (messages.count > 0) {
+                        target.assistantMessages = [messages mutableCopy];
+                        [target showAssistantPane];
+                        NSString *model = rootController.apiConfiguration
+                            .selectedModelID ?: @"Claude";
+                        [target.assistantView
+                            beginWithModelName:
+                                [rootController.apiConfiguration
+                                    displayNameForModelID:model]
+                                      messages:messages];
+                        [target.assistantView finish];
+                    } else if ([pane[@"assistant_open"] boolValue]) {
+                        [target showAssistantPane];
+                    }
+                };
+                for (NSUInteger index = 0; index < savedTabs.count; index++) {
+                    NSDictionary *tab = savedTabs[index];
+                    NSDictionary *tree =
+                        [tab[@"pane_tree"] isKindOfClass:NSDictionary.class]
+                            ? tab[@"pane_tree"] : nil;
+                    NSArray *panes = [tab[@"panes"]
+                        isKindOfClass:NSArray.class] ? tab[@"panes"] : @[tab];
+                    AppDelegate *target = index == 0
+                        ? active : [rootController createTerminalController];
+                    if (index > 0) {
+                        [active.window addTabbedWindow:target.window
+                                               ordered:NSWindowAbove];
+                    }
+                    [restored addObject:target];
+                    if (tree != nil) {
+                        configurePane(target, tree);
+                        [rootController
+                            restoreWorkspacePaneTree:tree
+                                     intoController:target
+                                          configure:configurePane];
+                    } else {
+                        configurePane(target, panes.firstObject ?: tab);
+                        for (NSUInteger paneIndex = 1;
+                             paneIndex < panes.count; paneIndex++) {
+                            [target newTerminalSplitVertical:YES];
+                            AppDelegate *split =
+                                target.splitControllers.lastObject;
+                            if (split != nil) {
+                                configurePane(split, panes[paneIndex]);
+                            }
+                        }
+                    }
+                }
+                NSInteger selected =
+                    [workspace[@"selected_tab"] integerValue];
+                selected = MAX(0, MIN(selected,
+                    (NSInteger)restored.count - 1));
+                if (restored.count > 0) {
+                    restored[(NSUInteger)selected].window.tabGroup
+                        .selectedWindow =
+                            restored[(NSUInteger)selected].window;
+                    [restored[(NSUInteger)selected].window
+                        makeKeyAndOrderFront:nil];
+                }
             };
         root.productWindowController.openAPISettingsHandler = ^{
             [weakRoot showClaudeAPISettings:nil];
@@ -951,8 +1370,16 @@ static int TerminalDBExitStatus = 0;
         root.productWindowController.newAIChatHandler = ^{
             [weakRoot newAIChatFromMenu:nil];
         };
+        root.productWindowController.addClaudeAccountHandler = ^{
+            [weakRoot addClaudeProfileFromMenu:nil];
+        };
         root.productWindowController.showHistoryHandler = ^{
             [[weakRoot activeTerminalController] showCommandHistory:nil];
+        };
+        root.productWindowController.activateTerminalHandler = ^{
+            AppDelegate *active = [weakRoot activeTerminalController];
+            [active.window makeKeyAndOrderFront:nil];
+            [active.window makeFirstResponder:active.terminalView];
         };
         root.productWindowController.askAIHandler =
             ^(NSDictionary *context, NSString *prompt) {
@@ -978,6 +1405,59 @@ static int TerminalDBExitStatus = 0;
                     @"removable" : @YES,
                 }];
                 [active.assistantView setDraftPrompt:prompt];
+            };
+        root.productWindowController.workspaceSnapshotProvider =
+            ^NSDictionary *{
+                AppDelegate *rootController = weakRoot;
+                AppDelegate *active =
+                    [rootController activeTerminalController];
+                if (active == nil) return @{};
+                while (active.embeddedSplitOwner != nil) {
+                    active = active.embeddedSplitOwner;
+                }
+                NSArray<NSWindow *> *windows =
+                    active.window.tabGroup.windows.count > 0
+                        ? active.window.tabGroup.windows
+                        : @[active.window];
+                NSMutableArray *tabs = [NSMutableArray array];
+                NSInteger selected = 0;
+                __block NSUInteger splitCount = 0;
+                for (NSUInteger index = 0; index < windows.count; index++) {
+                    AppDelegate *controller =
+                        [windows[index].delegate
+                            isKindOfClass:AppDelegate.class]
+                            ? (AppDelegate *)windows[index].delegate : nil;
+                    if (controller == nil) continue;
+                    if (windows[index] ==
+                        active.window.tabGroup.selectedWindow) {
+                        selected = tabs.count;
+                    }
+                    NSDictionary *tree = [rootController
+                        workspaceSnapshotTreeForController:controller
+                                                splitCount:&splitCount];
+                    NSMutableArray *panes =
+                        [NSMutableArray arrayWithObject:
+                            [rootController
+                                workspaceSnapshotPaneForController:controller]];
+                    for (AppDelegate *split in controller.splitControllers) {
+                        [panes addObject:[rootController
+                            workspaceSnapshotPaneForController:split]];
+                    }
+                    NSMutableDictionary *tab =
+                        [[rootController
+                            workspaceSnapshotPaneForController:controller]
+                                mutableCopy];
+                    tab[@"panes"] = panes;
+                    tab[@"pane_tree"] = tree;
+                    [tabs addObject:tab];
+                }
+                return @{
+                    @"tabs" : tabs,
+                    @"selected_tab" : @(selected),
+                    @"splits" : @(splitCount),
+                    @"model" :
+                        rootController.apiConfiguration.selectedModelID ?: @"",
+                };
             };
     }
     [root.productWindowController
@@ -1065,6 +1545,41 @@ static int TerminalDBExitStatus = 0;
     if (record != nil) [controller saveRunbookFromRecord:record];
 }
 
+- (void)bookmarkLastCommand:(id)sender {
+    (void)sender;
+    AppDelegate *controller = [[self rootController] activeTerminalController];
+    NSDictionary *record = controller.ledgerStore.records.firstObject;
+    NSString *identifier = record[@"id"];
+    if (identifier.length > 0) {
+        [controller.ledgerStore toggleBookmarkForRecord:identifier];
+        NSDictionary *updated =
+            [controller.ledgerStore recordWithIdentifier:identifier];
+        if ([controller.ledgerBar.currentRecord[@"id"]
+                isEqualToString:identifier]) {
+            [controller.ledgerBar displayRecord:updated];
+        }
+    }
+}
+
+- (void)clearTerminalHistory:(id)sender {
+    (void)sender;
+    AppDelegate *controller = [[self rootController] activeTerminalController];
+    if (controller == nil || controller.ledgerStore.records.count == 0) return;
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.alertStyle = NSAlertStyleCritical;
+    alert.messageText = @"Clear TerminalDB history?";
+    alert.informativeText =
+        @"This permanently removes command blocks, bookmarks, and annotations "
+         "from this Mac. Runbooks and workspaces are kept.";
+    [alert addButtonWithTitle:@"Clear History"];
+    [alert addButtonWithTitle:@"Cancel"];
+    if ([alert runModal] == NSAlertFirstButtonReturn) {
+        [controller.ledgerStore clearHistory];
+        [controller.ledgerBar showReadyInDirectory:
+            [controller currentAssistantDirectory]];
+    }
+}
+
 - (NSString *)claudeMenuTitleForProfile:(ClaudeProfile *)profile {
     if (profile.subscriptionType.length > 0) {
         return [NSString stringWithFormat:@"%@ (%@)",
@@ -1078,12 +1593,20 @@ static int TerminalDBExitStatus = 0;
     AppDelegate *controller = [root activeTerminalController];
     if (menu == root.viewMenu) {
         for (NSMenuItem *item in menu.itemArray) {
-            if (item.action != @selector(toggleAIChatFromMenu:)) continue;
-            item.title = controller.assistantView.hidden
-                ? @"Show AI Chat"
-                : @"Hide AI Chat";
-            item.enabled = controller != nil;
-            break;
+            if (item.action == @selector(toggleAIChatFromMenu:)) {
+                item.title = controller.assistantView.hidden
+                    ? @"Show AI Chat"
+                    : @"Hide AI Chat";
+                item.enabled = controller != nil;
+            } else if (item.action ==
+                       @selector(toggleFocusModeFromMenu:)) {
+                item.state = controller.focusMode
+                    ? NSControlStateValueOn : NSControlStateValueOff;
+            } else if (item.action == @selector(toggleTabBarFromMenu:)) {
+                BOOL visible =
+                    controller.window.tabGroup.tabBarVisible;
+                item.title = visible ? @"Hide Tab Bar" : @"Show Tab Bar";
+            }
         }
         return;
     }
@@ -1097,6 +1620,25 @@ static int TerminalDBExitStatus = 0;
     newChat.target = root;
     newChat.enabled = controller != nil;
     [menu addItem:newChat];
+    NSMenuItem *resumeChat = [[NSMenuItem alloc]
+        initWithTitle:@"Resume Current AI Chat"
+               action:@selector(resumeAIChatFromMenu:)
+        keyEquivalent:@""];
+    resumeChat.target = root;
+    resumeChat.enabled = controller.assistantMessages.count > 0;
+    [menu addItem:resumeChat];
+    NSMenuItem *attachBlock = [[NSMenuItem alloc]
+        initWithTitle:@"Attach Current Command Block"
+               action:@selector(attachCurrentBlockFromMenu:)
+        keyEquivalent:@"\r"];
+    attachBlock.target = root;
+    attachBlock.keyEquivalentModifierMask =
+        NSEventModifierFlagOption;
+    attachBlock.enabled =
+        controller.ledgerBar.currentRecord != nil ||
+        controller.ledgerStore.records.count > 0;
+    [menu addItem:attachBlock];
+    [menu addItem:NSMenuItem.separatorItem];
 
     NSString *selectedModelID = root.apiConfiguration.selectedModelID;
     NSString *selectedModelName = selectedModelID.length > 0
@@ -1150,6 +1692,33 @@ static int TerminalDBExitStatus = 0;
     [modelMenu addItem:refreshModels];
     modelParent.submenu = modelMenu;
     [menu addItem:modelParent];
+
+    NSString *permissionMode = [NSUserDefaults.standardUserDefaults
+        stringForKey:@"TerminalDBPermissionMode"] ?: @"ask";
+    NSMenuItem *permissionParent = [[NSMenuItem alloc]
+        initWithTitle:@"Permission Mode"
+               action:nil
+        keyEquivalent:@""];
+    NSMenu *permissionMenu =
+        [[NSMenu alloc] initWithTitle:@"Permission Mode"];
+    NSArray *modes = @[
+        @[@"Ask Before Running", @"ask"],
+        @[@"Auto-run Validated Read-only", @"read-only"],
+        @[@"Paste Only", @"paste-only"],
+    ];
+    for (NSArray *definition in modes) {
+        NSMenuItem *mode = [[NSMenuItem alloc]
+            initWithTitle:definition[0]
+                   action:@selector(selectPermissionModeFromMenu:)
+            keyEquivalent:@""];
+        mode.target = root;
+        mode.representedObject = definition[1];
+        mode.state = [permissionMode isEqualToString:definition[1]]
+            ? NSControlStateValueOn : NSControlStateValueOff;
+        [permissionMenu addItem:mode];
+    }
+    permissionParent.submenu = permissionMenu;
+    [menu addItem:permissionParent];
 
     NSMenuItem *apiSettings = [[NSMenuItem alloc]
         initWithTitle:@"AI Chat Settings…"
@@ -1229,6 +1798,13 @@ static int TerminalDBExitStatus = 0;
     [menu addItem:accountParent];
 
     [menu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *usageWindow = [[NSMenuItem alloc]
+        initWithTitle:@"Claude Code Account & Usage…"
+               action:@selector(showClaudeUsageWindowFromMenu:)
+        keyEquivalent:@""];
+    usageWindow.target = root;
+    usageWindow.enabled = controller != nil;
+    [menu addItem:usageWindow];
     NSMenuItem *refresh = [[NSMenuItem alloc]
         initWithTitle:@"Refresh Claude Code Usage"
                action:@selector(refreshClaudeUsageFromMenu:)
@@ -1236,6 +1812,86 @@ static int TerminalDBExitStatus = 0;
     refresh.target = root;
     refresh.enabled = selected != nil && controller != nil;
     [menu addItem:refresh];
+    [menu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *stop = [[NSMenuItem alloc]
+        initWithTitle:@"Stop AI Response"
+               action:@selector(stopAIFromMenu:)
+        keyEquivalent:@"."];
+    stop.target = root;
+    stop.enabled = controller.assistantClient != nil;
+    [menu addItem:stop];
+    NSMenuItem *revertPatch = [[NSMenuItem alloc]
+        initWithTitle:@"Revert Last AI Patch…"
+               action:@selector(revertLastAIPatchFromMenu:)
+        keyEquivalent:@""];
+    revertPatch.target = root;
+    revertPatch.enabled =
+        controller.lastAIApplyPatchPath.length > 0 &&
+        [NSFileManager.defaultManager
+            fileExistsAtPath:controller.lastAIApplyPatchPath];
+    [menu addItem:revertPatch];
+}
+
+- (void)attachCurrentBlockFromMenu:(id)sender {
+    (void)sender;
+    AppDelegate *controller = [[self rootController] activeTerminalController];
+    NSDictionary *record = controller.ledgerBar.currentRecord ?:
+        controller.ledgerStore.records.firstObject;
+    if (record != nil) {
+        [controller attachRecordToAssistant:record
+            intent:@"What would you like to know about this command block?"];
+    }
+}
+
+- (void)selectPermissionModeFromMenu:(NSMenuItem *)sender {
+    NSString *mode = [sender.representedObject
+        isKindOfClass:NSString.class] ? sender.representedObject : @"ask";
+    [NSUserDefaults.standardUserDefaults
+        setObject:mode forKey:@"TerminalDBPermissionMode"];
+}
+
+- (void)stopAIFromMenu:(id)sender {
+    (void)sender;
+    AppDelegate *controller = [[self rootController] activeTerminalController];
+    if (controller.assistantClient == nil) return;
+    controller.assistantRequestGeneration++;
+    [controller.assistantClient cancel];
+    controller.assistantClient = nil;
+    [controller.assistantView showError:@"Response stopped."
+                      settingsAvailable:NO];
+}
+
+- (void)revertLastAIPatchFromMenu:(id)sender {
+    (void)sender;
+    AppDelegate *controller =
+        [[self rootController] activeTerminalController];
+    NSString *path = controller.lastAIApplyPatchPath;
+    if (path.length == 0 ||
+        ![NSFileManager.defaultManager fileExistsAtPath:path]) {
+        NSAlert *missing = [[NSAlert alloc] init];
+        missing.messageText = @"No reversible AI patch is available";
+        missing.informativeText =
+            @"TerminalDB keeps the most recently approved patch for the "
+             "current app session.";
+        [missing runModal];
+        return;
+    }
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.alertStyle = NSAlertStyleWarning;
+    alert.messageText = @"Revert the last AI patch?";
+    alert.informativeText = [NSString stringWithFormat:
+        @"Target: %@\nTerminalDB will validate the reverse patch before "
+         "requesting normal write permission.",
+        [controller currentAssistantDirectory]];
+    [alert addButtonWithTitle:@"Review & Revert"];
+    [alert addButtonWithTitle:@"Cancel"];
+    if ([alert runModal] != NSAlertFirstButtonReturn) return;
+    NSString *quoted = [controller shellQuotedString:path];
+    NSString *command = [NSString stringWithFormat:
+        @"/usr/bin/git apply --reverse --check %@ && "
+         "/usr/bin/git apply --reverse %@",
+        quoted, quoted];
+    [controller requestExecutionForCommand:command];
 }
 
 - (void)selectClaudeProfileFromMenu:(NSMenuItem *)sender {
@@ -1274,6 +1930,13 @@ static int TerminalDBExitStatus = 0;
     (void)sender;
     AppDelegate *controller = [[self rootController] activeTerminalController];
     [controller.claudeStatusBar refreshNow];
+}
+
+- (void)showClaudeUsageWindowFromMenu:(id)sender {
+    (void)sender;
+    AppDelegate *controller =
+        [[self rootController] activeTerminalController];
+    [controller.claudeStatusBar presentUsageWindow];
 }
 
 - (void)selectAIChatModelFromMenu:(NSMenuItem *)sender {
@@ -1373,6 +2036,54 @@ static int TerminalDBExitStatus = 0;
     for (NSWindow *window in windows) [window performClose:nil];
 }
 
+- (void)findInTerminal:(id)sender {
+    (void)sender;
+    AppDelegate *controller =
+        [[self rootController] activeTerminalController];
+    if (controller == nil) return;
+    [controller.window makeFirstResponder:controller.terminalView];
+    NSMenuItem *findAction =
+        [[NSMenuItem alloc] initWithTitle:@"Find"
+                                   action:@selector(performFindPanelAction:)
+                            keyEquivalent:@""];
+    findAction.tag = NSFindPanelActionShowFindPanel;
+    [NSApp sendAction:findAction.action
+                   to:nil
+                 from:findAction];
+}
+
+- (void)toggleTabBarFromMenu:(id)sender {
+    (void)sender;
+    AppDelegate *controller =
+        [[self rootController] activeTerminalController];
+    [controller.window toggleTabBar:nil];
+}
+
+- (void)toggleFocusModeFromMenu:(id)sender {
+    (void)sender;
+    AppDelegate *controller =
+        [[self rootController] activeTerminalController];
+    if (controller == nil) return;
+    controller.focusMode = !controller.focusMode;
+    if (controller.focusMode) {
+        controller.assistantView.hidden = YES;
+    }
+    [controller layoutWorkspace];
+    [controller.window makeFirstResponder:controller.terminalView];
+}
+
+- (void)openRecentDirectoryFromMenu:(NSMenuItem *)sender {
+    NSString *directory =
+        [sender.representedObject isKindOfClass:NSString.class]
+            ? sender.representedObject : @"";
+    AppDelegate *controller =
+        [[self rootController] activeTerminalController];
+    if (directory.length == 0 || controller == nil) return;
+    NSString *command = [NSString stringWithFormat:@"cd %@",
+        [controller shellQuotedString:directory]];
+    [controller pasteCommandForReview:command];
+}
+
 - (void)clearTerminalScrollbackFromMenu:(id)sender {
     (void)sender;
     AppDelegate *controller =
@@ -1452,14 +2163,54 @@ static int TerminalDBExitStatus = 0;
         @"Shell\n"
          "⌘N  New window    ⌘T  New tab    ⌘W  Close tab\n"
          "⌘K  Clear scrollback\n\n"
+         "⌘D  Split right    ⇧⌘D  Split down\n"
+         "⇧⌘P  Private session    ⇧⌘R  Runbooks\n\n"
          "Terminal\n"
          "⌘C  Copy selection    ⌘V  Paste    ⌘A  Select all\n"
          "⌘+ / ⌘− / ⌘0  Adjust text size\n\n"
          "AI Chat\n"
          "⇧⌘L  Show or hide the AI chat pane\n"
-         "Use New AI Chat when you want fresh context.";
+         "⌥Return  Attach current command block\n"
+         "Use New AI Chat when you want fresh context.\n\n"
+         "Accessibility\n"
+         "F6 cycles terminal and AI composer. All commands remain available "
+         "from menus and expose VoiceOver labels.";
     [help addButtonWithTitle:@"Done"];
     [help runModal];
+}
+
+- (void)showKeyboardShortcuts:(id)sender {
+    [self showTerminalDBHelp:sender];
+}
+
+- (void)showPrivacyAndSecurity:(id)sender {
+    (void)sender;
+    NSAlert *privacy = [[NSAlert alloc] init];
+    privacy.messageText = @"Privacy & Security";
+    privacy.informativeText =
+        @"• Command history stays on this Mac with best-effort secret "
+         "redaction.\n"
+         "• Private Session prevents new command blocks and workspace chat "
+         "from being saved.\n"
+         "• Claude sees the current terminal snapshot and the removable "
+         "context chips shown in the composer only when you send.\n"
+         "• Paste never runs a command. Run uses the active risk and "
+         "permission policy.\n"
+         "• API chat credentials and Claude Code subscription accounts are "
+         "managed separately.";
+    [privacy addButtonWithTitle:@"Open Settings"];
+    [privacy addButtonWithTitle:@"Done"];
+    if ([privacy runModal] == NSAlertFirstButtonReturn) {
+        [[self rootController]
+            showProductSection:TerminalProductSectionSettings];
+    }
+}
+
+- (void)reportIssue:(id)sender {
+    (void)sender;
+    NSURL *url = [NSURL
+        URLWithString:@"https://github.com/danb235/TerminalDB/issues/new"];
+    if (url != nil) [NSWorkspace.sharedWorkspace openURL:url];
 }
 
 - (void)showClaudeAPISettings:(id)sender {
@@ -1523,6 +2274,42 @@ static int TerminalDBExitStatus = 0;
     }
     NSString *directory = [self currentAssistantDirectory];
     NSString *host = NSHost.currentHost.localizedName ?: @"this Mac";
+    if ([lower hasPrefix:@"ssh "]) {
+        NSArray<NSString *> *parts =
+            [trimmed componentsSeparatedByCharactersInSet:
+                NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSMutableArray<NSString *> *tokens = [NSMutableArray array];
+        for (NSString *part in parts) {
+            if (part.length > 0) [tokens addObject:part];
+        }
+        if (tokens.count > 1) host = tokens[1];
+    } else if ([environment isEqualToString:@"PRODUCTION"]) {
+        host = @"PRODUCTION";
+    }
+    NSString *permissionMode = [NSUserDefaults.standardUserDefaults
+        stringForKey:@"TerminalDBPermissionMode"] ?: @"ask";
+    if ([permissionMode isEqualToString:@"paste-only"]) {
+        [self pasteCommandForReview:trimmed];
+        return;
+    }
+    TerminalCommandRisk risk =
+        [TerminalPermissionCenter riskForCommand:trimmed
+                                     environment:environment];
+    if ([permissionMode isEqualToString:@"read-only"] &&
+        risk == TerminalCommandRiskReadOnly) {
+        self.pendingExecutionApproval = @{
+            @"mode" : @"automatic read-only",
+            @"risk" : [TerminalPermissionCenter titleForRisk:risk],
+            @"directory" : directory,
+            @"host" : host,
+            @"environment" : environment,
+            @"approved_at" : @([NSDate date].timeIntervalSince1970),
+        };
+        [self.window makeFirstResponder:self.terminalView];
+        [self.terminalView pasteString:trimmed];
+        [self.terminalView sendUserBytes:"\r" length:1];
+        return;
+    }
     [self.permissionCenter
         requestPermissionForCommand:trimmed
                          directory:directory
@@ -1531,6 +2318,16 @@ static int TerminalDBExitStatus = 0;
                       parentWindow:self.window
                         completion:^(TerminalCommandPermissionDecision decision) {
         if (decision == TerminalCommandPermissionCancel) return;
+        self.pendingExecutionApproval = @{
+            @"mode" :
+                decision == TerminalCommandPermissionAllowSimilarThisSession
+                    ? @"allowed similar this session" : @"run once",
+            @"risk" : [TerminalPermissionCenter titleForRisk:risk],
+            @"directory" : directory,
+            @"host" : host,
+            @"environment" : environment,
+            @"approved_at" : @([NSDate date].timeIntervalSince1970),
+        };
         [self.window makeKeyAndOrderFront:nil];
         [self.window makeFirstResponder:self.terminalView];
         [self.terminalView pasteString:trimmed];
@@ -1848,7 +2645,7 @@ static int TerminalDBExitStatus = 0;
         }
         NSArray<NSString *> *expectedMenus = @[
             @"TerminalDB", @"Shell", @"Edit", @"View",
-            @"Claude", @"Runbooks", @"Window", @"Help",
+            @"AI", @"History", @"Window", @"Help",
         ];
         NSMutableArray<NSString *> *actualMenus =
             [NSMutableArray array];
@@ -1956,6 +2753,64 @@ static int TerminalDBExitStatus = 0;
     [self newTerminalTab:sender];
 }
 
+- (void)newTerminalSplitRight:(id)sender {
+    (void)sender;
+    [[[self rootController] activeTerminalController]
+        newTerminalSplitVertical:YES];
+}
+
+- (void)newTerminalSplitDown:(id)sender {
+    (void)sender;
+    [[[self rootController] activeTerminalController]
+        newTerminalSplitVertical:NO];
+}
+
+- (void)newTerminalSplitVertical:(BOOL)vertical {
+    AppDelegate *root = [self rootController];
+    AppDelegate *host = self;
+    if (host.workspaceView == nil || host.workspaceView.superview == nil) return;
+    if (!host.assistantView.hidden) [host hideAssistantPane];
+    AppDelegate *child = [root createTerminalController];
+    child.embeddedSplitOwner = host;
+    child.embeddedSplitVertical = vertical;
+    if (host.splitControllers == nil) {
+        host.splitControllers = [NSMutableArray array];
+    }
+    [host.splitControllers addObject:child];
+
+    NSView *oldWorkspace = host.workspaceView;
+    NSView *container = oldWorkspace.superview;
+    NSRect frame = oldWorkspace.frame;
+    NSSplitView *split = [[NSSplitView alloc] initWithFrame:frame];
+    split.vertical = vertical;
+    split.dividerStyle = NSSplitViewDividerStyleThin;
+    split.autoresizingMask =
+        NSViewWidthSizable | NSViewHeightSizable;
+    if (host.window.contentView == oldWorkspace) {
+        host.window.contentView = split;
+    } else {
+        [oldWorkspace removeFromSuperview];
+        [container addSubview:split];
+    }
+    oldWorkspace.frame = split.bounds;
+    oldWorkspace.autoresizingMask =
+        NSViewWidthSizable | NSViewHeightSizable;
+    [split addSubview:oldWorkspace];
+
+    NSView *childWorkspace = child.workspaceView;
+    child.window.contentView =
+        [[NSView alloc] initWithFrame:child.window.contentView.bounds];
+    childWorkspace.frame = split.bounds;
+    childWorkspace.autoresizingMask =
+        NSViewWidthSizable | NSViewHeightSizable;
+    [split addSubview:childWorkspace];
+    [child.window orderOut:nil];
+    [split adjustSubviews];
+    [host layoutWorkspace];
+    [child layoutWorkspace];
+    [host.window makeFirstResponder:child.terminalView];
+}
+
 - (void)selectNextTerminalTab:(id)sender {
     [NSApp.keyWindow selectNextTab:sender];
 }
@@ -1976,6 +2831,9 @@ static int TerminalDBExitStatus = 0;
     self.terminalColumns = 120;
     self.followsOutput = YES;
     self.assistantMessages = [NSMutableArray array];
+    self.privateSession = [NSUserDefaults.standardUserDefaults
+        boolForKey:@"TerminalDBPrivateSessionDefault"];
+    self.splitControllers = [NSMutableArray array];
     self.terminalInspector = [[TerminalInspector alloc] init];
     self.permissionCenter =
         [[TerminalPermissionCenter alloc] initWithTheme:self.theme];
@@ -2008,7 +2866,7 @@ static int TerminalDBExitStatus = 0;
     self.window.delegate = self;
     ((TerminalWindow *)self.window).tabActionTarget = self;
     self.window.releasedWhenClosed = NO;
-    self.window.contentMinSize = NSMakeSize(720, 420);
+    self.window.contentMinSize = NSMakeSize(640, 420);
     self.window.tabbingMode = NSWindowTabbingModePreferred;
     self.window.tabbingIdentifier = @"com.terminaldb.app.terminals";
     self.window.appearance = [NSAppearance appearanceNamed:
@@ -2020,6 +2878,7 @@ static int TerminalDBExitStatus = 0;
     const CGFloat statusBarHeight = 28;
     const CGFloat ledgerBarHeight = 132;
     NSView *contentView = [[NSView alloc] initWithFrame:frame];
+    self.workspaceView = contentView;
     TerminalScrollView *scrollView = [[TerminalScrollView alloc]
         initWithFrame:NSMakeRect(0, statusBarHeight,
                                  frame.size.width,
@@ -2036,6 +2895,7 @@ static int TerminalDBExitStatus = 0;
                                  terminalViewport.width,
                                  terminalViewport.height)];
     self.terminalView.editable = NO;
+    self.terminalView.delegate = self;
     self.terminalView.selectable = YES;
     self.terminalView.richText = NO;
     self.terminalView.verticallyResizable = YES;
@@ -2075,6 +2935,16 @@ static int TerminalDBExitStatus = 0;
         if (strongSelf == nil) return;
         strongSelf.followsOutput = YES;
         [strongSelf scrollTerminalToBottom];
+    };
+    self.terminalView.cycleRegionsHandler = ^{
+        AppDelegate *strongSelf = weakSelf;
+        if (strongSelf == nil) return;
+        if (!strongSelf.assistantView.hidden &&
+            strongSelf.window.firstResponder == strongSelf.terminalView) {
+            [strongSelf.assistantView focusComposer];
+        } else {
+            [strongSelf.window makeFirstResponder:strongSelf.terminalView];
+        }
     };
     scrollView.documentView = self.terminalView;
     scrollView.userDidScroll = ^{
@@ -2208,20 +3078,20 @@ static int TerminalDBExitStatus = 0;
 }
 
 - (void)layoutWorkspace {
-    if (self.assistantView == nil || self.window.contentView == nil ||
+    if (self.assistantView == nil || self.workspaceView == nil ||
         self.terminalScrollView == nil) {
         return;
     }
-    NSRect bounds = self.window.contentView.bounds;
-    const CGFloat statusBarHeight = 28;
-    const CGFloat ledgerBarHeight = 132;
+    NSRect bounds = self.workspaceView.bounds;
+    CGFloat statusBarHeight = self.focusMode ? 0 : 28;
+    CGFloat ledgerBarHeight = self.focusMode ? 0 : 132;
     // AppKit's unified tab bar overlaps the content edge slightly. Preserve a
     // compact optical inset so the ledger keyline clears that control.
     CGFloat titlebarInset =
         self.window.tabGroup.tabBarVisible ? 8.0 : 0.0;
     CGFloat workspaceHeight =
         MAX(1, bounds.size.height - statusBarHeight - titlebarInset);
-    BOOL chatVisible = !self.assistantView.hidden;
+    BOOL chatVisible = !self.focusMode && !self.assistantView.hidden;
     CGFloat paneWidth = 0;
     if (chatVisible) {
         paneWidth = MIN(460.0, MAX(340.0, floor(bounds.size.width * 0.39)));
@@ -2238,6 +3108,8 @@ static int TerminalDBExitStatus = 0;
     self.assistantView.frame =
         NSMakeRect(bounds.size.width - paneWidth, statusBarHeight,
                    paneWidth, workspaceHeight);
+    self.ledgerBar.hidden = self.focusMode;
+    self.claudeStatusBar.hidden = self.focusMode;
     self.assistantToggleButton.state =
         chatVisible ? NSControlStateValueOn : NSControlStateValueOff;
     self.assistantToggleButton.toolTip =
@@ -2251,7 +3123,9 @@ static int TerminalDBExitStatus = 0;
 }
 
 - (void)showAssistantPane {
+    if (self.focusMode) self.focusMode = NO;
     if (!self.assistantView.hidden) {
+        [self layoutWorkspace];
         [self.assistantView focusComposer];
         return;
     }
@@ -2823,6 +3697,10 @@ static int TerminalDBExitStatus = 0;
                 [lower hasPrefix:@"kubectl "] ||
                 [lower hasPrefix:@"docker "])
                    ? @"REMOTE" : @"LOCAL");
+    [self.claudeStatusBar
+        showEnvironment:environment
+                   host:NSHost.currentHost.localizedName
+                 detail:self.activeLedgerDirectory];
     self.activeMonitorIdentifier =
         [self.productStore beginMonitoringCommand:command
                                         directory:self.activeLedgerDirectory
@@ -2832,6 +3710,10 @@ static int TerminalDBExitStatus = 0;
 - (void)finishLedgerCommand {
     if (self.activeLedgerCommand.length == 0 ||
         self.activeLedgerStartedAt == nil) {
+        if ([NSProcessInfo.processInfo.arguments
+                containsObject:@"--visual-qa"]) {
+            return;
+        }
         [self.ledgerBar showReadyInDirectory:[self currentAssistantDirectory]];
         return;
     }
@@ -2844,7 +3726,7 @@ static int TerminalDBExitStatus = 0;
     NSString *output = [terminalText substringFromIndex:start];
     NSDictionary *record = nil;
     if (self.privateSession) {
-        record = @{
+        NSMutableDictionary *privateRecord = [@{
             @"id" : @"private",
             @"command" : self.activeLedgerCommand,
             @"directory" : self.activeLedgerDirectory ?: @"~",
@@ -2858,16 +3740,30 @@ static int TerminalDBExitStatus = 0;
             @"bookmarked" : @NO,
             @"annotations" : @[],
             @"private" : @YES,
-        };
+        } mutableCopy];
+        if (self.pendingExecutionApproval != nil) {
+            privateRecord[@"approval"] = self.pendingExecutionApproval;
+        }
+        record = privateRecord;
     } else {
         record = [self.ledgerStore addCommand:self.activeLedgerCommand
                                     directory:self.activeLedgerDirectory
                                        output:output
                                      exitCode:exitCode
                                      duration:duration];
+        if (record[@"id"] != nil && self.pendingExecutionApproval != nil) {
+            [self.ledgerStore updateRecord:record[@"id"]
+                                    values:@{
+                @"approval" : self.pendingExecutionApproval
+            }];
+            record = [self.ledgerStore
+                recordWithIdentifier:record[@"id"]] ?: record;
+        }
     }
+    self.pendingExecutionApproval = nil;
     if (record.count > 0) {
         [self.ledgerBar displayRecord:record];
+        [self appendLedgerFooterForRecord:record];
     } else {
         [self.ledgerBar finishCommand:self.activeLedgerCommand
                              directory:self.activeLedgerDirectory
@@ -2885,6 +3781,100 @@ static int TerminalDBExitStatus = 0;
     self.activeLedgerDirectory = @"";
     self.activeLedgerStartedAt = nil;
     self.activeLedgerOutputStart = 0;
+}
+
+- (void)appendLedgerFooterForRecord:(NSDictionary *)record {
+    if (self.alternateScreenActive || record.count == 0) return;
+    NSMutableAttributedString *storage = self.terminalView.textStorage;
+    NSString *terminalText = storage.string ?: @"";
+    NSUInteger end = storage.length;
+    NSUInteger blockStart = MIN(self.activeLedgerOutputStart, end);
+    if (blockStart > 0 && self.activeLedgerCommand.length > 0) {
+        NSString *prefix = [terminalText substringToIndex:blockStart];
+        NSRange commandRange = [prefix
+            rangeOfString:self.activeLedgerCommand
+                  options:NSBackwardsSearch];
+        if (commandRange.location != NSNotFound) {
+            blockStart = [prefix lineRangeForRange:commandRange].location;
+        }
+    }
+    if (end > blockStart) {
+        NSColor *blockBackground =
+            [self.theme.statusBarBackground colorWithAlphaComponent:0.72];
+        [storage addAttribute:NSBackgroundColorAttributeName
+                        value:blockBackground
+                        range:NSMakeRange(blockStart, end - blockStart)];
+    }
+
+    NSInteger exitCode = [record[@"exit_code"] integerValue];
+    NSString *state = exitCode == 0
+        ? @"✓ EXIT 0"
+        : [NSString stringWithFormat:@"× EXIT %ld", (long)exitCode];
+    NSString *privacy = [record[@"private"] boolValue] ? @"PRIVATE" : @"SAVED";
+    NSString *footer = [NSString stringWithFormat:
+        @"\n╰─ %@  ·  %@  ·  %.2fs  ·  %@  ·  [DETAILS]\n\n",
+        state,
+        record[@"environment"] ?: @"LOCAL",
+        [record[@"duration"] doubleValue],
+        privacy];
+    NSFont *font = [NSFont fontWithName:self.theme.fontName
+                                   size:10.5]
+        ?: [NSFont monospacedSystemFontOfSize:10.5
+                                       weight:NSFontWeightRegular];
+    NSMutableAttributedString *styled =
+        [[NSMutableAttributedString alloc] initWithString:footer
+                                              attributes:@{
+        NSFontAttributeName : font,
+        NSForegroundColorAttributeName :
+            exitCode == 0 ? self.theme.ansiColors[2]
+                          : self.theme.ansiColors[1],
+        NSParagraphStyleAttributeName : self.terminalParagraphStyle,
+    }];
+    NSRange details = [footer rangeOfString:@"[DETAILS]"];
+    NSString *identifier = record[@"id"];
+    if (details.location != NSNotFound &&
+        identifier.length > 0 &&
+        ![identifier isEqualToString:@"private"]) {
+        NSURL *link = [NSURL URLWithString:[NSString stringWithFormat:
+            @"terminaldb://block/%@", identifier]];
+        if (link != nil) {
+            [styled addAttributes:@{
+                NSLinkAttributeName : link,
+                NSForegroundColorAttributeName : self.theme.ansiColors[6],
+                NSUnderlineStyleAttributeName :
+                    @(NSUnderlineStyleSingle),
+            } range:details];
+        }
+    }
+    [storage appendAttributedString:styled];
+    self.outputCursor = storage.length;
+    self.terminalView.terminalCursorIndex = self.outputCursor;
+    [self.terminalView setNeedsDisplay:YES];
+    if (self.followsOutput && storage.length > 0) {
+        [self.terminalView
+            scrollRangeToVisible:NSMakeRange(storage.length - 1, 1)];
+    }
+}
+
+- (BOOL)textView:(NSTextView *)textView
+   clickedOnLink:(id)link
+         atIndex:(NSUInteger)charIndex {
+    (void)charIndex;
+    if (textView != self.terminalView ||
+        ![link isKindOfClass:NSURL.class]) {
+        return NO;
+    }
+    NSURL *url = link;
+    if (![url.scheme isEqualToString:@"terminaldb"] ||
+        ![url.host isEqualToString:@"block"]) {
+        return NO;
+    }
+    NSString *identifier = url.path.lastPathComponent;
+    NSDictionary *record =
+        [self.ledgerStore recordWithIdentifier:identifier];
+    if (record == nil) return NO;
+    [self showCommandInspectorForRecord:record];
+    return YES;
 }
 
 - (void)applyOSCData {
@@ -2990,7 +3980,12 @@ static int TerminalDBExitStatus = 0;
          "paste it into the terminal, review it, and press Return. Prefer "
          "macOS-compatible commands. Call out "
          "destructive or irreversible effects and offer a preview or safer "
-         "alternative first. Ask a concise clarifying question when the "
+         "alternative first. When proposing a source-code edit, include a "
+         "standard unified diff in a fenced `diff` block with paths relative "
+         "to the current repository. The UI lets the user copy it or review "
+         "and apply it through the same permission flow. Never claim a patch "
+         "was applied until terminal output confirms it. Ask a concise "
+         "clarifying question when the "
          "user’s intent would materially change the answer.\n\n"
          "<terminal_context>\n%@\n</terminal_context>",
         directory.length > 0 ? directory : @"an unknown directory",
@@ -3264,6 +4259,210 @@ static int TerminalDBExitStatus = 0;
 - (void)claudeAssistantView:(ClaudeAssistantView *)view
        didRequestRunCommand:(NSString *)command {
     (void)view;
+    [self requestExecutionForCommand:command];
+}
+
+- (void)claudeAssistantView:(ClaudeAssistantView *)view
+       didRequestApplyPatch:(NSString *)patch {
+    (void)view;
+    if ([patch rangeOfString:@"--- "].location == NSNotFound ||
+        [patch rangeOfString:@"+++ "].location == NSNotFound) {
+        NSAlert *invalid = [[NSAlert alloc] init];
+        invalid.alertStyle = NSAlertStyleWarning;
+        invalid.messageText = @"This is not a complete unified diff";
+        invalid.informativeText =
+            @"Copy the proposal for manual review, or ask Claude to return a "
+             "standard unified diff with --- and +++ file headers.";
+        [invalid runModal];
+        return;
+    }
+    NSMutableArray<NSMutableDictionary *> *fileGroups =
+        [NSMutableArray array];
+    NSMutableDictionary *group = nil;
+    NSMutableArray<NSString *> *currentHunk = nil;
+    for (NSString *line in [patch componentsSeparatedByString:@"\n"]) {
+        BOOL startsFile = [line hasPrefix:@"diff --git "] ||
+            ([line hasPrefix:@"--- "] &&
+             group != nil &&
+             [group[@"hunks"] count] > 0);
+        if (startsFile) {
+            currentHunk = nil;
+            group = [@{
+                @"header" : [NSMutableArray array],
+                @"hunks" : [NSMutableArray array],
+                @"file" : @"proposed file",
+            } mutableCopy];
+            [fileGroups addObject:group];
+        }
+        if (group == nil) {
+            group = [@{
+                @"header" : [NSMutableArray array],
+                @"hunks" : [NSMutableArray array],
+                @"file" : @"proposed file",
+            } mutableCopy];
+            [fileGroups addObject:group];
+        }
+        if ([line hasPrefix:@"+++ "]) {
+            NSString *file = [line substringFromIndex:4];
+            if ([file hasPrefix:@"b/"]) file = [file substringFromIndex:2];
+            group[@"file"] = file;
+        }
+        if ([line hasPrefix:@"@@"]) {
+            currentHunk = [NSMutableArray arrayWithObject:line];
+            [group[@"hunks"] addObject:currentHunk];
+        } else if (currentHunk != nil) {
+            [currentHunk addObject:line];
+        } else {
+            [group[@"header"] addObject:line];
+        }
+    }
+    NSUInteger hunkCount = 0;
+    for (NSDictionary *candidate in fileGroups) {
+        hunkCount += [candidate[@"hunks"] count];
+    }
+
+    NSString *reviewedPatch = patch;
+    NSAlert *review = [[NSAlert alloc] init];
+    review.alertStyle = NSAlertStyleWarning;
+    review.messageText = @"Review proposed file changes";
+    review.informativeText = [NSString stringWithFormat:
+        @"Target: %@\n%lu hunk%@ across %lu file%@. TerminalDB first runs "
+         "git apply --check; no change is made until the permission review.",
+        [self currentAssistantDirectory],
+        (unsigned long)MAX((NSUInteger)1, hunkCount),
+        hunkCount == 1 ? @"" : @"s",
+        (unsigned long)fileGroups.count,
+        fileGroups.count == 1 ? @"" : @"s"];
+    if (hunkCount > 1) {
+        [review addButtonWithTitle:@"Choose Hunks…"];
+        [review addButtonWithTitle:@"Apply Entire Patch"];
+        [review addButtonWithTitle:@"Cancel"];
+    } else {
+        [review addButtonWithTitle:@"Continue to Permission Review"];
+        [review addButtonWithTitle:@"Cancel"];
+    }
+    NSScrollView *scroll =
+        [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 620, 300)];
+    scroll.hasVerticalScroller = YES;
+    scroll.borderType = NSBezelBorder;
+    NSTextView *diffView =
+        [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 620, 300)];
+    diffView.editable = NO;
+    diffView.selectable = YES;
+    diffView.font = [NSFont fontWithName:self.theme.fontName size:11] ?:
+        [NSFont monospacedSystemFontOfSize:11
+                                   weight:NSFontWeightRegular];
+    diffView.string = patch;
+    scroll.documentView = diffView;
+    review.accessoryView = scroll;
+    NSModalResponse reviewResponse = [review runModal];
+    if (hunkCount > 1) {
+        if (reviewResponse == NSAlertThirdButtonReturn) return;
+        if (reviewResponse == NSAlertFirstButtonReturn) {
+            NSAlert *hunkReview = [[NSAlert alloc] init];
+            hunkReview.messageText = @"Choose the hunks to apply";
+            hunkReview.informativeText =
+                @"Selected hunks are assembled into a new patch, validated, "
+                 "and remain reversible for this app session.";
+            [hunkReview addButtonWithTitle:@"Continue with Selected"];
+            [hunkReview addButtonWithTitle:@"Cancel"];
+            CGFloat height = MIN(390.0, 62.0 + hunkCount * 30.0);
+            NSView *container =
+                [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 650, height)];
+            NSMutableArray<NSDictionary *> *choices =
+                [NSMutableArray array];
+            CGFloat y = height - 30;
+            for (NSUInteger fileIndex = 0;
+                 fileIndex < fileGroups.count; fileIndex++) {
+                NSDictionary *file = fileGroups[fileIndex];
+                NSArray *hunks = file[@"hunks"];
+                for (NSUInteger hunkIndex = 0;
+                     hunkIndex < hunks.count; hunkIndex++) {
+                    NSString *header =
+                        [hunks[hunkIndex] firstObject] ?: @"@@";
+                    NSButton *checkbox = [NSButton
+                        checkboxWithTitle:[NSString stringWithFormat:
+                            @"%@  ·  %@", file[@"file"] ?: @"file", header]
+                                   target:nil
+                                   action:nil];
+                    checkbox.state = NSControlStateValueOn;
+                    checkbox.frame = NSMakeRect(0, y, 640, 24);
+                    checkbox.font =
+                        [NSFont monospacedSystemFontOfSize:10.5
+                                                   weight:NSFontWeightRegular];
+                    [container addSubview:checkbox];
+                    [choices addObject:@{
+                        @"button" : checkbox,
+                        @"file" : @(fileIndex),
+                        @"hunk" : @(hunkIndex),
+                    }];
+                    y -= 30;
+                }
+            }
+            hunkReview.accessoryView = container;
+            if ([hunkReview runModal] != NSAlertFirstButtonReturn) return;
+            NSMutableString *selectedPatch = [NSMutableString string];
+            for (NSUInteger fileIndex = 0;
+                 fileIndex < fileGroups.count; fileIndex++) {
+                NSDictionary *file = fileGroups[fileIndex];
+                NSMutableIndexSet *selected = [NSMutableIndexSet indexSet];
+                for (NSDictionary *choice in choices) {
+                    if ([choice[@"file"] unsignedIntegerValue] != fileIndex ||
+                        [choice[@"button"] state] !=
+                            NSControlStateValueOn) {
+                        continue;
+                    }
+                    [selected addIndex:
+                        [choice[@"hunk"] unsignedIntegerValue]];
+                }
+                if (selected.count == 0) continue;
+                [selectedPatch appendString:
+                    [file[@"header"] componentsJoinedByString:@"\n"]];
+                [selectedPatch appendString:@"\n"];
+                [selected enumerateIndexesUsingBlock:
+                    ^(NSUInteger index, BOOL *stop) {
+                    (void)stop;
+                    NSArray *hunk = file[@"hunks"][index];
+                    [selectedPatch appendString:
+                        [hunk componentsJoinedByString:@"\n"]];
+                    [selectedPatch appendString:@"\n"];
+                }];
+            }
+            if (selectedPatch.length == 0) {
+                NSAlert *empty = [[NSAlert alloc] init];
+                empty.messageText = @"No hunks selected";
+                empty.informativeText =
+                    @"The proposal was not changed.";
+                [empty runModal];
+                return;
+            }
+            reviewedPatch = selectedPatch;
+        }
+    } else if (reviewResponse != NSAlertFirstButtonReturn) {
+        return;
+    }
+
+    NSString *path = [NSTemporaryDirectory()
+        stringByAppendingPathComponent:[NSString stringWithFormat:
+            @"terminaldb-%@.patch", NSUUID.UUID.UUIDString]];
+    NSData *data =
+        [reviewedPatch dataUsingEncoding:NSUTF8StringEncoding];
+    if (![data writeToFile:path options:NSDataWritingAtomic error:nil]) {
+        NSAlert *error = [[NSAlert alloc] init];
+        error.messageText = @"Could not prepare the patch";
+        error.informativeText =
+            @"TerminalDB could not create its private temporary patch file.";
+        [error runModal];
+        return;
+    }
+    [NSFileManager.defaultManager
+        setAttributes:@{NSFilePosixPermissions:@0600}
+          ofItemAtPath:path error:nil];
+    NSString *quoted = [self shellQuotedString:path];
+    NSString *command = [NSString stringWithFormat:
+        @"/usr/bin/git apply --check %@ && /usr/bin/git apply %@",
+        quoted, quoted];
+    self.lastAIApplyPatchPath = path;
     [self requestExecutionForCommand:command];
 }
 
@@ -4359,6 +5558,9 @@ static int TerminalDBExitStatus = 0;
 - (void)windowDidResize:(NSNotification *)notification {
     (void)notification;
     [self layoutWorkspace];
+    for (AppDelegate *split in self.splitControllers) {
+        [split layoutWorkspace];
+    }
 }
 
 - (void)windowDidBecomeKey:(NSNotification *)notification {
@@ -4368,6 +5570,38 @@ static int TerminalDBExitStatus = 0;
     } else {
         [self.window makeFirstResponder:self.terminalView];
     }
+}
+
+- (BOOL)hasForegroundProcessInThisPane {
+    pid_t foreground =
+        self.pty >= 0 ? tcgetpgrp(self.pty) : -1;
+    return foreground > 0 && foreground != self.shellPid;
+}
+
+- (BOOL)hasBusyProcessInPaneTree {
+    if ([self hasForegroundProcessInThisPane]) return YES;
+    for (AppDelegate *split in self.splitControllers) {
+        if ([split hasBusyProcessInPaneTree]) return YES;
+    }
+    return NO;
+}
+
+- (BOOL)windowShouldClose:(NSWindow *)sender {
+    (void)sender;
+    if (self.embeddedSplitOwner != nil ||
+        ![self hasBusyProcessInPaneTree]) {
+        return YES;
+    }
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.alertStyle = NSAlertStyleWarning;
+    alert.messageText = @"A command is still running";
+    alert.informativeText =
+        @"Closing this tab stops its foreground process and any work in its "
+         "split panes. Keep it open, or stop the work and close the tab.";
+    [alert addButtonWithTitle:@"Keep Running"];
+    [alert addButtonWithTitle:@"Stop and Close"];
+    alert.buttons.lastObject.hasDestructiveAction = YES;
+    return [alert runModal] == NSAlertSecondButtonReturn;
 }
 
 - (struct winsize)currentTerminalWindowSize {
@@ -4402,6 +5636,12 @@ static int TerminalDBExitStatus = 0;
 
 - (void)windowWillClose:(NSNotification *)notification {
     (void)notification;
+    NSArray<AppDelegate *> *embedded = [self.splitControllers copy];
+    [self.splitControllers removeAllObjects];
+    for (AppDelegate *split in embedded) {
+        [split.workspaceView removeFromSuperview];
+        [split.window close];
+    }
     [NSNotificationCenter.defaultCenter removeObserver:self
         name:ClaudeAPIConfigurationDidChangeNotification
       object:self.apiConfiguration];
@@ -4782,6 +6022,31 @@ static int TerminalDBExitStatus = 0;
         multiCommandButtons[3].superview !=
             [multiCommandView valueForKey:@"responseTextView"]) {
         fprintf(stderr, "FAIL inline assistant command actions\n");
+        failures++;
+    }
+
+    ClaudeAssistantView *patchView = [[ClaudeAssistantView alloc]
+        initWithFrame:NSMakeRect(0, 0, 760, 420)
+                theme:theme];
+    [patchView beginWithModelName:@"Test model"
+                         messages:@[
+        @{@"role":@"user", @"content":@"Propose the smallest patch"},
+    ]];
+    NSString *testPatch =
+        @"--- a/example.txt\n+++ b/example.txt\n@@ -1 +1 @@\n-old\n+new";
+    [patchView appendResponseText:
+        [NSString stringWithFormat:@"Review this:\n```diff\n%@\n```",
+            testPatch]];
+    [patchView finish];
+    NSArray<NSButton *> *patchButtons =
+        [patchView valueForKey:@"commandButtons"];
+    if (patchButtons.count != 2 ||
+        ![patchButtons[0].title isEqualToString:@"Copy"] ||
+        ![patchButtons[1].title isEqualToString:@"Apply…"] ||
+        ![[patchButtons[0] valueForKey:@"command"] isEqualToString:testPatch] ||
+        ![[patchButtons[1] valueForKey:@"actionKind"]
+            isEqualToString:@"apply_patch"]) {
+        fprintf(stderr, "FAIL assistant diff actions\n");
         failures++;
     }
 
@@ -5263,6 +6528,35 @@ static int TerminalDBExitStatus = 0;
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
     (void)sender;
     return YES;
+}
+
+- (NSApplicationTerminateReply)applicationShouldTerminate:
+    (NSApplication *)sender {
+    (void)sender;
+    AppDelegate *root = [self rootController];
+    NSUInteger running = 0;
+    for (AppDelegate *controller in root.windowControllers) {
+        if (controller.embeddedSplitOwner == nil &&
+            [controller hasBusyProcessInPaneTree]) {
+            running++;
+        }
+    }
+    if (running == 0) return NSTerminateNow;
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.alertStyle = NSAlertStyleWarning;
+    alert.messageText = running == 1
+        ? @"A command is still running"
+        : [NSString stringWithFormat:
+            @"%lu terminals still have running commands",
+            (unsigned long)running];
+    alert.informativeText =
+        @"Quitting TerminalDB stops those processes. Keep the app open, or "
+         "stop the running work and quit.";
+    [alert addButtonWithTitle:@"Keep Running"];
+    [alert addButtonWithTitle:@"Stop and Quit"];
+    alert.buttons.lastObject.hasDestructiveAction = YES;
+    return [alert runModal] == NSAlertSecondButtonReturn
+        ? NSTerminateNow : NSTerminateCancel;
 }
 
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)sender

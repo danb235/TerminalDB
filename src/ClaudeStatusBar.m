@@ -21,6 +21,10 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
 @property(nonatomic) BOOL usageRefreshInFlight;
 @property(nonatomic, readwrite) BOOL accountIsLoggedIn;
 @property(nonatomic, readwrite) BOOL accountStatusKnown;
+@property(nonatomic, strong, nullable) NSWindow *usageWindow;
+@property(nonatomic, strong, nullable) NSTextField *usageWindowAccountLabel;
+@property(nonatomic, strong, nullable) NSTextField *usageWindowUsageLabel;
+@property(nonatomic, strong, nullable) NSTextField *usageWindowAccountsLabel;
 @end
 
 @implementation ClaudeStatusBar
@@ -100,6 +104,12 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
                             keyEquivalent:@""];
     heading.enabled = NO;
     [menu addItem:heading];
+    NSMenuItem *openUsage =
+        [[NSMenuItem alloc] initWithTitle:@"Open Account & Usage…"
+                                   action:@selector(showUsageWindow:)
+                            keyEquivalent:@""];
+    openUsage.target = self;
+    [menu addItem:openUsage];
 
     NSString *usage = self.usageLabel.stringValue;
     if (usage.length > 0) {
@@ -162,6 +172,198 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
                         atLocation:[self convertPoint:event.locationInWindow
                                             fromView:nil]
                             inView:self];
+}
+
+- (NSTextField *)usageWindowLabel:(NSString *)text
+                             size:(CGFloat)size
+                           weight:(NSFontWeight)weight
+                            color:(NSColor *)color
+                            frame:(NSRect)frame {
+    NSTextField *label = [NSTextField wrappingLabelWithString:text ?: @""];
+    label.font = [NSFont systemFontOfSize:size weight:weight];
+    label.textColor = color;
+    label.frame = frame;
+    label.autoresizingMask = NSViewWidthSizable;
+    label.selectable = YES;
+    return label;
+}
+
+- (void)showUsageWindow:(id)sender {
+    (void)sender;
+    if (self.usageWindow == nil) {
+        NSWindow *window = [[NSWindow alloc]
+            initWithContentRect:NSMakeRect(0, 0, 920, 570)
+                      styleMask:NSWindowStyleMaskTitled |
+                                NSWindowStyleMaskClosable |
+                                NSWindowStyleMaskMiniaturizable |
+                                NSWindowStyleMaskResizable
+                        backing:NSBackingStoreBuffered
+                          defer:NO];
+        window.title = @"TerminalDB — Claude Code Account & Usage";
+        window.contentMinSize = NSMakeSize(760, 500);
+        window.backgroundColor = self.theme.terminalBackground;
+        NSView *content = window.contentView;
+        content.wantsLayer = YES;
+        content.layer.backgroundColor =
+            self.theme.terminalBackground.CGColor;
+
+        NSTextField *eyebrow = [self
+            usageWindowLabel:@"CLAUDE CODE · ACTIVE FOR THIS TAB"
+                         size:10
+                       weight:NSFontWeightSemibold
+                        color:self.theme.ansiColors[6]
+                        frame:NSMakeRect(28, 530, 860, 18)];
+        [content addSubview:eyebrow];
+        NSTextField *title = [self
+            usageWindowLabel:@"Account & usage"
+                         size:23
+                       weight:NSFontWeightSemibold
+                        color:self.theme.terminalForeground
+                        frame:NSMakeRect(26, 492, 860, 32)];
+        [content addSubview:title];
+        NSTextField *subtitle = [self
+            usageWindowLabel:
+                @"Subscription usage is per Claude Code account. Anthropic "
+                 "API chat credentials and model selection remain separate."
+                         size:12
+                       weight:NSFontWeightRegular
+                        color:self.theme.statusBarActiveForeground
+                        frame:NSMakeRect(28, 458, 860, 34)];
+        [content addSubview:subtitle];
+
+        NSBox *accountBox =
+            [[NSBox alloc] initWithFrame:NSMakeRect(28, 342, 864, 104)];
+        accountBox.boxType = NSBoxCustom;
+        accountBox.borderColor = self.theme.statusBarBorder;
+        accountBox.fillColor = self.theme.statusBarBackground;
+        accountBox.cornerRadius = 7;
+        accountBox.titlePosition = NSNoTitle;
+        [content addSubview:accountBox];
+        self.usageWindowAccountLabel = [self
+            usageWindowLabel:@""
+                         size:14
+                       weight:NSFontWeightSemibold
+                        color:self.theme.terminalForeground
+                        frame:NSMakeRect(18, 18, 824, 68)];
+        [accountBox.contentView
+            addSubview:self.usageWindowAccountLabel];
+
+        NSBox *usageBox =
+            [[NSBox alloc] initWithFrame:NSMakeRect(28, 220, 864, 106)];
+        usageBox.boxType = NSBoxCustom;
+        usageBox.borderColor = self.theme.statusBarBorder;
+        usageBox.fillColor = self.theme.statusBarBackground;
+        usageBox.cornerRadius = 7;
+        usageBox.titlePosition = NSNoTitle;
+        [content addSubview:usageBox];
+        self.usageWindowUsageLabel = [self
+            usageWindowLabel:@""
+                         size:13
+                       weight:NSFontWeightMedium
+                        color:self.theme.terminalForeground
+                        frame:NSMakeRect(18, 16, 824, 72)];
+        self.usageWindowUsageLabel.font =
+            [NSFont fontWithName:self.theme.fontName size:12.5]
+                ?: [NSFont monospacedSystemFontOfSize:12.5
+                                               weight:NSFontWeightMedium];
+        [usageBox.contentView addSubview:self.usageWindowUsageLabel];
+
+        NSTextField *accountsTitle = [self
+            usageWindowLabel:@"ALL ACCOUNTS · NO LIMIT · ONE ACTIVE PER TAB"
+                         size:10
+                       weight:NSFontWeightSemibold
+                        color:self.theme.statusBarForeground
+                        frame:NSMakeRect(30, 186, 860, 18)];
+        [content addSubview:accountsTitle];
+        self.usageWindowAccountsLabel = [self
+            usageWindowLabel:@""
+                         size:11.5
+                       weight:NSFontWeightRegular
+                        color:self.theme.statusBarActiveForeground
+                        frame:NSMakeRect(30, 92, 860, 88)];
+        self.usageWindowAccountsLabel.font =
+            [NSFont fontWithName:self.theme.fontName size:11]
+                ?: [NSFont monospacedSystemFontOfSize:11
+                                               weight:NSFontWeightRegular];
+        [content addSubview:self.usageWindowAccountsLabel];
+
+        NSButton *refresh = [NSButton buttonWithTitle:@"Refresh Usage"
+                                               target:self
+                                               action:@selector(refreshUsageWindow:)];
+        refresh.frame = NSMakeRect(28, 32, 130, 32);
+        [content addSubview:refresh];
+        NSButton *add = [NSButton buttonWithTitle:@"Add Account…"
+                                           target:self
+                                           action:@selector(addProfileFromStatusMenu:)];
+        add.frame = NSMakeRect(166, 32, 130, 32);
+        [content addSubview:add];
+        NSButton *done = [NSButton buttonWithTitle:@"Done"
+                                            target:window
+                                            action:@selector(performClose:)];
+        done.frame = NSMakeRect(800, 32, 92, 32);
+        [content addSubview:done];
+        self.usageWindow = window;
+    }
+    [self refreshUsageWindowContents];
+    [self.usageWindow center];
+    if ([NSProcessInfo.processInfo.arguments
+            containsObject:@"--visual-qa"]) {
+        [self.usageWindow orderBack:nil];
+    } else {
+        [self.usageWindow makeKeyAndOrderFront:nil];
+    }
+}
+
+- (void)presentUsageWindow {
+    [self showUsageWindow:nil];
+}
+
+- (void)refreshUsageWindow:(id)sender {
+    (void)sender;
+    [self refreshNow];
+    [self refreshUsageWindowContents];
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+            [weakSelf refreshUsageWindowContents];
+        });
+}
+
+- (void)refreshUsageWindowContents {
+    if (self.usageWindow == nil) return;
+    NSString *account = self.selectedProfile != nil
+        ? [self displayTitleForProfile:self.selectedProfile]
+        : @"●  No Claude Code account selected";
+    NSString *state = !self.accountStatusKnown
+        ? @"Checking sign-in state…"
+        : (self.accountIsLoggedIn
+            ? @"SIGNED IN · usage applies to this terminal tab"
+            : @"SIGN IN REQUIRED · choose the account from the AI menu");
+    self.usageWindowAccountLabel.stringValue =
+        [NSString stringWithFormat:@"%@\n%@", account, state];
+    self.usageWindowAccountLabel.textColor =
+        self.accountIsLoggedIn
+            ? self.theme.terminalForeground : self.theme.ansiColors[3];
+
+    NSString *usage = self.usageLabel.stringValue.length > 0
+        ? self.usageLabel.stringValue : @"Usage unavailable";
+    NSString *resetDetails = self.usageLabel.toolTip.length > 0
+        ? self.usageLabel.toolTip : @"Reset timestamps are not available.";
+    self.usageWindowUsageLabel.stringValue = [NSString stringWithFormat:
+        @"%@\n%@", usage, resetDetails];
+
+    NSMutableArray<NSString *> *accounts = [NSMutableArray array];
+    for (ClaudeProfile *profile in self.profileManager.profiles) {
+        BOOL selected = [profile.identifier
+            isEqualToString:self.selectedProfile.identifier];
+        [accounts addObject:[NSString stringWithFormat:@"%@  %@",
+            selected ? @"✓" : @" ",
+            [self displayTitleForProfile:profile]]];
+    }
+    self.usageWindowAccountsLabel.stringValue = accounts.count > 0
+        ? [accounts componentsJoinedByString:@"\n"]
+        : @"No accounts yet. Add an account to track subscription usage.";
 }
 
 - (void)selectProfileFromStatusMenu:(NSMenuItem *)sender {
@@ -247,6 +449,29 @@ static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
     [self refreshAccountIfNeeded:YES];
     [self refreshUsage];
     [self refreshUsageFromAPIIfNeeded:YES];
+}
+
+- (void)showEnvironment:(NSString *)environment
+                   host:(NSString *)host
+                 detail:(NSString *)detail {
+    NSString *value = environment.uppercaseString.length > 0
+        ? environment.uppercaseString : @"LOCAL";
+    self.environmentLabel.stringValue = value;
+    if ([value isEqualToString:@"PRODUCTION"]) {
+        self.environmentLabel.textColor = self.theme.ansiColors[1];
+    } else if ([value isEqualToString:@"STAGING"] ||
+               [value isEqualToString:@"REMOTE"]) {
+        self.environmentLabel.textColor = self.theme.ansiColors[3];
+    } else {
+        self.environmentLabel.textColor = self.theme.ansiColors[6];
+    }
+    self.environmentLabel.toolTip = [NSString stringWithFormat:
+        @"%@%@%@",
+        value,
+        host.length > 0 ? [@" · " stringByAppendingString:host] : @"",
+        detail.length > 0 ? [@" · " stringByAppendingString:detail] : @""];
+    [self.environmentLabel setAccessibilityLabel:
+        [NSString stringWithFormat:@"%@ environment", value.capitalizedString]];
 }
 
 - (void)timerFired:(NSTimer *)timer {

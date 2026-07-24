@@ -331,6 +331,16 @@ static NSString *TerminalLedgerCSVCell(id value) {
         record[@"project"] ?: @"Shell",
         [record[@"duration"] doubleValue],
         [formatter stringFromDate:date]];
+    NSDictionary *approval =
+        [record[@"approval"] isKindOfClass:NSDictionary.class]
+            ? record[@"approval"] : nil;
+    if (approval != nil) {
+        self.metadataLabel.stringValue =
+            [self.metadataLabel.stringValue stringByAppendingFormat:
+                @" · approved %@ (%@)",
+                approval[@"mode"] ?: @"once",
+                approval[@"risk"] ?: @"reviewed"];
+    }
     self.outputView.string = record[@"output"] ?: @"(no captured output)";
     NSMutableArray<NSString *> *lines = [NSMutableArray array];
     for (NSDictionary *annotation in
@@ -623,40 +633,135 @@ static NSString *TerminalLedgerCSVCell(id value) {
 
 - (NSArray<NSDictionary *> *)recordsMatching:(NSString *)query
                                       filters:(NSDictionary *)filters {
-    NSString *needle =
+    NSString *rawNeedle =
         [[query ?: @"" stringByTrimmingCharactersInSet:
             NSCharacterSet.whitespaceAndNewlineCharacterSet] lowercaseString];
     NSMutableDictionary *effectiveFilters =
         filters != nil ? [filters mutableCopy] : [NSMutableDictionary dictionary];
-    if ([needle containsString:@"failed"] ||
-        [needle containsString:@"failure"] ||
-        [needle containsString:@"error commands"]) {
-        effectiveFilters[@"status"] = @"failed";
-    } else if ([needle containsString:@"successful"] ||
-               [needle containsString:@"succeeded"]) {
-        effectiveFilters[@"status"] = @"success";
+    NSMutableArray<NSString *> *freeTerms = [NSMutableArray array];
+    for (NSString *token in
+            [rawNeedle componentsSeparatedByCharactersInSet:
+                NSCharacterSet.whitespaceCharacterSet]) {
+        if ([token hasPrefix:@"status:"]) {
+            effectiveFilters[@"status"] =
+                [token substringFromIndex:@"status:".length];
+        } else if ([token hasPrefix:@"project:"]) {
+            effectiveFilters[@"project"] =
+                [token substringFromIndex:@"project:".length];
+        } else if ([token hasPrefix:@"host:"]) {
+            effectiveFilters[@"host"] =
+                [token substringFromIndex:@"host:".length];
+        } else if ([token hasPrefix:@"env:"] ||
+                   [token hasPrefix:@"environment:"]) {
+            NSRange colon = [token rangeOfString:@":"];
+            effectiveFilters[@"environment"] =
+                [[token substringFromIndex:NSMaxRange(colon)] uppercaseString];
+        } else if ([token isEqualToString:@"is:bookmarked"] ||
+                   [token isEqualToString:@"bookmarked:true"]) {
+            effectiveFilters[@"bookmarked"] = @YES;
+        } else if (token.length > 0) {
+            [freeTerms addObject:token];
+        }
     }
-    if ([needle containsString:@"bookmarked"] ||
-        [needle containsString:@"favorites"]) {
+    NSMutableString *naturalNeedle =
+        [[freeTerms componentsJoinedByString:@" "] mutableCopy];
+    if ([naturalNeedle containsString:@"failed"] ||
+        [naturalNeedle containsString:@"failure"] ||
+        [naturalNeedle containsString:@"error commands"]) {
+        effectiveFilters[@"status"] = @"failed";
+        [naturalNeedle replaceOccurrencesOfString:@"error commands"
+                                       withString:@""
+                                          options:0
+                                            range:NSMakeRange(
+                                                0, naturalNeedle.length)];
+        [naturalNeedle replaceOccurrencesOfString:@"failed"
+                                       withString:@""
+                                          options:0
+                                            range:NSMakeRange(
+                                                0, naturalNeedle.length)];
+        [naturalNeedle replaceOccurrencesOfString:@"failure"
+                                       withString:@""
+                                          options:0
+                                            range:NSMakeRange(
+                                                0, naturalNeedle.length)];
+    } else if ([naturalNeedle containsString:@"successful"] ||
+               [naturalNeedle containsString:@"succeeded"]) {
+        effectiveFilters[@"status"] = @"success";
+        [naturalNeedle replaceOccurrencesOfString:@"successful"
+                                       withString:@""
+                                          options:0
+                                            range:NSMakeRange(
+                                                0, naturalNeedle.length)];
+        [naturalNeedle replaceOccurrencesOfString:@"succeeded"
+                                       withString:@""
+                                          options:0
+                                            range:NSMakeRange(
+                                                0, naturalNeedle.length)];
+    }
+    if ([naturalNeedle containsString:@"bookmarked"] ||
+        [naturalNeedle containsString:@"favorites"]) {
         effectiveFilters[@"bookmarked"] = @YES;
+        [naturalNeedle replaceOccurrencesOfString:@"bookmarked"
+                                       withString:@""
+                                          options:0
+                                            range:NSMakeRange(
+                                                0, naturalNeedle.length)];
+        [naturalNeedle replaceOccurrencesOfString:@"favorites"
+                                       withString:@""
+                                          options:0
+                                            range:NSMakeRange(
+                                                0, naturalNeedle.length)];
     }
     for (NSString *environment in @[@"production", @"staging", @"remote",
                                      @"local"]) {
-        if ([needle containsString:environment]) {
+        if ([naturalNeedle containsString:environment]) {
             effectiveFilters[@"environment"] = environment.uppercaseString;
+            [naturalNeedle replaceOccurrencesOfString:environment
+                                           withString:@""
+                                              options:0
+                                                range:NSMakeRange(
+                                                    0, naturalNeedle.length)];
             break;
         }
     }
     NSTimeInterval now = [NSDate date].timeIntervalSince1970;
-    if ([needle containsString:@"today"]) {
+    if ([naturalNeedle containsString:@"today"]) {
         effectiveFilters[@"after"] = @(now - 24.0 * 60.0 * 60.0);
-    } else if ([needle containsString:@"last week"] ||
-               [needle containsString:@"past week"]) {
+        [naturalNeedle replaceOccurrencesOfString:@"today"
+                                       withString:@""
+                                          options:0
+                                            range:NSMakeRange(
+                                                0, naturalNeedle.length)];
+    } else if ([naturalNeedle containsString:@"last week"] ||
+               [naturalNeedle containsString:@"past week"]) {
         effectiveFilters[@"after"] = @(now - 7.0 * 24.0 * 60.0 * 60.0);
-    } else if ([needle containsString:@"last month"] ||
-               [needle containsString:@"past month"]) {
+        [naturalNeedle replaceOccurrencesOfString:@"last week"
+                                       withString:@""
+                                          options:0
+                                            range:NSMakeRange(
+                                                0, naturalNeedle.length)];
+        [naturalNeedle replaceOccurrencesOfString:@"past week"
+                                       withString:@""
+                                          options:0
+                                            range:NSMakeRange(
+                                                0, naturalNeedle.length)];
+    } else if ([naturalNeedle containsString:@"last month"] ||
+               [naturalNeedle containsString:@"past month"]) {
         effectiveFilters[@"after"] = @(now - 31.0 * 24.0 * 60.0 * 60.0);
+        [naturalNeedle replaceOccurrencesOfString:@"last month"
+                                       withString:@""
+                                          options:0
+                                            range:NSMakeRange(
+                                                0, naturalNeedle.length)];
+        [naturalNeedle replaceOccurrencesOfString:@"past month"
+                                       withString:@""
+                                          options:0
+                                            range:NSMakeRange(
+                                                0, naturalNeedle.length)];
     }
+    NSString *needle = [naturalNeedle
+        stringByTrimmingCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet];
     NSPredicate *predicate = [NSPredicate predicateWithBlock:
         ^BOOL(NSDictionary *record, NSDictionary *bindings) {
             (void)bindings;
@@ -779,6 +884,10 @@ static NSString *TerminalLedgerCSVCell(id value) {
 
 @implementation TerminalLedgerBar
 
+- (NSDictionary *)currentRecord {
+    return self.record;
+}
+
 - (instancetype)initWithFrame:(NSRect)frame theme:(TerminalTheme *)theme {
     self = [super initWithFrame:frame];
     if (self == nil) return nil;
@@ -800,6 +909,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
                                            weight:NSFontWeightMedium];
     _commandLabel.textColor = theme.terminalForeground;
     _commandLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    _commandLabel.selectable = YES;
     [self addSubview:_commandLabel];
 
     _metadataLabel = [NSTextField labelWithString:@""];
@@ -819,7 +929,10 @@ static NSString *TerminalLedgerCSVCell(id value) {
     _outputLabel.textColor = theme.statusBarActiveForeground;
     _outputLabel.maximumNumberOfLines = 2;
     _outputLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    _outputLabel.selectable = YES;
     [self addSubview:_outputLabel];
+    [self setAccessibilityRole:NSAccessibilityGroupRole];
+    [self setAccessibilityLabel:@"Command ledger block"];
 
     _historyButton = [self buttonWithTitle:@"History"
                                     action:@selector(showHistory:)];
@@ -860,7 +973,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
 
 - (void)drawRect:(NSRect)dirtyRect {
     (void)dirtyRect;
-    [[NSColor colorWithSRGBRed:0.071 green:0.082 blue:0.094 alpha:1.0]
+    [[NSColor colorWithSRGBRed:0.106 green:0.106 blue:0.122 alpha:1.0]
         setFill];
     NSRectFill(self.bounds);
     NSColor *border = self.record != nil
@@ -887,7 +1000,22 @@ static NSString *TerminalLedgerCSVCell(id value) {
         self.askButton, self.commandCopyButton, self.pasteButton,
         self.bookmarkButton, self.historyButton
     ];
+    NSSet<NSButton *> *visibleButtons = nil;
+    if (width < 620) {
+        visibleButtons = [NSSet setWithArray:@[
+            self.detailsButton, self.rerunButton, self.askButton
+        ]];
+    } else if (width < 820) {
+        visibleButtons = [NSSet setWithArray:@[
+            self.detailsButton, self.runbookButton, self.rerunButton,
+            self.askButton, self.bookmarkButton
+        ]];
+    } else {
+        visibleButtons = [NSSet setWithArray:buttons];
+    }
     for (NSButton *button in buttons) {
+        button.hidden = ![visibleButtons containsObject:button];
+        if (button.hidden) continue;
         CGFloat buttonWidth = [button.title isEqualToString:@"☆"] ||
                               [button.title isEqualToString:@"★"]
             ? 30
@@ -996,6 +1124,12 @@ static NSString *TerminalLedgerCSVCell(id value) {
         [record[@"bookmarked"] boolValue] ? @"★" : @"☆";
     self.runbookButton.enabled = command.length > 0;
     self.detailsButton.enabled = YES;
+    [self setAccessibilityLabel:[NSString stringWithFormat:
+        @"Command block: %@, %@, exit %ld, %.1f seconds. Actions available.",
+        command,
+        record[@"environment"] ?: @"local",
+        (long)exitCode,
+        [record[@"duration"] doubleValue]]];
     [self setNeedsLayout:YES];
     [self setNeedsDisplay:YES];
 }
@@ -1081,6 +1215,8 @@ static NSString *TerminalLedgerCSVCell(id value) {
 @property(nonatomic, strong) NSPopUpButton *statusFilter;
 @property(nonatomic, strong) NSPopUpButton *environmentFilter;
 @property(nonatomic, strong) NSButton *bookmarksOnlyButton;
+@property(nonatomic, strong) NSPopUpButton *savedSearches;
+@property(nonatomic, strong) NSButton *saveSearchButton;
 @property(nonatomic, strong) NSTextField *resultCountLabel;
 @property(nonatomic, strong) NSTableView *tableView;
 @property(nonatomic, strong) NSTextView *detailView;
@@ -1158,6 +1294,20 @@ static NSString *TerminalLedgerCSVCell(id value) {
     self.bookmarksOnlyButton.frame = NSMakeRect(672, 607, 102, 24);
     [content addSubview:self.bookmarksOnlyButton];
 
+    self.savedSearches =
+        [[NSPopUpButton alloc] initWithFrame:NSMakeRect(780, 605, 150, 28)
+                                  pullsDown:NO];
+    self.savedSearches.target = self;
+    self.savedSearches.action = @selector(selectSavedSearch:);
+    [content addSubview:self.savedSearches];
+    self.saveSearchButton =
+        [NSButton buttonWithTitle:@"Save"
+                           target:self
+                           action:@selector(saveCurrentSearch:)];
+    self.saveSearchButton.frame = NSMakeRect(936, 605, 66, 28);
+    self.saveSearchButton.controlSize = NSControlSizeSmall;
+    [content addSubview:self.saveSearchButton];
+
     self.resultCountLabel = [NSTextField labelWithString:@""];
     self.resultCountLabel.font =
         [NSFont fontWithName:self.theme.fontName size:9.5]
@@ -1165,7 +1315,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
                                            weight:NSFontWeightRegular];
     self.resultCountLabel.textColor = self.theme.statusBarForeground;
     self.resultCountLabel.alignment = NSTextAlignmentRight;
-    self.resultCountLabel.frame = NSMakeRect(786, 609, 316, 18);
+    self.resultCountLabel.frame = NSMakeRect(1008, 609, 94, 18);
     [content addSubview:self.resultCountLabel];
 
     NSTextField *privacy = [NSTextField labelWithString:
@@ -1178,6 +1328,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
     privacy.frame = NSMakeRect(600, 582, 502, 18);
     privacy.alignment = NSTextAlignmentRight;
     [content addSubview:privacy];
+    [self reloadSavedSearches];
 
     NSScrollView *tableScroll =
         [[NSScrollView alloc] initWithFrame:NSMakeRect(18, 84, 580, 492)];
@@ -1267,6 +1418,65 @@ static NSString *TerminalLedgerCSVCell(id value) {
     clear.contentTintColor = self.theme.ansiColors[1];
     [content addSubview:clear];
     [self reload];
+}
+
+- (NSArray<NSString *> *)savedSearchValues {
+    NSArray *saved = [NSUserDefaults.standardUserDefaults
+        arrayForKey:@"TerminalDBSavedHistorySearches"];
+    NSMutableArray<NSString *> *values = [NSMutableArray array];
+    for (id value in saved ?: @[]) {
+        if ([value isKindOfClass:NSString.class] &&
+            [value length] > 0) {
+            [values addObject:value];
+        }
+    }
+    return values;
+}
+
+- (void)reloadSavedSearches {
+    [self.savedSearches removeAllItems];
+    [self.savedSearches addItemWithTitle:@"Saved searches"];
+    self.savedSearches.lastItem.enabled = NO;
+    NSArray<NSString *> *values = [self savedSearchValues];
+    for (NSString *query in values) {
+        [self.savedSearches addItemWithTitle:query];
+        self.savedSearches.lastItem.representedObject = query;
+    }
+    if (values.count == 0) {
+        [self.savedSearches addItemWithTitle:@"No saved searches"];
+        self.savedSearches.lastItem.enabled = NO;
+    }
+    [self.savedSearches selectItemAtIndex:0];
+}
+
+- (void)selectSavedSearch:(NSPopUpButton *)sender {
+    NSString *query =
+        [sender.selectedItem.representedObject isKindOfClass:NSString.class]
+            ? sender.selectedItem.representedObject : @"";
+    if (query.length == 0) return;
+    self.searchField.stringValue = query;
+    [self reload];
+}
+
+- (void)saveCurrentSearch:(id)sender {
+    (void)sender;
+    NSString *query = [self.searchField.stringValue
+        stringByTrimmingCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (query.length == 0) {
+        NSBeep();
+        return;
+    }
+    NSMutableOrderedSet<NSString *> *saved =
+        [NSMutableOrderedSet orderedSetWithArray:
+            [self savedSearchValues]];
+    [saved addObject:query];
+    while (saved.count > 20) [saved removeObjectAtIndex:0];
+    [NSUserDefaults.standardUserDefaults
+        setObject:saved.array
+           forKey:@"TerminalDBSavedHistorySearches"];
+    [self reloadSavedSearches];
+    [self.savedSearches selectItemWithTitle:query];
 }
 
 - (void)historyChanged:(NSNotification *)notification {

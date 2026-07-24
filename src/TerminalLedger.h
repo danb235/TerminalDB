@@ -47,6 +47,7 @@ extern NSNotificationName const TerminalLedgerDidChangeNotification;
     NSDictionary *record);
 @property(nonatomic, copy, nullable) void (^runbookHandler)(
     NSDictionary *record);
+@property(nonatomic, copy, readonly, nullable) NSDictionary *currentRecord;
 
 - (instancetype)initWithFrame:(NSRect)frame theme:(TerminalTheme *)theme;
 - (void)showReadyInDirectory:(NSString *)directory;

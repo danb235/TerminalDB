@@ -183,7 +183,7 @@
     _composerBox = [[NSBox alloc] initWithFrame:NSZeroRect];
     _composerBox.boxType = NSBoxCustom;
     _composerBox.fillColor =
-        [NSColor colorWithSRGBRed:0.075 green:0.086 blue:0.098 alpha:1.0];
+        [NSColor colorWithSRGBRed:0.125 green:0.125 blue:0.145 alpha:1.0];
     _composerBox.borderColor = theme.statusBarBorder;
     _composerBox.borderWidth = 1.0;
     _composerBox.cornerRadius = 6.0;
@@ -285,7 +285,7 @@
 
 - (void)drawRect:(NSRect)dirtyRect {
     (void)dirtyRect;
-    [[NSColor colorWithSRGBRed:0.055 green:0.063 blue:0.071 alpha:1.0]
+    [[NSColor colorWithSRGBRed:0.106 green:0.106 blue:0.122 alpha:1.0]
         setFill];
     NSRectFill(self.bounds);
     [self.theme.statusBarBorder setFill];
@@ -630,6 +630,23 @@
     [self.inlineCommandMarkers addObject:@{
         @"location" : @(location),
         @"command" : command,
+        @"kind" : @"command",
+    }];
+}
+
+- (void)appendPatchButtonPlaceholder:(NSString *)patch
+                                  to:(NSMutableAttributedString *)rendered {
+    if (patch.length == 0) return;
+    NSTextAttachment *attachment = [[NSTextAttachment alloc] init];
+    attachment.image = [[NSImage alloc] initWithSize:NSMakeSize(146, 22)];
+    attachment.bounds = NSMakeRect(0, -5, 146, 22);
+    NSUInteger location = rendered.length;
+    [rendered appendAttributedString:
+        [NSAttributedString attributedStringWithAttachment:attachment]];
+    [self.inlineCommandMarkers addObject:@{
+        @"location" : @(location),
+        @"command" : patch,
+        @"kind" : @"patch",
     }];
 }
 
@@ -696,6 +713,22 @@
                     [rendered appendAttributedString:[[NSAttributedString alloc]
                         initWithString:@"  " attributes:code]];
                     [self appendCommandButtonPlaceholder:command to:rendered];
+                } else if (assistant &&
+                           ([
+                               fenceLanguage.lowercaseString
+                               isEqualToString:@"diff"] ||
+                            [fenceLanguage.lowercaseString
+                               isEqualToString:@"patch"])) {
+                    NSString *patch =
+                        [[fenceLines componentsJoinedByString:@"\n"]
+                            stringByTrimmingCharactersInSet:
+                                NSCharacterSet.whitespaceAndNewlineCharacterSet];
+                    if (patch.length > 0 && patch.length <= 100000) {
+                        [rendered appendAttributedString:
+                            [[NSAttributedString alloc]
+                                initWithString:@"  " attributes:code]];
+                        [self appendPatchButtonPlaceholder:patch to:rendered];
+                    }
                 }
                 inCode = NO;
                 fenceLanguage = @"";
@@ -935,9 +968,10 @@
                 : @"";
         if (command.length == 0) continue;
 
+        BOOL patch = [marker[@"kind"] isEqualToString:@"patch"];
         ClaudeCommandButton *paste =
             [[ClaudeCommandButton alloc] initWithFrame:NSZeroRect];
-        paste.title = @"Paste";
+        paste.title = patch ? @"Copy" : @"Paste";
         paste.bezelStyle = NSBezelStyleRounded;
         paste.controlSize = NSControlSizeMini;
         paste.alignment = NSTextAlignmentCenter;
@@ -947,16 +981,20 @@
         paste.target = self;
         paste.action = @selector(commandSelected:);
         paste.command = command;
-        paste.actionKind = @"paste";
-        paste.toolTip = [NSString stringWithFormat:
-            @"Paste into the active terminal without running it:\n%@", command];
-        [paste setAccessibilityLabel:@"Paste command into terminal"];
+        paste.actionKind = patch ? @"copy_patch" : @"paste";
+        paste.toolTip = patch
+            ? @"Copy this proposed patch"
+            : [NSString stringWithFormat:
+                @"Paste into the active terminal without running it:\n%@",
+                command];
+        [paste setAccessibilityLabel:
+            patch ? @"Copy proposed patch" : @"Paste command into terminal"];
         [self.responseTextView addSubview:paste];
         [buttons addObject:paste];
 
         ClaudeCommandButton *run =
             [[ClaudeCommandButton alloc] initWithFrame:NSZeroRect];
-        run.title = @"Run…";
+        run.title = patch ? @"Apply…" : @"Run…";
         run.bezelStyle = NSBezelStyleRounded;
         run.controlSize = NSControlSizeMini;
         run.alignment = NSTextAlignmentCenter;
@@ -965,11 +1003,15 @@
         run.target = self;
         run.action = @selector(commandSelected:);
         run.command = command;
-        run.actionKind = @"run";
-        run.toolTip = [NSString stringWithFormat:
-            @"Review permissions, target, and risk before running:\n%@",
-            command];
-        [run setAccessibilityLabel:@"Review and run command"];
+        run.actionKind = patch ? @"apply_patch" : @"run";
+        run.toolTip = patch
+            ? @"Review this diff and create a permission-gated apply command"
+            : [NSString stringWithFormat:
+                @"Review permissions, target, and risk before running:\n%@",
+                command];
+        [run setAccessibilityLabel:
+            patch ? @"Review and apply proposed patch"
+                  : @"Review and run command"];
         [self.responseTextView addSubview:run];
         [buttons addObject:run];
     }
@@ -1018,6 +1060,14 @@
 - (void)commandSelected:(ClaudeCommandButton *)sender {
     NSString *command = sender.command;
     if (command.length > 0 &&
+        [sender.actionKind isEqualToString:@"apply_patch"]) {
+        [self.delegate claudeAssistantView:self
+                     didRequestApplyPatch:command];
+    } else if (command.length > 0 &&
+               [sender.actionKind isEqualToString:@"copy_patch"]) {
+        [NSPasteboard.generalPasteboard clearContents];
+        [NSPasteboard.generalPasteboard writeObjects:@[command]];
+    } else if (command.length > 0 &&
         [sender.actionKind isEqualToString:@"run"]) {
         [self.delegate claudeAssistantView:self
                      didRequestRunCommand:command];

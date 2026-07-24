@@ -12,6 +12,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)claudeAssistantView:(ClaudeAssistantView *)view
        didRequestRunCommand:(NSString *)command;
 - (void)claudeAssistantView:(ClaudeAssistantView *)view
+       didRequestApplyPatch:(NSString *)patch;
+- (void)claudeAssistantView:(ClaudeAssistantView *)view
           didSubmitFollowUp:(NSString *)prompt;
 - (void)claudeAssistantViewDidRequestNewConversation:
     (ClaudeAssistantView *)view;

@@ -62,6 +62,7 @@
     NSArray<NSString *> *writes = @[
         @"mv ", @"cp ", @"mkdir ", @"touch ", @"chmod ", @"chown ",
         @"git commit", @"git push", @"git merge", @"git rebase",
+        @"git apply", @"/usr/bin/git apply", @"patch ", @"/usr/bin/patch ",
         @"npm install", @"brew install", @"pip install", @"cargo install",
         @"kubectl apply", @"kubectl patch", @"terraform apply",
         @"docker run", @"docker compose up", @"sed -i", @"tee ",
@@ -163,7 +164,9 @@
 
     NSView *accessory =
         [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 500,
-            risk >= TerminalCommandRiskDestructive ? 156 : 126)];
+            risk == TerminalCommandRiskProduction
+                ? 194
+                : (risk >= TerminalCommandRiskDestructive ? 156 : 126))];
     NSTextField *riskLabel =
         [NSTextField labelWithString:[NSString stringWithFormat:@"●  %@",
             [TerminalPermissionCenter titleForRisk:risk]]];
@@ -198,6 +201,7 @@
     [accessory addSubview:contextLabel];
 
     NSButton *acknowledgement = nil;
+    NSTextField *productionHostField = nil;
     if (risk >= TerminalCommandRiskDestructive) {
         acknowledgement =
             [NSButton checkboxWithTitle:
@@ -205,9 +209,29 @@
                     ? @"I verified the production target and understand the risk"
                     : @"I reviewed the command and understand it may be irreversible"
                                target:nil action:nil];
-        acknowledgement.frame = NSMakeRect(0, 2, 500, 24);
+        acknowledgement.frame =
+            NSMakeRect(0, risk == TerminalCommandRiskProduction ? 40 : 2,
+                       500, 24);
         acknowledgement.contentTintColor = self.theme.ansiColors[1];
         [accessory addSubview:acknowledgement];
+        if (risk == TerminalCommandRiskProduction) {
+            NSTextField *instruction = [NSTextField labelWithString:
+                [NSString stringWithFormat:@"Type “%@” to confirm the target",
+                    host.length > 0 ? host : @"PRODUCTION"]];
+            instruction.frame = NSMakeRect(0, 23, 500, 16);
+            instruction.font =
+                [NSFont systemFontOfSize:10 weight:NSFontWeightRegular];
+            instruction.textColor = self.theme.statusBarActiveForeground;
+            [accessory addSubview:instruction];
+            productionHostField =
+                [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 500, 22)];
+            productionHostField.placeholderString =
+                host.length > 0 ? host : @"PRODUCTION";
+            productionHostField.font =
+                [NSFont monospacedSystemFontOfSize:11
+                                            weight:NSFontWeightRegular];
+            [accessory addSubview:productionHostField];
+        }
     }
     alert.accessoryView = accessory;
     NSButton *cancelButton = alert.buttons.lastObject;
@@ -218,6 +242,13 @@
         if (response == NSAlertFirstButtonReturn) {
             if (acknowledgement != nil &&
                 acknowledgement.state != NSControlStateValueOn) {
+                NSBeep();
+                completion(TerminalCommandPermissionCancel);
+                return;
+            }
+            if (productionHostField != nil &&
+                ![productionHostField.stringValue
+                    isEqualToString:host.length > 0 ? host : @"PRODUCTION"]) {
                 NSBeep();
                 completion(TerminalCommandPermissionCancel);
                 return;
