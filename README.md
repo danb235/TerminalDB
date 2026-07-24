@@ -32,9 +32,9 @@ Claude profile, so switching accounts in one tab does not alter another tab.
 
 Select the standard right-sidebar icon in the upper-right corner or choose
 **Claude → Show AI Chat** (Command-Shift-L) to open a collapsible chat pane
-beside the active terminal. The same sidebar icon collapses the pane from its
-header. Terminal input is always sent to the shell; TerminalDB does not try to
-classify commands as natural language.
+beside the active terminal. The icon is built into the window title bar and
+toggles the pane in either direction. Terminal input is always sent to the
+shell; TerminalDB does not try to classify commands as natural language.
 
 Each message sent from the chat includes a fresh snapshot of that tab's current
 working directory, window state, and visible terminal output. Claude can use
@@ -42,11 +42,21 @@ this context to explain an error, help investigate the system, write code, or
 craft a command without the user copying terminal output manually. Terminal
 output is marked as untrusted reference data in the model instructions.
 
-Claude is prompted to explain its approach and place suggested shell commands
-in fenced code blocks. Each shell block gets a **Paste command into terminal**
-button. The button uses the terminal's normal paste behavior and deliberately
-does not press Return, so the user can review or edit the command before
-executing it. Non-shell code samples are never made runnable.
+For factual questions such as “count the JPEGs in this directory,” Claude can
+run a tightly validated, read-only inspection in a separate sidecar process.
+The chat shows the exact command, working directory, combined output, exit
+status, duration, and whether output was truncated. Inspections use a strict
+command allowlist and a macOS sandbox that denies file writes and network
+access. They never type into, press Return in, or otherwise interrupt the
+interactive terminal session.
+
+Every inspected command can also be pasted into the terminal. Commands that
+change state, need broader access, or fail inspection validation are never run
+automatically; Claude instead places them in fenced shell blocks. Each block
+gets a **Paste command into terminal** button. The button uses the terminal's
+normal paste behavior and deliberately does not press Return, so the user can
+review or edit the command before executing it. Non-shell code samples are
+never made runnable.
 
 Conversation context is retained independently in each tab, including while
 the pane is collapsed. Choose **New chat** when the task changes; after
@@ -106,7 +116,9 @@ The self-test suite exercises terminal cursor positioning and redraws, Claude's
 interactive picker layout, split UTF-8 input, Space, Return, Control-C, arrow
 keys, output-follow scrolling across successive commands, safe extraction of
 shell code blocks, AI transcript rendering, terminal-context attachment,
-command pasting without execution, and authenticated-profile onboarding state.
+read-only command validation and sandbox execution, inspection-result
+rendering, command pasting without execution, and authenticated-profile
+onboarding state.
 It also runs a background AppKit integration check for native tab grouping,
 independent shell sessions, activity state, AI-pane expansion and collapse,
 switching, and closing. QA app processes use accessory activation and keep

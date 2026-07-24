@@ -13,7 +13,6 @@ NS_ASSUME_NONNULL_BEGIN
           didSubmitFollowUp:(NSString *)prompt;
 - (void)claudeAssistantViewDidRequestNewConversation:
     (ClaudeAssistantView *)view;
-- (void)claudeAssistantViewDidRequestClose:(ClaudeAssistantView *)view;
 - (void)claudeAssistantViewDidRequestSettings:(ClaudeAssistantView *)view;
 
 @end
@@ -27,6 +26,7 @@ NS_ASSUME_NONNULL_BEGIN
                   messages:(NSArray<NSDictionary *> *)messages;
 - (void)resetConversationWithModelName:(NSString *)modelName;
 - (void)appendResponseText:(NSString *)text;
+- (void)showToolStatus:(NSString *)status;
 - (void)finish;
 - (void)showError:(NSString *)message settingsAvailable:(BOOL)settingsAvailable;
 - (void)focusComposer;

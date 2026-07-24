@@ -30,7 +30,10 @@ extern NSNotificationName const ClaudeAPIConfigurationDidChangeNotification;
 @end
 
 typedef void (^ClaudeAPITextDeltaBlock)(NSString *text);
-typedef void (^ClaudeAPICompletionBlock)(NSError *_Nullable error);
+typedef void (^ClaudeAPICompletionBlock)(
+    NSArray<NSDictionary *> *contentBlocks,
+    NSString *_Nullable stopReason,
+    NSError *_Nullable error);
 
 @interface ClaudeAPIClient : NSObject <NSURLSessionDataDelegate>
 
@@ -38,6 +41,7 @@ typedef void (^ClaudeAPICompletionBlock)(NSError *_Nullable error);
                          model:(NSString *)model;
 - (void)streamMessages:(NSArray<NSDictionary *> *)messages
                  system:(NSString *)system
+                  tools:(NSArray<NSDictionary *> *)tools
               textDelta:(ClaudeAPITextDeltaBlock)textDelta
              completion:(ClaudeAPICompletionBlock)completion;
 - (void)cancel;

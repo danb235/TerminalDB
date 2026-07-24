@@ -1,6 +1,7 @@
 APP := build/TerminalDB.app
 BIN := $(APP)/Contents/MacOS/TerminalDB
 SOURCES := src/main.m src/ClaudeAPI.m src/ClaudeAssistantView.m \
+	src/TerminalInspector.m \
 	src/ClaudeProfile.m src/ClaudeStatusBar.m src/TerminalTheme.m
 FONT_RESOURCES := \
 	Resources/Fonts/JetBrainsMono-Regular.ttf \

@@ -36,7 +36,6 @@
 @property(nonatomic, strong) NSTextField *titleLabel;
 @property(nonatomic, strong) NSTextField *statusLabel;
 @property(nonatomic, strong) NSProgressIndicator *progress;
-@property(nonatomic, strong) NSButton *closeButton;
 @property(nonatomic, strong) NSButton *startConversationButton;
 @property(nonatomic, strong) NSButton *settingsButton;
 @property(nonatomic, strong) NSScrollView *responseScrollView;
@@ -81,19 +80,6 @@
     _progress.controlSize = NSControlSizeSmall;
     _progress.displayedWhenStopped = NO;
     [self addSubview:_progress];
-
-    _closeButton = [self headerButtonWithTitle:@""
-                                       toolTip:@"Collapse AI chat"
-                                         action:@selector(closeSelected:)];
-    NSImage *hideSidebarImage =
-        [NSImage imageWithSystemSymbolName:@"sidebar.right"
-                  accessibilityDescription:@"Hide AI Chat"];
-    hideSidebarImage = [hideSidebarImage imageWithSymbolConfiguration:
-        [NSImageSymbolConfiguration configurationWithPointSize:14
-                                                        weight:NSFontWeightMedium]];
-    _closeButton.image = hideSidebarImage;
-    _closeButton.imagePosition = NSImageOnly;
-    [_closeButton setAccessibilityLabel:@"Hide AI Chat"];
 
     _startConversationButton =
         [self headerButtonWithTitle:@"New chat"
@@ -246,14 +232,13 @@
     CGFloat width = self.bounds.size.width;
     CGFloat height = self.bounds.size.height;
 
-    self.titleLabel.frame = NSMakeRect(padding, 8, MAX(80, width - 190), 19);
+    self.titleLabel.frame = NSMakeRect(padding, 8, MAX(80, width - 118), 19);
     self.progress.frame = NSMakeRect(padding, 31, 14, 14);
     CGFloat statusX = self.working ? padding + 20 : padding;
     self.statusLabel.frame =
         NSMakeRect(statusX, 29, MAX(80, width - statusX - 14), 17);
-    self.closeButton.frame = NSMakeRect(width - 38, 8, 26, 26);
     self.startConversationButton.frame =
-        NSMakeRect(width - 116, 8, 76, 26);
+        NSMakeRect(width - 90, 8, 76, 26);
 
     CGFloat commandHeight = 0;
     if (self.commandButtons.count > 0) {
@@ -343,14 +328,50 @@
     [self renderResponse];
 }
 
+- (void)showToolStatus:(NSString *)status {
+    self.statusLabel.stringValue =
+        status.length > 0 ? status : @"Claude · Inspecting terminal…";
+    self.statusLabel.textColor = self.theme.statusBarActiveForeground;
+    self.working = YES;
+    [self.progress startAnimation:nil];
+}
+
 - (void)finish {
     [self.progress stopAnimation:nil];
     self.working = NO;
     self.statusLabel.stringValue = @"Claude · Ready";
     self.followUpField.editable = YES;
     self.sendButton.enabled = YES;
-    [self installCommandButtons:
-        [ClaudeAssistantView commandsFromMarkdown:self.response]];
+    NSMutableArray<NSString *> *commands = [NSMutableArray array];
+    for (NSDictionary *message in
+            [self.conversationMessages reverseObjectEnumerator]) {
+        NSString *role =
+            [message[@"role"] isKindOfClass:NSString.class]
+                ? message[@"role"]
+                : @"";
+        id content = message[@"content"];
+        if ([role isEqualToString:@"user"] &&
+            [content isKindOfClass:NSString.class]) {
+            break;
+        }
+        if (![role isEqualToString:@"terminal"] ||
+            ![content isKindOfClass:NSDictionary.class]) {
+            continue;
+        }
+        NSString *command =
+            [content[@"command"] isKindOfClass:NSString.class]
+                ? content[@"command"]
+                : nil;
+        if (command.length > 0 && ![commands containsObject:command]) {
+            [commands insertObject:command atIndex:0];
+        }
+    }
+    for (NSString *command in
+            [ClaudeAssistantView commandsFromMarkdown:self.response]) {
+        if (commands.count >= 3) break;
+        if (![commands containsObject:command]) [commands addObject:command];
+    }
+    [self installCommandButtons:commands];
     [self renderResponse];
     [self setNeedsLayout:YES];
     [self focusComposer];
@@ -448,6 +469,90 @@
     }
 }
 
+- (NSString *)textContentFromMessageContent:(id)content {
+    if ([content isKindOfClass:NSString.class]) return content;
+    if (![content isKindOfClass:NSArray.class]) return @"";
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    for (id block in (NSArray *)content) {
+        if (![block isKindOfClass:NSDictionary.class] ||
+            ![block[@"type"] isEqualToString:@"text"] ||
+            ![block[@"text"] isKindOfClass:NSString.class]) {
+            continue;
+        }
+        [parts addObject:block[@"text"]];
+    }
+    return [parts componentsJoinedByString:@"\n"];
+}
+
+- (void)appendTerminalResult:(NSDictionary *)result
+                           to:(NSMutableAttributedString *)rendered {
+    NSDictionary *heading = @{
+        NSFontAttributeName :
+            [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold],
+        NSForegroundColorAttributeName : self.theme.ansiColors[3],
+        NSKernAttributeName : @0.5,
+    };
+    NSMutableParagraphStyle *codeStyle =
+        [[NSMutableParagraphStyle alloc] init];
+    codeStyle.lineSpacing = 2;
+    codeStyle.paragraphSpacing = 3;
+    NSDictionary *code = @{
+        NSFontAttributeName :
+            [NSFont fontWithName:self.theme.fontName size:11] ?:
+                [NSFont monospacedSystemFontOfSize:11
+                                            weight:NSFontWeightRegular],
+        NSForegroundColorAttributeName : self.theme.terminalForeground,
+        NSBackgroundColorAttributeName :
+            [self.theme.terminalBackground colorWithAlphaComponent:0.9],
+        NSParagraphStyleAttributeName : codeStyle,
+    };
+    NSDictionary *detail = @{
+        NSFontAttributeName :
+            [NSFont systemFontOfSize:10 weight:NSFontWeightRegular],
+        NSForegroundColorAttributeName : self.theme.statusBarActiveForeground,
+    };
+    BOOL blocked = [result[@"blocked"] boolValue];
+    NSString *command =
+        [result[@"command"] isKindOfClass:NSString.class]
+            ? result[@"command"]
+            : @"";
+    NSString *directory =
+        [result[@"directory"] isKindOfClass:NSString.class]
+            ? result[@"directory"]
+            : @"";
+    NSString *output =
+        [result[@"output"] isKindOfClass:NSString.class]
+            ? result[@"output"]
+            : @"(no output)";
+    NSNumber *exitCode =
+        [result[@"exit_code"] isKindOfClass:NSNumber.class]
+            ? result[@"exit_code"]
+            : @(-1);
+    NSNumber *duration =
+        [result[@"duration"] isKindOfClass:NSNumber.class]
+            ? result[@"duration"]
+            : @0;
+    [rendered appendAttributedString:[[NSAttributedString alloc]
+        initWithString:blocked ? @"INSPECTION BLOCKED\n"
+                               : @"TERMINAL INSPECTION\n"
+            attributes:heading]];
+    [rendered appendAttributedString:[[NSAttributedString alloc]
+        initWithString:[NSString stringWithFormat:@"$ %@\n%@", command, output]
+            attributes:code]];
+    NSString *footer = blocked
+        ? [NSString stringWithFormat:@"\nNot run · %@", directory]
+        : [NSString stringWithFormat:@"\nExit %@ · %.2fs · %@",
+            exitCode, duration.doubleValue, directory];
+    if ([result[@"timed_out"] boolValue]) {
+        footer = [footer stringByAppendingString:@" · timed out"];
+    }
+    if ([result[@"truncated"] boolValue]) {
+        footer = [footer stringByAppendingString:@" · truncated"];
+    }
+    [rendered appendAttributedString:[[NSAttributedString alloc]
+        initWithString:footer attributes:detail]];
+}
+
 - (void)renderResponse {
     NSMutableAttributedString *rendered =
         [[NSMutableAttributedString alloc] init];
@@ -458,16 +563,22 @@
         NSString *role = [message[@"role"] isKindOfClass:NSString.class]
             ? message[@"role"]
             : @"assistant";
-        NSString *content =
-            [message[@"content"] isKindOfClass:NSString.class]
-                ? message[@"content"]
-                : @"";
-        if (content.length == 0) continue;
+        id rawContent = message[@"content"];
+        BOOL terminal = [role isEqualToString:@"terminal"] &&
+            [rawContent isKindOfClass:NSDictionary.class];
+        NSString *content = terminal
+            ? @""
+            : [self textContentFromMessageContent:rawContent];
+        if (!terminal && content.length == 0) continue;
         if (rendered.length > 0) {
             [rendered appendAttributedString:[[NSAttributedString alloc]
                 initWithString:@"\n\n" attributes:separator]];
         }
-        [self appendContent:content role:role to:rendered];
+        if (terminal) {
+            [self appendTerminalResult:rawContent to:rendered];
+        } else {
+            [self appendContent:content role:role to:rendered];
+        }
     }
     if (self.response.length > 0) {
         if (rendered.length > 0) {
@@ -617,11 +728,6 @@
 - (void)newConversationSelected:(id)sender {
     (void)sender;
     [self.delegate claudeAssistantViewDidRequestNewConversation:self];
-}
-
-- (void)closeSelected:(id)sender {
-    (void)sender;
-    [self.delegate claudeAssistantViewDidRequestClose:self];
 }
 
 - (void)settingsSelected:(id)sender {

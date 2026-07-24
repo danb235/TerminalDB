@@ -598,6 +598,9 @@ static NSString *ClaudeAPIErrorMessage(NSData *data,
 @property(nonatomic, strong, nullable) NSHTTPURLResponse *response;
 @property(nonatomic, copy, nullable) ClaudeAPITextDeltaBlock textDelta;
 @property(nonatomic, copy, nullable) ClaudeAPICompletionBlock completion;
+@property(nonatomic, strong)
+    NSMutableDictionary<NSNumber *, NSMutableDictionary *> *contentBlocks;
+@property(nonatomic, copy, nullable) NSString *stopReason;
 @property(nonatomic) BOOL finished;
 @end
 
@@ -611,23 +614,32 @@ static NSString *ClaudeAPIErrorMessage(NSData *data,
     _model = [model copy];
     _streamBuffer = [NSMutableData data];
     _errorBuffer = [NSMutableData data];
+    _contentBlocks = [NSMutableDictionary dictionary];
     return self;
 }
 
 - (void)streamMessages:(NSArray<NSDictionary *> *)messages
                  system:(NSString *)system
+                  tools:(NSArray<NSDictionary *> *)tools
               textDelta:(ClaudeAPITextDeltaBlock)textDelta
              completion:(ClaudeAPICompletionBlock)completion {
     self.textDelta = textDelta;
     self.completion = completion;
 
-    NSDictionary *body = @{
+    NSMutableDictionary *body = [@{
         @"model" : self.model,
         @"max_tokens" : @4096,
         @"stream" : @YES,
         @"system" : system,
         @"messages" : messages,
-    };
+    } mutableCopy];
+    if (tools.count > 0) {
+        body[@"tools"] = tools;
+        body[@"tool_choice"] = @{
+            @"type" : @"auto",
+            @"disable_parallel_tool_use" : @YES,
+        };
+    }
     NSError *jsonError = nil;
     NSData *bodyData =
         [NSJSONSerialization dataWithJSONObject:body
@@ -774,7 +786,47 @@ didCompleteWithError:(NSError *)error {
                                           error:nil];
     NSString *type =
         [json[@"type"] isKindOfClass:NSString.class] ? json[@"type"] : nil;
-    if ([type isEqualToString:@"content_block_delta"]) {
+    if ([type isEqualToString:@"content_block_start"]) {
+        NSNumber *index =
+            [json[@"index"] isKindOfClass:NSNumber.class] ? json[@"index"] : nil;
+        NSDictionary *contentBlock =
+            [json[@"content_block"] isKindOfClass:NSDictionary.class]
+                ? json[@"content_block"]
+                : nil;
+        NSString *blockType =
+            [contentBlock[@"type"] isKindOfClass:NSString.class]
+                ? contentBlock[@"type"]
+                : nil;
+        if (index != nil && [blockType isEqualToString:@"text"]) {
+            NSString *text =
+                [contentBlock[@"text"] isKindOfClass:NSString.class]
+                    ? contentBlock[@"text"]
+                    : @"";
+            self.contentBlocks[index] = [@{
+                @"type" : @"text",
+                @"text" : [text mutableCopy],
+            } mutableCopy];
+        } else if (index != nil &&
+                   [blockType isEqualToString:@"tool_use"]) {
+            NSString *identifier =
+                [contentBlock[@"id"] isKindOfClass:NSString.class]
+                    ? contentBlock[@"id"]
+                    : @"";
+            NSString *name =
+                [contentBlock[@"name"] isKindOfClass:NSString.class]
+                    ? contentBlock[@"name"]
+                    : @"";
+            self.contentBlocks[index] = [@{
+                @"type" : @"tool_use",
+                @"id" : identifier,
+                @"name" : name,
+                @"input" : @{},
+                @"_partial_json" : [NSMutableString string],
+            } mutableCopy];
+        }
+    } else if ([type isEqualToString:@"content_block_delta"]) {
+        NSNumber *index =
+            [json[@"index"] isKindOfClass:NSNumber.class] ? json[@"index"] : nil;
         NSDictionary *delta =
             [json[@"delta"] isKindOfClass:NSDictionary.class]
                 ? json[@"delta"]
@@ -782,10 +834,58 @@ didCompleteWithError:(NSError *)error {
         if ([delta[@"type"] isEqualToString:@"text_delta"] &&
             [delta[@"text"] isKindOfClass:NSString.class]) {
             NSString *text = [delta[@"text"] copy];
+            NSMutableDictionary *block =
+                index != nil ? self.contentBlocks[index] : nil;
+            NSMutableString *fullText =
+                [block[@"text"] isKindOfClass:NSMutableString.class]
+                    ? block[@"text"]
+                    : nil;
+            [fullText appendString:text];
             ClaudeAPITextDeltaBlock textDelta = self.textDelta;
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (textDelta != nil) textDelta(text);
             });
+        } else if ([delta[@"type"] isEqualToString:@"input_json_delta"] &&
+                   [delta[@"partial_json"] isKindOfClass:NSString.class]) {
+            NSMutableDictionary *block =
+                index != nil ? self.contentBlocks[index] : nil;
+            NSMutableString *partial =
+                [block[@"_partial_json"]
+                    isKindOfClass:NSMutableString.class]
+                    ? block[@"_partial_json"]
+                    : nil;
+            [partial appendString:delta[@"partial_json"]];
+        }
+    } else if ([type isEqualToString:@"content_block_stop"]) {
+        NSNumber *index =
+            [json[@"index"] isKindOfClass:NSNumber.class] ? json[@"index"] : nil;
+        NSMutableDictionary *block =
+            index != nil ? self.contentBlocks[index] : nil;
+        if ([block[@"type"] isEqualToString:@"tool_use"]) {
+            NSString *partial =
+                [block[@"_partial_json"] isKindOfClass:NSString.class]
+                    ? block[@"_partial_json"]
+                    : @"";
+            if (partial.length > 0) {
+                NSData *inputData =
+                    [partial dataUsingEncoding:NSUTF8StringEncoding];
+                id input =
+                    [NSJSONSerialization JSONObjectWithData:inputData
+                                                    options:0
+                                                      error:nil];
+                if ([input isKindOfClass:NSDictionary.class]) {
+                    block[@"input"] = input;
+                }
+            }
+            [block removeObjectForKey:@"_partial_json"];
+        }
+    } else if ([type isEqualToString:@"message_delta"]) {
+        NSDictionary *delta =
+            [json[@"delta"] isKindOfClass:NSDictionary.class]
+                ? json[@"delta"]
+                : nil;
+        if ([delta[@"stop_reason"] isKindOfClass:NSString.class]) {
+            self.stopReason = delta[@"stop_reason"];
         }
     } else if ([type isEqualToString:@"error"]) {
         NSDictionary *apiError =
@@ -802,12 +902,30 @@ didCompleteWithError:(NSError *)error {
     }
 }
 
+- (NSArray<NSDictionary *> *)completedContentBlocks {
+    NSArray<NSNumber *> *indexes = [self.contentBlocks.allKeys
+        sortedArrayUsingSelector:@selector(compare:)];
+    NSMutableArray<NSDictionary *> *blocks = [NSMutableArray array];
+    for (NSNumber *index in indexes) {
+        NSMutableDictionary *stored = self.contentBlocks[index];
+        NSMutableDictionary *block = [stored mutableCopy];
+        [block removeObjectForKey:@"_partial_json"];
+        if ([block[@"text"] isKindOfClass:NSMutableString.class]) {
+            block[@"text"] = [block[@"text"] copy];
+        }
+        [blocks addObject:[block copy]];
+    }
+    return blocks;
+}
+
 - (void)finishWithError:(NSError *)error {
     @synchronized (self) {
         if (self.finished) return;
         self.finished = YES;
     }
     ClaudeAPICompletionBlock completion = self.completion;
+    NSArray<NSDictionary *> *contentBlocks = [self completedContentBlocks];
+    NSString *stopReason = self.stopReason;
     self.completion = nil;
     self.textDelta = nil;
     [self.task cancel];
@@ -816,7 +934,9 @@ didCompleteWithError:(NSError *)error {
     self.session = nil;
     self.apiKey = @"";
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (completion != nil) completion(error);
+        if (completion != nil) {
+            completion(contentBlocks, stopReason, error);
+        }
     });
 }
 
