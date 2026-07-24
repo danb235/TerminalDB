@@ -9,6 +9,18 @@
 @implementation ClaudeCommandButton
 @end
 
+@interface ClaudePassthroughTextField : NSTextField
+@end
+
+@implementation ClaudePassthroughTextField
+
+- (nullable NSView *)hitTest:(NSPoint)point {
+    (void)point;
+    return nil;
+}
+
+@end
+
 @interface ClaudePromptTextView : NSTextView
 @property(nonatomic, copy, nullable) void (^submitHandler)(void);
 @end
@@ -156,10 +168,16 @@
     _composerScrollView.documentView = _followUpField;
     [self addSubview:_composerScrollView];
 
-    _composerPlaceholder = [self labelWithFont:
-        [NSFont systemFontOfSize:13 weight:NSFontWeightRegular]];
+    _composerPlaceholder =
+        [[ClaudePassthroughTextField alloc] initWithFrame:NSZeroRect];
+    _composerPlaceholder.editable = NO;
+    _composerPlaceholder.selectable = NO;
+    _composerPlaceholder.bezeled = NO;
+    _composerPlaceholder.drawsBackground = NO;
+    _composerPlaceholder.font =
+        [NSFont systemFontOfSize:13 weight:NSFontWeightRegular];
     _composerPlaceholder.stringValue =
-        @"Ask about this terminal, plan, or build anything…";
+        @"Ask about this terminal or describe what you want to do…";
     _composerPlaceholder.textColor = theme.statusBarForeground;
     _composerPlaceholder.lineBreakMode = NSLineBreakByTruncatingTail;
     [self addSubview:_composerPlaceholder];

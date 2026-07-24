@@ -3277,6 +3277,8 @@ static int TerminalDBExitStatus = 0;
     NSString *conversationText = conversationTextView.string;
     NSTextView *followUpField =
         [conversationView valueForKey:@"followUpField"];
+    NSView *composerPlaceholder =
+        [conversationView valueForKey:@"composerPlaceholder"];
     BOOL hasNewChatButton = NO;
     for (NSView *subview in conversationView.subviews) {
         if ([subview isKindOfClass:NSButton.class] &&
@@ -3296,6 +3298,7 @@ static int TerminalDBExitStatus = 0;
         [conversationText
             rangeOfString:@"CLAUDE\nTry this:"].location == NSNotFound ||
         !followUpField.editable ||
+        [composerPlaceholder hitTest:NSMakePoint(1, 1)] != nil ||
         !hasNewChatButton) {
         fprintf(stderr, "FAIL assistant conversation transcript\n");
         failures++;
