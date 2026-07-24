@@ -24,6 +24,7 @@ static double ClaudeUsageClampedPercent(double percent) {
 @property(nonatomic, strong) NSTimer *timer;
 @property(nonatomic, strong, nullable) NSDate *lastAccountRefresh;
 @property(nonatomic, strong, nullable) NSDate *lastUsageRefreshAttempt;
+@property(nonatomic, copy, nullable) NSString *usageRefreshError;
 @property(nonatomic) BOOL accountRefreshInFlight;
 @property(nonatomic) BOOL usageRefreshInFlight;
 @property(nonatomic, readwrite) BOOL accountIsLoggedIn;
@@ -497,7 +498,7 @@ static double ClaudeUsageClampedPercent(double percent) {
 - (void)startMonitoring {
     [self refreshAccountIfNeeded:YES];
     [self refreshUsage];
-    [self refreshUsageFromAPIIfNeeded:YES];
+    [self refreshUsageIfNeeded:YES];
     self.timer = [NSTimer scheduledTimerWithTimeInterval:5.0
                                                   target:self
                                                 selector:@selector(timerFired:)
@@ -510,7 +511,7 @@ static double ClaudeUsageClampedPercent(double percent) {
     self.lastUsageRefreshAttempt = nil;
     [self refreshAccountIfNeeded:YES];
     [self refreshUsage];
-    [self refreshUsageFromAPIIfNeeded:YES];
+    [self refreshUsageIfNeeded:YES];
 }
 
 - (void)selectProfile:(ClaudeProfile *)profile {
@@ -524,12 +525,13 @@ static double ClaudeUsageClampedPercent(double percent) {
     self.lastUsageRefreshAttempt = nil;
     self.accountRefreshInFlight = NO;
     self.usageRefreshInFlight = NO;
+    self.usageRefreshError = nil;
     self.accountIsLoggedIn = NO;
     self.accountStatusKnown = NO;
     [self updateProfileLabel];
     [self refreshAccountIfNeeded:YES];
     [self refreshUsage];
-    [self refreshUsageFromAPIIfNeeded:YES];
+    [self refreshUsageIfNeeded:YES];
 }
 
 - (void)showEnvironment:(NSString *)environment
@@ -559,7 +561,7 @@ static double ClaudeUsageClampedPercent(double percent) {
     (void)timer;
     [self refreshAccountIfNeeded:NO];
     [self refreshUsage];
-    [self refreshUsageFromAPIIfNeeded:NO];
+    [self refreshUsageIfNeeded:NO];
 }
 
 - (void)profilesDidChange:(NSNotification *)notification {
@@ -708,7 +710,7 @@ static double ClaudeUsageClampedPercent(double percent) {
         [status[@"authMethod"] isKindOfClass:NSString.class]
             ? status[@"authMethod"] : @"Claude"];
     [self updateProfileLabel];
-    [self refreshUsageFromAPIIfNeeded:self.lastUsageRefreshAttempt == nil];
+    [self refreshUsageIfNeeded:self.lastUsageRefreshAttempt == nil];
 }
 
 - (void)refreshUsage {
@@ -757,6 +759,9 @@ static double ClaudeUsageClampedPercent(double percent) {
                 ? @"Usage  Unavailable"
                 : @"Usage  Sign in required");
         self.usageLabel.textColor = self.theme.statusBarForeground;
+        self.usageLabel.toolTip = self.usageRefreshError.length > 0
+            ? self.usageRefreshError
+            : @"Current Claude Code usage is not available yet.";
         return;
     }
 
@@ -840,13 +845,22 @@ static double ClaudeUsageClampedPercent(double percent) {
                 @"Cached usage is stale; TerminalDB is requesting a refresh."];
         }
     }
+    if (self.usageRefreshError.length > 0) {
+        [details addObject:self.usageRefreshError];
+    }
     [details addObject:@"Refreshes every 5 minutes"];
     self.usageLabel.toolTip = [details componentsJoinedByString:@"\n"];
 }
 
-- (void)refreshUsageFromAPIIfNeeded:(BOOL)force {
+- (void)refreshUsageIfNeeded:(BOOL)force {
     ClaudeProfile *profile = self.selectedProfile;
     if (profile == nil || !self.accountIsLoggedIn) return;
+    if (self.claudeExecutable.length == 0) {
+        self.usageRefreshError =
+            @"Install Claude Code to refresh subscription usage.";
+        [self refreshUsage];
+        return;
+    }
     if (self.usageRefreshInFlight) return;
     if (!force && self.lastUsageRefreshAttempt != nil &&
         -self.lastUsageRefreshAttempt.timeIntervalSinceNow <
@@ -855,6 +869,7 @@ static double ClaudeUsageClampedPercent(double percent) {
     }
 
     self.usageRefreshInFlight = YES;
+    self.usageRefreshError = nil;
     self.lastUsageRefreshAttempt = [NSDate date];
     if (![[NSFileManager defaultManager]
             fileExistsAtPath:profile.statusCachePath]) {
@@ -864,114 +879,206 @@ static double ClaudeUsageClampedPercent(double percent) {
 
     NSString *profileID = profile.identifier;
     NSString *statusCachePath = profile.statusCachePath;
-    NSString *keychainService = profile.keychainService;
+    NSString *executable = self.claudeExecutable;
+    NSDictionary *environment = [self environmentForProfile:profile];
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        NSTask *keychainTask = [[NSTask alloc] init];
-        keychainTask.executableURL =
-            [NSURL fileURLWithPath:@"/usr/bin/security"];
-        keychainTask.arguments = @[
-            @"find-generic-password",
-            @"-a",
-            NSUserName(),
-            @"-s",
-            keychainService,
-            @"-w",
-        ];
-        NSPipe *credentialsPipe = [NSPipe pipe];
-        keychainTask.standardOutput = credentialsPipe;
-        keychainTask.standardError = [NSFileHandle fileHandleWithNullDevice];
+        NSString *temporaryPath = [NSTemporaryDirectory()
+            stringByAppendingPathComponent:[NSString stringWithFormat:
+                @"terminaldb-claude-usage-%@.json",
+                NSUUID.UUID.UUIDString]];
+        [[NSFileManager defaultManager]
+            createFileAtPath:temporaryPath
+                    contents:nil
+                  attributes:@{NSFilePosixPermissions : @0600}];
+        NSFileHandle *output =
+            [NSFileHandle fileHandleForWritingAtPath:temporaryPath];
 
-        NSError *keychainError = nil;
-        BOOL launched =
-            [keychainTask launchAndReturnError:&keychainError];
-        if (launched) [keychainTask waitUntilExit];
-        NSData *credentialsData = launched
-            ? [credentialsPipe.fileHandleForReading readDataToEndOfFile]
+        NSTask *task = [[NSTask alloc] init];
+        task.executableURL = [NSURL fileURLWithPath:executable];
+        task.arguments = @[
+            @"-p", @"/usage",
+            @"--output-format", @"json",
+            @"--max-turns", @"1",
+        ];
+        NSMutableDictionary *taskEnvironment = [environment mutableCopy];
+        taskEnvironment[@"LANG"] = @"en_US.UTF-8";
+        taskEnvironment[@"LC_ALL"] = @"en_US.UTF-8";
+        task.environment = taskEnvironment;
+        task.standardOutput = output;
+        task.standardError = [NSFileHandle fileHandleWithNullDevice];
+
+        NSError *launchError = nil;
+        BOOL launched = [task launchAndReturnError:&launchError];
+        BOOL timedOut = NO;
+        if (launched) {
+            NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:20.0];
+            while (task.running &&
+                   [deadline timeIntervalSinceNow] > 0) {
+                [NSThread sleepForTimeInterval:0.05];
+            }
+            if (task.running) {
+                timedOut = YES;
+                [task terminate];
+            }
+            [task waitUntilExit];
+        }
+        [output closeFile];
+
+        NSData *data = launched && !timedOut
+            ? [NSData dataWithContentsOfFile:temporaryPath]
             : nil;
-        NSDictionary *credentials = credentialsData.length > 0
-            ? [NSJSONSerialization JSONObjectWithData:credentialsData
-                                               options:0
-                                                 error:nil]
+        [[NSFileManager defaultManager] removeItemAtPath:temporaryPath
+                                                  error:nil];
+        NSDictionary *envelope = data.length > 0
+            ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil]
             : nil;
-        NSDictionary *oauth =
-            [credentials[@"claudeAiOauth"] isKindOfClass:NSDictionary.class]
-                ? credentials[@"claudeAiOauth"]
-                : nil;
-        NSString *accessToken =
-            [oauth[@"accessToken"] isKindOfClass:NSString.class]
-                ? oauth[@"accessToken"]
-                : nil;
-        if (keychainError != nil || keychainTask.terminationStatus != 0 ||
-            accessToken.length == 0) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                ClaudeStatusBar *strongSelf = weakSelf;
-                if (strongSelf == nil ||
-                    ![strongSelf.selectedProfile.identifier
-                        isEqualToString:profileID]) {
-                    return;
-                }
-                strongSelf.usageRefreshInFlight = NO;
-                [strongSelf refreshUsage];
-            });
-            return;
+        NSString *result =
+            [envelope[@"result"] isKindOfClass:NSString.class]
+                ? envelope[@"result"] : nil;
+        NSDictionary *normalized =
+            [ClaudeStatusBar normalizedStatusFromUsageCommandResult:result];
+        BOOL wroteCache = NO;
+        if (normalized != nil) {
+            NSData *normalizedData =
+                [NSJSONSerialization dataWithJSONObject:normalized
+                                                 options:0
+                                                   error:nil];
+            wroteCache =
+                [normalizedData writeToFile:statusCachePath atomically:YES];
+            if (wroteCache) {
+                [NSFileManager.defaultManager
+                    setAttributes:@{NSFilePosixPermissions : @0600}
+                    ofItemAtPath:statusCachePath
+                    error:nil];
+            }
         }
 
-        NSMutableURLRequest *request = [NSMutableURLRequest
-            requestWithURL:[NSURL URLWithString:
-                @"https://api.anthropic.com/api/oauth/usage"]];
-        request.timeoutInterval = 15.0;
-        [request setValue:[NSString stringWithFormat:@"Bearer %@", accessToken]
-       forHTTPHeaderField:@"Authorization"];
-        [request setValue:@"oauth-2025-04-20"
-       forHTTPHeaderField:@"anthropic-beta"];
-        [request setValue:@"TerminalDB/0.1"
-       forHTTPHeaderField:@"User-Agent"];
-
-        NSURLSessionDataTask *dataTask =
-            [NSURLSession.sharedSession
-                dataTaskWithRequest:request
-                  completionHandler:^(NSData *data,
-                                      NSURLResponse *response,
-                                      NSError *error) {
-            NSHTTPURLResponse *httpResponse =
-                [response isKindOfClass:NSHTTPURLResponse.class]
-                    ? (NSHTTPURLResponse *)response
-                    : nil;
-            NSDictionary *usage = error == nil && httpResponse.statusCode == 200
-                ? [NSJSONSerialization JSONObjectWithData:data
-                                                   options:0
-                                                     error:nil]
-                : nil;
-            NSDictionary *normalized =
-                [ClaudeStatusBar normalizedStatusFromUsage:usage];
-            if (normalized != nil) {
-                NSData *normalizedData =
-                    [NSJSONSerialization dataWithJSONObject:normalized
-                                                     options:0
-                                                       error:nil];
-                if ([normalizedData writeToFile:statusCachePath
-                                      atomically:YES]) {
-                    [NSFileManager.defaultManager
-                        setAttributes:@{NSFilePosixPermissions : @0600}
-                        ofItemAtPath:statusCachePath
-                        error:nil];
-                }
+        NSString *refreshError = nil;
+        if (launchError != nil || !launched) {
+            refreshError = @"Claude Code could not be launched to refresh usage.";
+        } else if (timedOut) {
+            refreshError =
+                @"Claude Code usage refresh timed out; showing cached usage.";
+        } else if (task.terminationStatus != 0 || !wroteCache) {
+            refreshError =
+                @"Claude Code did not return current usage; showing cached usage.";
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ClaudeStatusBar *strongSelf = weakSelf;
+            if (strongSelf == nil ||
+                ![strongSelf.selectedProfile.identifier
+                    isEqualToString:profileID]) {
+                return;
             }
-
-            dispatch_async(dispatch_get_main_queue(), ^{
-                ClaudeStatusBar *strongSelf = weakSelf;
-                if (strongSelf == nil ||
-                    ![strongSelf.selectedProfile.identifier
-                        isEqualToString:profileID]) {
-                    return;
-                }
-                strongSelf.usageRefreshInFlight = NO;
-                [strongSelf refreshUsage];
-            });
-        }];
-        [dataTask resume];
+            strongSelf.usageRefreshInFlight = NO;
+            strongSelf.usageRefreshError = refreshError;
+            [strongSelf refreshUsage];
+            [strongSelf refreshUsageWindowContents];
+        });
     });
+}
+
++ (nullable NSDictionary *)normalizedStatusFromUsageCommandResult:
+    (nullable NSString *)result {
+    if (![result isKindOfClass:NSString.class] || result.length == 0) {
+        return nil;
+    }
+
+    NSArray<NSDictionary<NSString *, NSString *> *> *windows = @[
+        @{@"prefix" : @"Current session:",
+          @"key" : @"five_hour"},
+        @{@"prefix" : @"Current week (all models):",
+          @"key" : @"seven_day"},
+        @{@"prefix" : @"Current week (Fable):",
+          @"key" : @"fable_five"},
+    ];
+    NSRegularExpression *expression = [NSRegularExpression
+        regularExpressionWithPattern:
+            @"([0-9]+(?:\\.[0-9]+)?)%\\s+used\\s*(?:·|-)\\s*"
+             "resets\\s+(.+?)\\s+\\(([^)]+)\\)\\s*$"
+                             options:NSRegularExpressionCaseInsensitive
+                               error:nil];
+    NSMutableDictionary *limits = [NSMutableDictionary dictionary];
+    NSArray<NSString *> *lines =
+        [result componentsSeparatedByCharactersInSet:
+            NSCharacterSet.newlineCharacterSet];
+    for (NSString *line in lines) {
+        NSDictionary<NSString *, NSString *> *definition = nil;
+        for (NSDictionary<NSString *, NSString *> *candidate in windows) {
+            if ([line rangeOfString:candidate[@"prefix"]
+                            options:NSCaseInsensitiveSearch].location !=
+                NSNotFound) {
+                definition = candidate;
+                break;
+            }
+        }
+        if (definition == nil) continue;
+
+        NSTextCheckingResult *match =
+            [expression firstMatchInString:line
+                                   options:0
+                                     range:NSMakeRange(0, line.length)];
+        if (match.numberOfRanges < 4) continue;
+        double percent =
+            [[line substringWithRange:[match rangeAtIndex:1]] doubleValue];
+        NSString *dateText =
+            [line substringWithRange:[match rangeAtIndex:2]];
+        NSString *timeZoneName =
+            [line substringWithRange:[match rangeAtIndex:3]];
+        NSMutableDictionary *window = [@{
+            @"used_percentage" :
+                @(ClaudeUsageClampedPercent(percent)),
+        } mutableCopy];
+        NSNumber *reset = [self
+            timestampFromUsageCommandDate:dateText
+                             timeZoneName:timeZoneName];
+        if (reset != nil) window[@"resets_at"] = reset;
+        if ([definition[@"key"] isEqualToString:@"fable_five"]) {
+            window[@"display_name"] = @"Fable";
+        }
+        limits[definition[@"key"]] = window;
+    }
+    if (limits.count == 0) return nil;
+    return @{
+        @"rate_limits" : limits,
+        @"terminaldb" : @{
+            @"source" : @"claude_code_usage_command",
+            @"fetched_at" : @([NSDate date].timeIntervalSince1970),
+        },
+    };
+}
+
++ (nullable NSNumber *)timestampFromUsageCommandDate:(NSString *)dateText
+                                        timeZoneName:(NSString *)timeZoneName {
+    if (dateText.length == 0) return nil;
+    NSTimeZone *timeZone = [NSTimeZone timeZoneWithName:timeZoneName]
+        ?: NSTimeZone.localTimeZone;
+    NSCalendar *calendar =
+        [[NSCalendar alloc] initWithCalendarIdentifier:
+            NSCalendarIdentifierGregorian];
+    calendar.timeZone = timeZone;
+    NSInteger currentYear =
+        [calendar component:NSCalendarUnitYear fromDate:[NSDate date]];
+    NSArray<NSString *> *formats = @[
+        @"MMM d 'at' h:mma yyyy",
+        @"MMM d 'at' ha yyyy",
+    ];
+    for (NSInteger yearOffset = 0; yearOffset <= 1; yearOffset++) {
+        for (NSString *format in formats) {
+            NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+            formatter.locale =
+                [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
+            formatter.timeZone = timeZone;
+            formatter.dateFormat = format;
+            NSDate *date = [formatter dateFromString:[NSString stringWithFormat:
+                @"%@ %ld", dateText, (long)(currentYear + yearOffset)]];
+            if (date != nil && date.timeIntervalSinceNow > -60.0) {
+                return @(date.timeIntervalSince1970);
+            }
+        }
+    }
+    return nil;
 }
 
 + (nullable NSDictionary *)normalizedStatusFromUsage:
@@ -1083,6 +1190,18 @@ static double ClaudeUsageClampedPercent(double percent) {
     };
     NSDictionary *normalized = [self normalizedStatusFromUsage:sample];
     NSDictionary *limits = normalized[@"rate_limits"];
+    NSString *commandResult =
+        @"You are currently using your subscription to power your Claude "
+         "Code usage\n\n"
+         "Current session: 68% used · resets Jul 24 at 11:40am "
+         "(America/Los_Angeles)\n"
+         "Current week (all models): 48% used · resets Jul 25 at 2pm "
+         "(America/Los_Angeles)\n"
+         "Current week (Fable): 14% used · resets Jul 25 at 1:59pm "
+         "(America/Los_Angeles)";
+    NSDictionary *commandStatus =
+        [self normalizedStatusFromUsageCommandResult:commandResult];
+    NSDictionary *commandLimits = commandStatus[@"rate_limits"];
     NSNumber *fiveHourReset = limits[@"five_hour"][@"resets_at"];
     NSNumber *sevenDayReset = limits[@"seven_day"][@"resets_at"];
     NSNumber *pastReset =
@@ -1102,6 +1221,15 @@ static double ClaudeUsageClampedPercent(double percent) {
         [sevenDayReset isKindOfClass:NSNumber.class] &&
         [limits[@"fable_five"][@"used_percentage"] isEqual:@56] &&
         [limits[@"fable_five"][@"resets_at"] isKindOfClass:NSNumber.class] &&
+        [commandLimits[@"five_hour"][@"used_percentage"] isEqual:@68] &&
+        [commandLimits[@"seven_day"][@"used_percentage"] isEqual:@48] &&
+        [commandLimits[@"fable_five"][@"used_percentage"] isEqual:@14] &&
+        [commandLimits[@"five_hour"][@"resets_at"]
+            isKindOfClass:NSNumber.class] &&
+        [commandLimits[@"seven_day"][@"resets_at"]
+            isKindOfClass:NSNumber.class] &&
+        [commandLimits[@"fable_five"][@"resets_at"]
+            isKindOfClass:NSNumber.class] &&
         [self compactResetDateTimeFromTimestamp:fiveHourReset].length > 0 &&
         [self compactResetDateTimeFromTimestamp:sevenDayReset].length > 0 &&
         [self compactResetDateTimeFromTimestamp:pastReset] == nil &&
