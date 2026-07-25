@@ -15,6 +15,12 @@
   <img alt="Project status: alpha" src="https://img.shields.io/badge/status-alpha-e5b454">
 </p>
 
+<p align="center">
+  <a href="https://terminaldb.pages.dev/">Website</a> ·
+  <a href="https://github.com/danb235/TerminalDB/releases/download/v0.1.0/TerminalDB-macOS.zip">Download v0.1.0</a> ·
+  <a href="https://github.com/danb235/TerminalDB/releases/tag/v0.1.0">Release notes and checksums</a>
+</p>
+
 TerminalDB combines an independent PTY-backed shell, a collapsible AI chat,
 multiple isolated Claude Code accounts, live subscription-usage tracking, and
 a searchable local record of completed commands. It is written directly
