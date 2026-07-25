@@ -108,7 +108,7 @@ jobs:
 
           {
             awk -v header="## [${VERSION}]" '
-              $0 == header { printing = 1; next }
+              index($0, header) == 1 { printing = 1; next }
               printing && substr($0, 1, 4) == "## [" { exit }
               printing { print }
             ' CHANGELOG.md
@@ -120,7 +120,7 @@ jobs:
             echo "3. This build is not notarized. Open it once, then use **System Settings > Privacy & Security > Open Anyway** if macOS blocks the first launch."
             echo ""
             echo "The stable download URL is:"
-            echo "\`https://github.com/danb235/TerminalDB/releases/latest/download/TerminalDB-macOS.zip\`"
+            echo "\`https://github.com/danb235/TerminalDB/releases/download/${RELEASE_TAG}/TerminalDB-macOS.zip\`"
           } > RELEASE_NOTES.md
 
       - name: Publish GitHub release
