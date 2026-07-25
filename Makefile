@@ -15,7 +15,7 @@ SCRIPT_RESOURCES := \
 	Resources/Scripts/claude-status-bridge.sh \
 	Resources/Scripts/claude-tab-state.sh
 
-.PHONY: all run test qa-tabs qa-claude-state qa-signature qa-icon qa-secrets clean
+.PHONY: all run test test-ci qa-tabs qa-claude-state qa-signature qa-icon qa-secrets clean
 
 all: $(BIN)
 
@@ -49,6 +49,13 @@ test: all
 	$(MAKE) qa-tabs
 	$(MAKE) qa-claude-state
 
+test-ci: all
+	$(BIN) --self-test
+	$(MAKE) qa-signature
+	$(MAKE) qa-icon
+	$(MAKE) qa-secrets
+	$(MAKE) qa-claude-state
+
 qa-signature: all
 	@codesign --verify --deep --strict $(APP)
 	@requirement="$$(codesign -dr - $(APP) 2>&1)"; \
@@ -75,8 +82,19 @@ qa-icon: all
 		printf '%s\n' "TerminalDB icon QA: 10 sizes and bundle metadata passed"
 
 qa-secrets:
-	@if rg -n --hidden --glob '!.git/**' --glob '!build/**' \
-			'sk-ant-api0[0-9]-[A-Za-z0-9_-]{20,}' . >/dev/null; then \
+	@if command -v rg >/dev/null 2>&1; then \
+		rg -n --hidden --glob '!.git/**' --glob '!build/**' \
+			'sk-ant-api0[0-9]-[A-Za-z0-9_-]{20,}' . >/dev/null; \
+		found="$$?"; \
+	else \
+		grep -Ern --exclude-dir=.git --exclude-dir=build \
+			'sk-ant-api0[0-9]-[A-Za-z0-9_-]\{20,\}' . >/dev/null; \
+		found="$$?"; \
+	fi; \
+	if [ "$$found" -gt 1 ]; then \
+		printf '%s\n' "FAIL: secret scanner could not complete" >&2; \
+		exit 1; \
+	elif [ "$$found" -eq 0 ]; then \
 		printf '%s\n' "FAIL: probable Anthropic API key in working tree" >&2; \
 		exit 1; \
 	fi

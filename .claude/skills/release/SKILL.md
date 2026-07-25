@@ -26,7 +26,8 @@ Stop with a clear explanation if any condition fails:
 - `git fetch origin` succeeds.
 - Local `main` matches `origin/main`.
 - `gh auth status` succeeds.
-- `make test` passes.
+- `make test` passes locally.
+- `make test-ci` passes without requiring an interactive desktop session.
 - `./Scripts/build-app.sh release` produces a universal binary containing
   `arm64` and `x86_64`.
 
