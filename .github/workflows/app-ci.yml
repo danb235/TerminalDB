@@ -6,11 +6,13 @@ on:
     paths-ignore:
       - "marketing/**"
       - "marketing-build/**"
+      - ".github/workflows/site-ci.yml"
       - "WEBSITE.md"
   pull_request:
     paths-ignore:
       - "marketing/**"
       - "marketing-build/**"
+      - ".github/workflows/site-ci.yml"
       - "WEBSITE.md"
 
 permissions:

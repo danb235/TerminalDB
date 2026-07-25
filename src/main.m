@@ -563,6 +563,92 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
         containsObject:@"--background-tab-qa"];
     BOOL visualQA = [NSProcessInfo.processInfo.arguments
         containsObject:@"--visual-qa"];
+    if (visualQA) {
+        NSString *fixtureRoot = [NSTemporaryDirectory()
+            stringByAppendingPathComponent:@"terminaldb-visual-qa"];
+        NSString *profilesRoot =
+            [fixtureRoot stringByAppendingPathComponent:@"profiles"];
+        NSArray<NSDictionary *> *fixtureAccounts = @[
+            @{
+                @"id" : @"demo-team",
+                @"label" : @"Demo Team",
+                @"email" : @"developer@example.com",
+                @"plan" : @"Team",
+            },
+            @{
+                @"id" : @"demo-ops",
+                @"label" : @"Operations",
+                @"email" : @"ops@example.com",
+                @"plan" : @"Max",
+            },
+            @{
+                @"id" : @"demo-personal",
+                @"label" : @"Personal",
+                @"email" : @"personal@example.com",
+                @"plan" : @"Pro",
+            },
+        ];
+        NSMutableArray<ClaudeProfile *> *fixtureProfiles =
+            [NSMutableArray array];
+        for (NSDictionary *account in fixtureAccounts) {
+            NSString *profileDirectory = [profilesRoot
+                stringByAppendingPathComponent:account[@"id"]];
+            [NSFileManager.defaultManager
+                createDirectoryAtPath:
+                    [profileDirectory
+                        stringByAppendingPathComponent:@"config"]
+                withIntermediateDirectories:YES
+                attributes:@{NSFilePosixPermissions : @0700}
+                error:nil];
+
+            ClaudeProfile *fixtureProfile = [[ClaudeProfile alloc] init];
+            [fixtureProfile setValue:account[@"id"] forKey:@"identifier"];
+            [fixtureProfile setValue:account[@"label"] forKey:@"label"];
+            [fixtureProfile setValue:account[@"email"] forKey:@"email"];
+            [fixtureProfile setValue:account[@"plan"]
+                              forKey:@"subscriptionType"];
+            [fixtureProfile setValue:profileDirectory
+                              forKey:@"profileDirectory"];
+
+            NSTimeInterval now = [NSDate date].timeIntervalSince1970;
+            NSDictionary *fixtureUsage = @{
+                @"rate_limits" : @{
+                    @"five_hour" : @{
+                        @"used_percentage" : @28,
+                        @"resets_at" : @(now + 2.0 * 60.0 * 60.0),
+                    },
+                    @"seven_day" : @{
+                        @"used_percentage" : @46,
+                        @"resets_at" : @(now + 5.0 * 24.0 * 60.0 * 60.0),
+                    },
+                    @"fable_five" : @{
+                        @"used_percentage" : @12,
+                        @"resets_at" : @(now + 4.0 * 24.0 * 60.0 * 60.0),
+                    },
+                },
+                @"terminaldb" : @{
+                    @"source" : @"visual_qa_fixture",
+                    @"fetched_at" : @(now),
+                },
+            };
+            NSData *usageData = [NSJSONSerialization
+                dataWithJSONObject:fixtureUsage options:0 error:nil];
+            [usageData writeToFile:fixtureProfile.statusCachePath
+                        atomically:YES];
+            [fixtureProfiles addObject:fixtureProfile];
+        }
+
+        ClaudeProfileManager *fixtureManager =
+            [[ClaudeProfileManager alloc] init];
+        [fixtureManager setValue:profilesRoot forKey:@"profilesRoot"];
+        [fixtureManager
+            setValue:[fixtureRoot stringByAppendingPathComponent:@"profiles.json"]
+              forKey:@"storePath"];
+        [fixtureManager setValue:fixtureProfiles forKey:@"profiles"];
+        [fixtureManager setValue:fixtureProfiles.firstObject
+                          forKey:@"lastSelectedProfile"];
+        self.profileManager = fixtureManager;
+    }
     if (!backgroundTabQA && !visualQA &&
         self.apiConfiguration.hasAPIKey) {
         [self.apiConfiguration
@@ -586,7 +672,7 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
                 NSDictionary *visualRecord = @{
                     @"id" : @"qa-7f83",
                     @"command" : @"find . -type f -iname '*.jpg'",
-                    @"directory" : @"/Users/danny/Projects/archive",
+                    @"directory" : @"/Users/demo/Projects/archive",
                     @"output" : @"./photos/IMG_1092.jpg\n"
                                 "./photos/IMG_1178.JPG\n"
                                 "./exports/cover.jpg",
@@ -595,7 +681,7 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
                     @"timestamp" :
                         @([NSDate date].timeIntervalSince1970),
                     @"environment" : @"LOCAL",
-                    @"host" : @"Danny’s Mac",
+                    @"host" : @"Demo Mac",
                     @"project" : @"archive",
                     @"bookmarked" : @NO,
                     @"annotations" : @[],
@@ -696,6 +782,10 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
                         dispatch_time(DISPATCH_TIME_NOW,
                             (int64_t)(0.7 * NSEC_PER_SEC)),
                         dispatch_get_main_queue(), ^{
+                            [controller.claudeStatusBar
+                                setValue:@YES forKey:@"accountIsLoggedIn"];
+                            [controller.claudeStatusBar
+                                setValue:@YES forKey:@"accountStatusKnown"];
                             [controller.claudeStatusBar presentUsageWindow];
                         });
                     continue;

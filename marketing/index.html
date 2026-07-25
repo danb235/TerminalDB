@@ -1,0 +1,1084 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0c0e11">
+<title>TerminalDB: The terminal that remembers what worked</title>
+<meta name="description" content="TerminalDB is a native macOS terminal that turns every command into structured, searchable context, with AI that asks permission and fast Claude account switching.">
+<link rel="icon" href="./favicon.svg" type="image/svg+xml">
+<script src="./vendor/react.production.min.js"></script>
+<script src="./vendor/react-dom.production.min.js"></script>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<title>TerminalDB: The terminal that remembers what worked</title>
+<meta name="description" content="TerminalDB is a native macOS terminal that turns every command into structured, searchable context, with AI that asks permission, history that stays on your Mac, and automatic secret redaction. Open source, MIT.">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta property="og:title" content="TerminalDB: The terminal that remembers what worked">
+<meta property="og:description" content="Every command becomes structured, searchable context. Native macOS. History stays local. MIT licensed.">
+<meta property="og:type" content="website">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"TerminalDB","applicationCategory":"DeveloperApplication","operatingSystem":"macOS 13.0 or later","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"license":"https://opensource.org/licenses/MIT","softwareVersion":"0.1.0","downloadUrl":"https://github.com/danb235/TerminalDB/releases/latest/download/TerminalDB-macOS.zip","codeRepository":"https://github.com/danb235/TerminalDB","description":"A native macOS terminal that records every command as structured, searchable context, with AI assistance that asks permission and history that stays on the machine."}
+</script>
+<style>
+  html { scroll-behavior: smooth; }
+  body { margin:0; background:#0c0e11; color:#ecedef; -webkit-font-smoothing:antialiased; font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif; }
+  * { box-sizing:border-box; }
+  a { color:#5ad3e6; text-decoration:none; }
+  a:hover { color:#9fe8f4; text-decoration:underline; text-underline-offset:3px; }
+  ::selection { background:rgba(90,211,230,.28); }
+  :focus-visible { outline:2px solid #5ad3e6; outline-offset:3px; border-radius:4px; }
+  summary::-webkit-details-marker { display:none; }
+  @keyframes tdbBlink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior:auto; }
+    * { animation:none !important; transition:none !important; }
+  }
+</style>
+</helmet>
+
+<a href="#hero" style="position:absolute;left:-9999px;top:8px;padding:10px 14px;background:#12151a;border:1px solid #5ad3e6;border-radius:8px;font:500 13px/1 'JetBrains Mono',monospace;color:#5ad3e6;z-index:99" style-focus="left:12px">Skip to content</a>
+
+<header style="position:sticky;top:0;z-index:40;background:rgba(12,14,17,.88);backdrop-filter:blur(14px);border-bottom:1px solid #1b2027">
+  <div style="max-width:1180px;margin:0 auto;padding:0 clamp(16px,4vw,40px);display:flex;align-items:center;gap:20px;min-height:60px;flex-wrap:wrap">
+    <a href="#hero" style="display:flex;align-items:center;gap:10px;color:#ecedef;text-decoration:none;padding:6px 0">
+      <span aria-hidden="true" style="width:26px;height:26px;border:1px solid #2c3946;border-radius:7px;background:linear-gradient(#171b21,#0f1216);display:flex;align-items:center;justify-content:center;gap:3px;flex:0 0 auto;box-shadow:0 0 0 1px rgba(90,211,230,.08),0 6px 16px -8px rgba(90,211,230,.4)"><span style="font:700 11px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span><span style="display:flex;flex-direction:column;gap:2px"><span style="width:7px;height:2px;border-radius:1px;background:#8b939f"></span><span style="width:7px;height:2px;border-radius:1px;background:#8b939f"></span><span style="width:7px;height:2px;border-radius:1px;background:#b8e04a"></span></span></span>
+      <span style="font:600 16px/1 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;letter-spacing:-.01em">TerminalDB</span>
+    </a>
+    <nav aria-label="Primary" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-left:6px">
+      <a href="#product" style="padding:8px 10px;border-radius:6px;font-size:13.5px;color:#b6bdc7;text-decoration:none" style-hover="color:#ecedef;background:#161a20">Product</a>
+      <a href="#claude-accounts" style="padding:8px 10px;border-radius:6px;font-size:13.5px;color:#b6bdc7;text-decoration:none" style-hover="color:#ecedef;background:#161a20">Claude accounts</a>
+      <a href="#features" style="padding:8px 10px;border-radius:6px;font-size:13.5px;color:#b6bdc7;text-decoration:none" style-hover="color:#ecedef;background:#161a20">Features</a>
+      <a href="#security" style="padding:8px 10px;border-radius:6px;font-size:13.5px;color:#b6bdc7;text-decoration:none" style-hover="color:#ecedef;background:#161a20">Security</a>
+      <a href="#docs" style="padding:8px 10px;border-radius:6px;font-size:13.5px;color:#b6bdc7;text-decoration:none" style-hover="color:#ecedef;background:#161a20">Docs</a>
+      <a href="https://github.com/danb235/TerminalDB" rel="noopener" style="padding:8px 10px;border-radius:6px;font-size:13.5px;color:#b6bdc7;text-decoration:none;display:flex;align-items:center;gap:6px" style-hover="color:#ecedef;background:#161a20">GitHub<span style="font:400 11px/1 'JetBrains Mono',monospace;color:#6b7481">&#8599;</span></a>
+    </nav>
+    <div style="flex:1 1 40px"></div>
+    <a href="https://github.com/danb235/TerminalDB/releases/latest" style="display:inline-flex;align-items:center;gap:8px;padding:9px 15px;border:1px solid #5ad3e6;border-radius:8px;background:rgba(90,211,230,.07);color:#c8f4fc;font:500 13px/1 -apple-system,system-ui,sans-serif;text-decoration:none;white-space:nowrap" style-hover="background:rgba(90,211,230,.16);color:#eafbff;text-decoration:none" style-active="background:rgba(90,211,230,.26)">
+      <span style="font:700 12px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>Download for macOS
+    </a>
+  </div>
+</header>
+
+<main id="hero" style="display:block">
+
+  <section style="position:relative;overflow:hidden;padding:clamp(48px,6vw,88px) clamp(20px,5vw,64px) clamp(40px,5vw,72px)">
+    <div style="position:absolute;inset:-40% 30% 40% -20%;background:radial-gradient(60% 60% at 30% 40%,rgba(90,211,230,.11),transparent 70%);pointer-events:none"></div>
+    <div style="position:relative;max-width:1180px;margin:0 auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:clamp(28px,4vw,56px);align-items:center">
+      <div style="min-width:0">
+        <div style="display:inline-flex;align-items:center;gap:8px;padding:5px 10px;border:1px solid #232830;border-radius:999px;background:#12151a;font:400 11px/1 'JetBrains Mono',monospace;letter-spacing:.06em;color:#98a0ac">
+          <span style="width:6px;height:6px;border-radius:50%;background:#b8e04a;box-shadow:0 0 8px rgba(184,224,74,.7)"></span>MIT&nbsp;licensed&nbsp;&middot;&nbsp;native&nbsp;macOS&nbsp;&middot;&nbsp;local&nbsp;history
+        </div>
+        <h1 style="font:500 clamp(34px,4.6vw,58px)/1.06 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;letter-spacing:-.03em;margin:20px 0 0;text-wrap:balance">
+          The terminal that<br>remembers <span style="color:#5ad3e6">what worked.</span>
+        </h1>
+        <p style="color:#98a0ac;font-size:clamp(15.5px,1.35vw,18px);line-height:1.6;max-width:56ch;margin:18px 0 0;text-wrap:pretty">
+          TerminalDB records every command as a structured record. Path, host, environment, exit status, duration and output are all captured, then kept in a searchable database on your Mac. Your shell history stops being a flat list of strings and becomes context you and your AI assistant can actually reason about. Connect as many Claude subscription accounts as you use, and switch the active one per terminal tab in a single action.
+        </p>
+        <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:28px">
+          <a href="https://github.com/danb235/TerminalDB/releases/latest/download/TerminalDB-macOS.zip" style="display:inline-flex;align-items:center;gap:9px;padding:13px 20px;border:1px solid #5ad3e6;border-radius:9px;background:rgba(90,211,230,.09);color:#d8f8ff;font:500 14.5px/1 -apple-system,system-ui,sans-serif;text-decoration:none" style-hover="background:rgba(90,211,230,.18);text-decoration:none" style-active="background:rgba(90,211,230,.28)">
+            <span style="font:700 13px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>Download latest for macOS
+          </a>
+          <a href="https://github.com/danb235/TerminalDB" rel="noopener" style="display:inline-flex;align-items:center;gap:9px;padding:13px 20px;border:1px solid #2a3039;border-radius:9px;background:#12151a;color:#ecedef;font:500 14.5px/1 -apple-system,system-ui,sans-serif;text-decoration:none" style-hover="border-color:#3b444f;background:#171b21;text-decoration:none">View source on GitHub</a>
+        </div>
+        <p style="margin:16px 0 0;font:400 12px/1.6 'JetBrains Mono',monospace;color:#6b7481">
+          macOS 13+ &middot; universal build (Apple&nbsp;Silicon + Intel) &middot; SHA-256 published with every release<br>
+          <span style="color:#f0b429">Pre release:</span> v0.1.0 is not published yet. <a href="https://github.com/danb235/TerminalDB/blob/main/docs/build.md">Build from source</a> today.
+        </p>
+      </div>
+
+      <div style="min-width:0">
+        <figure style="margin:0">
+          <div style="border:1px solid #262c35;border-radius:14px;background:#0b0d10;padding:10px;box-shadow:0 40px 80px -40px rgba(0,0,0,.9)">
+            <img src="uploads/terminaldb-native-current.png" width="2056" height="1392" alt="Screenshot of the TerminalDB app on macOS. The left pane shows a saved command block for find . -type f -iname '*.jpg' with EXIT 0, the path /Users/demo/Projects/archive, host Demo Mac, LOCAL environment and a 0.12s duration, plus Ask AI, Rerun and Details actions above the live terminal output. The right pane is the AI chat, running Claude Sonnet 5, proposing two commands with Paste and Run buttons. The bottom status strip reads Demo Team, developer@example.com, Team, LOCAL, and usage of 5h 28 percent, 7d 46 percent and F 12 percent with reset times." style="display:block;width:100%;height:auto;border-radius:8px">
+          </div>
+          <figcaption style="margin:11px 2px 0;font:400 11.5px/1.6 'JetBrains Mono',monospace;color:#7e8795">TerminalDB 0.1.0 running on macOS. Command blocks, the AI pane and the status strip share one local record. <a href="uploads/terminaldb-native-current.png" target="_blank" rel="noopener">View full size</a></figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section style="border-top:1px solid #1b2027;border-bottom:1px solid #1b2027;background:#0e1115">
+    <div style="max-width:1180px;margin:0 auto;padding:clamp(20px,2.4vw,30px) clamp(20px,5vw,64px);display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:clamp(16px,2vw,28px)">
+      <div><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#5ad3e6">Structured</div><p style="margin:9px 0 0;font-size:13.5px;line-height:1.55;color:#98a0ac">Commands are records, not scrollback. Path, host, env, exit code, duration, output.</p></div>
+      <div><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#b8e04a">Permissioned</div><p style="margin:9px 0 0;font-size:13.5px;line-height:1.55;color:#98a0ac">The assistant proposes. Nothing executes without an explicit grant you can scope.</p></div>
+      <div><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#f0b429">Every Claude account</div><p style="margin:9px 0 0;font-size:13.5px;line-height:1.55;color:#98a0ac">Connect as many subscription accounts as you need. Switch per tab in one action.</p></div>
+    </div>
+    <div style="max-width:1180px;margin:0 auto;padding:0 clamp(20px,5vw,64px) clamp(18px,2vw,24px);font:400 11.5px/1.7 'JetBrains Mono',monospace;color:#7e8795">
+      History stays on your Mac &middot; MIT licensed and buildable from source &middot; no analytics by default
+    </div>
+  </section>
+
+  <section id="claude-accounts" style="padding:clamp(56px,7vw,104px) clamp(20px,5vw,64px);border-bottom:1px solid #1b2027">
+    <div style="max-width:1180px;margin:0 auto">
+      <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#5ad3e6"><span>&#10095;</span>Claude account management</div>
+      <h2 style="font:500 clamp(26px,3.4vw,44px)/1.12 -apple-system,system-ui,sans-serif;letter-spacing:-.028em;margin:14px 0 0;text-wrap:balance">Every Claude account, ready when you need it.</h2>
+      <p style="color:#98a0ac;font-size:clamp(15px,1.35vw,17.5px);line-height:1.6;max-width:66ch;margin:12px 0 0;text-wrap:pretty">Work, team and personal Claude subscriptions live side by side in TerminalDB. Each connected profile gets its own isolated Claude configuration directory and its own macOS Keychain credential, so switching the account for a tab takes one click and never touches the tab beside it.</p>
+
+      <figure style="margin:28px 0 0;max-width:1180px">
+            <div style="border:1px solid #262c35;border-radius:14px;background:#0b0d10;padding:10px;box-shadow:0 40px 80px -44px rgba(0,0,0,.92)">
+              <img src="uploads/terminaldb-accounts-current.png" width="1976" height="1332" loading="lazy" decoding="async" alt="Screenshot of the TerminalDB Claude Code Account and Usage window on macOS. A cyan label reads CLAUDE CODE, ACTIVE FOR THIS TAB above the heading Account and usage, with the note that subscription usage is per Claude Code account and AI chat can use this subscription or a separately managed API key. The active account is Demo Team, developer@example.com, Team, marked SIGNED IN with usage applying to this terminal tab, beside an account picker and a Remove button. A usage panel lists 5h at 28 percent, 7d at 46 percent and F at 12 percent with reset times of 7/24 8:03 PM, 7/29 6:03 PM and a Fable weekly reset of 7/28 6:03 PM. Below, a list headed ALL ACCOUNTS, NO LIMIT, ONE ACTIVE PER TAB shows a checkmark beside Demo Team developer@example.com Team, then Operations ops@example.com Max, then Personal personal@example.com Pro. Footer buttons are Refresh Usage, Add Account and Done." style="display:block;width:100%;height:auto;border-radius:8px">
+            </div>
+            <figcaption style="margin:11px 2px 0;font:400 11.5px/1.6 'JetBrains Mono',monospace;color:#7e8795">The Claude Code account and usage window in TerminalDB 0.1.0. The switcher also lives in the AI menu, and the active profile, plan and authentication state always show in the bottom status strip. <a href="uploads/terminaldb-accounts-current.png" target="_blank" rel="noopener">View full size</a></figcaption>
+          </figure>
+
+      <div style="display:flex;flex-direction:column;gap:14px;margin-top:22px">
+        <div style="min-width:0">
+          <div style="border:1px solid #232830;border-radius:11px;background:#12151a;overflow:hidden">
+            <div style="padding:13px 16px;border-bottom:1px solid #1b2027;font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#98a0ac">What you get</div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(272px,1fr));gap:1px;background:#1b2027">
+              <div style="background:#12151a;padding:13px 16px"><div style="font:500 13px/1.4 -apple-system,system-ui,sans-serif;color:#ecedef">No account limit</div><p style="margin:6px 0 0;font-size:12.5px;line-height:1.6;color:#98a0ac">Connect and manage as many Claude subscription accounts as you actually use.</p></div>
+              <div style="background:#12151a;padding:13px 16px"><div style="font:500 13px/1.4 -apple-system,system-ui,sans-serif;color:#ecedef">Isolated per profile</div><p style="margin:6px 0 0;font-size:12.5px;line-height:1.6;color:#98a0ac">Every profile gets its own Claude configuration directory and its own macOS Keychain credential. Nothing is shared between them.</p></div>
+              <div style="background:#12151a;padding:13px 16px"><div style="font:500 13px/1.4 -apple-system,system-ui,sans-serif;color:#ecedef">One click, one tab</div><p style="margin:6px 0 0;font-size:12.5px;line-height:1.6;color:#98a0ac">Switching the active account applies to the current terminal tab only. Every other tab keeps working with the profile you gave it.</p></div>
+              <div style="background:#12151a;padding:13px 16px"><div style="font:500 13px/1.4 -apple-system,system-ui,sans-serif;color:#ecedef">Always visible</div><p style="margin:6px 0 0;font-size:12.5px;line-height:1.6;color:#98a0ac">The status strip names the active account, its plan and its authentication state, so you never guess who is answering.</p></div>
+              <div style="background:#12151a;padding:13px 16px"><div style="font:500 13px/1.4 -apple-system,system-ui,sans-serif;color:#ecedef">Usage you can plan around</div><p style="margin:6px 0 0;font-size:12.5px;line-height:1.6;color:#98a0ac">The 5 hour, 7 day and Fable windows show for the selected account, each with the time it next resets. Refresh them at any time.</p></div>
+              <div style="background:#12151a;padding:13px 16px"><div style="font:500 13px/1.4 -apple-system,system-ui,sans-serif;color:#ecedef">Add, select or remove</div><p style="margin:6px 0 0;font-size:12.5px;line-height:1.6;color:#98a0ac">Add Claude Code Account signs in and creates a new profile. Select one for the current tab, sign back in when a session expires, or remove a local profile.</p></div>
+              <div style="background:#12151a;padding:13px 16px"><div style="font:500 13px/1.4 -apple-system,system-ui,sans-serif;color:#ecedef">Clean conversation boundaries</div><p style="margin:6px 0 0;font-size:12.5px;line-height:1.6;color:#98a0ac">Changing the account, the provider or the model starts a fresh AI conversation, so identity and billing context never cross.</p></div>
+            </div>
+          </div>
+        </div>
+
+        <div style="min-width:0">
+          <div style="border:1px solid #4a3a1c;border-radius:11px;background:rgba(240,180,41,.05);padding:16px">
+            <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;color:#f0b429"><span>&#9888;</span>Removing a profile</div>
+            <p style="margin:10px 0 0;font-size:13px;line-height:1.65;color:#b6bdc7">Removing a TerminalDB profile deletes only that local isolated profile and the credential TerminalDB created for it. It does not cancel your Anthropic subscription, and it does not change billing. Sign in again at any time to recreate the profile.</p>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:20px;border:1px solid #232830;border-radius:11px;background:#0f1216;overflow:hidden">
+        <div style="padding:13px 16px;border-bottom:1px solid #1b2027;font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#98a0ac">Claude subscription or Anthropic API, both first class</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1px;background:#1b2027">
+          <div style="background:#12151a;padding:17px">
+            <div style="display:flex;align-items:center;gap:9px"><span style="width:8px;height:8px;border-radius:50%;background:#b8e04a"></span><h3 style="margin:0;font:500 14.5px/1.3 -apple-system,system-ui,sans-serif">Claude subscription</h3></div>
+            <ul style="margin:11px 0 0;padding:0 0 0 17px;font-size:12.5px;line-height:1.75;color:#98a0ac">
+              <li>Sign in with the accounts you already pay for</li>
+              <li>Usage follows your plan windows, shown in app</li>
+              <li>Many accounts connected at once, switched per tab</li>
+              <li>Best when work and personal billing must stay apart</li>
+            </ul>
+          </div>
+          <div style="background:#12151a;padding:17px">
+            <div style="display:flex;align-items:center;gap:9px"><span style="width:8px;height:8px;border-radius:50%;background:#5ad3e6"></span><h3 style="margin:0;font:500 14.5px/1.3 -apple-system,system-ui,sans-serif">Anthropic API key</h3></div>
+            <ul style="margin:11px 0 0;padding:0 0 0 17px;font-size:12.5px;line-height:1.75;color:#98a0ac">
+              <li>Usage billed to your Anthropic organisation</li>
+              <li>Model choice independent of a plan</li>
+              <li>Key held in the macOS Keychain, never in the database</li>
+              <li>Best for scripted work and shared team budgets</li>
+            </ul>
+          </div>
+          <div style="background:#12151a;padding:17px">
+            <div style="display:flex;align-items:center;gap:9px"><span style="width:8px;height:8px;border-radius:50%;background:#f0b429"></span><h3 style="margin:0;font:500 14.5px/1.3 -apple-system,system-ui,sans-serif">Both at once</h3></div>
+            <ul style="margin:11px 0 0;padding:0 0 0 17px;font-size:12.5px;line-height:1.75;color:#98a0ac">
+              <li>The two connections are fully independent</li>
+              <li>Power chat with the API and keep every subscription account connected</li>
+              <li>Terminal sessions and usage tracking carry on either way</li>
+              <li>Choose the provider once, change it whenever</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="product" style="padding:clamp(56px,7vw,104px) clamp(20px,5vw,64px);border-bottom:1px solid #1b2027">
+    <div style="max-width:1180px;margin:0 auto">
+      <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#5ad3e6"><span>&#10095;</span>Anatomy of a command block</div>
+      <h2 style="font:500 clamp(26px,3.1vw,40px)/1.15 -apple-system,system-ui,sans-serif;letter-spacing:-.025em;margin:14px 0 0">Every command carries its own context.</h2>
+      <p style="color:#98a0ac;font-size:clamp(15px,1.3vw,17px);line-height:1.6;max-width:64ch;margin:12px 0 0;text-wrap:pretty">Pick a record to inspect. The same fields that make a block readable are the fields that make it searchable, and they are the only thing the assistant is ever handed.</p>
+
+      <div role="tablist" aria-label="Example command blocks" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:26px">
+        <sc-for list="{{ blockTabs }}" as="tab" hint-placeholder-count="4">
+          <button type="button" role="tab" aria-selected="{{ tab.selected }}" onClick="{{ tab.select }}" style="padding:8px 12px;border:1px solid {{ tab.border }};border-radius:7px;background:{{ tab.bg }};color:{{ tab.color }};font:500 12px/1 'JetBrains Mono',monospace;cursor:pointer" style-hover="border-color:#3b444f">{{ tab.label }}</button>
+        </sc-for>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:clamp(20px,2.6vw,34px);margin-top:20px;align-items:start">
+        <div style="border:1px solid #232830;border-left:2px solid {{ blockTone }};border-radius:10px;background:#12151a;overflow:hidden;min-width:0">
+          <div style="display:flex;align-items:flex-start;gap:9px;padding:14px 15px 10px">
+            <span style="font:700 13px/1.5 'JetBrains Mono',monospace;color:{{ blockTone }}">&#10095;</span>
+            <code style="font:500 14px/1.5 'JetBrains Mono',monospace;color:#ecedef;word-break:break-all">{{ blockCmd }}</code>
+          </div>
+          <dl style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1px;margin:0;padding:0;background:#1b2027;border-top:1px solid #1b2027;border-bottom:1px solid #1b2027">
+            <div style="background:#12151a;padding:9px 15px"><dt style="font:400 9.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#7e8795">Directory</dt><dd style="margin:6px 0 0;font:400 11.5px/1.4 'JetBrains Mono',monospace;color:#5ad3e6;word-break:break-all">{{ blockPath }}</dd></div>
+            <div style="background:#12151a;padding:9px 15px"><dt style="font:400 9.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#7e8795">Host / env</dt><dd style="margin:6px 0 0;font:400 11.5px/1.4 'JetBrains Mono',monospace;color:#b6bdc7">{{ blockHost }} &middot; <span style="color:{{ blockEnvTone }}">{{ blockEnv }}</span></dd></div>
+            <div style="background:#12151a;padding:9px 15px"><dt style="font:400 9.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#7e8795">Exit status</dt><dd style="margin:6px 0 0;font:400 11.5px/1.4 'JetBrains Mono',monospace;color:{{ blockTone }}">{{ blockExit }}</dd></div>
+            <div style="background:#12151a;padding:9px 15px"><dt style="font:400 9.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#7e8795">Duration</dt><dd style="margin:6px 0 0;font:400 11.5px/1.4 'JetBrains Mono',monospace;color:#b6bdc7">{{ blockDur }}</dd></div>
+            <div style="background:#12151a;padding:9px 15px"><dt style="font:400 9.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#7e8795">Timestamp</dt><dd style="margin:6px 0 0;font:400 11.5px/1.4 'JetBrains Mono',monospace;color:#b6bdc7">{{ blockTime }}</dd></div>
+            <div style="background:#12151a;padding:9px 15px"><dt style="font:400 9.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#7e8795">Record id</dt><dd style="margin:6px 0 0;font:400 11.5px/1.4 'JetBrains Mono',monospace;color:#6b7481">{{ blockId }}</dd></div>
+          </dl>
+          <pre style="margin:0;padding:12px 15px;background:#0f1216;font:400 11.5px/1.65 'JetBrains Mono',monospace;color:#98a0ac;white-space:pre-wrap;word-break:break-word;max-height:150px;overflow:auto">{{ blockOut }}</pre>
+          <div style="display:flex;flex-wrap:wrap;gap:7px;padding:11px 15px;border-top:1px solid #1b2027">
+            <sc-for list="{{ blockActions }}" as="act" hint-placeholder-count="4">
+              <button type="button" onClick="{{ act.run }}" style="display:inline-flex;align-items:center;gap:7px;padding:7px 11px;border:1px solid #2a3039;border-radius:7px;background:#161a20;color:#d5dae1;font:500 11.5px/1 'JetBrains Mono',monospace;cursor:pointer" style-hover="border-color:#5ad3e6;color:#eafbff;background:#141c22" style-active="background:#10181d">{{ act.label }}</button>
+            </sc-for>
+          </div>
+          <div style="padding:9px 15px;border-top:1px solid #1b2027;background:#0e1115;font:400 11px/1.5 'JetBrains Mono',monospace;color:#b8e04a;min-height:34px">{{ actionMsg }}</div>
+        </div>
+
+        <div style="min-width:0;display:flex;flex-direction:column;gap:14px">
+          <div style="border:1px solid #232830;border-radius:10px;background:#12151a;padding:18px">
+            <h3 style="margin:0;font:500 15px/1.3 -apple-system,system-ui,sans-serif">Why structure matters</h3>
+            <ul style="margin:12px 0 0;padding:0 0 0 18px;color:#98a0ac;font-size:13.5px;line-height:1.7">
+              <li><strong style="color:#d5dae1;font-weight:500">Search by outcome.</strong> “Show every migration that failed on staging last week.”</li>
+              <li><strong style="color:#d5dae1;font-weight:500">Replay with confidence.</strong> Rerun restores the recorded directory and environment, not just the string.</li>
+              <li><strong style="color:#d5dae1;font-weight:500">Explain with evidence.</strong> The assistant reads the record (command, output, exit code, working directory) instead of guessing from a fragment.</li>
+            </ul>
+          </div>
+          <div style="border:1px solid #232830;border-radius:10px;background:#0f1216;padding:18px">
+            <div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#7e8795">Stored shape</div>
+            <pre style="margin:11px 0 0;font:400 11.5px/1.7 'JetBrains Mono',monospace;color:#98a0ac;white-space:pre-wrap">{
+  "command":  "pnpm test --filter api",
+  "cwd":      "~/work/api-gateway",
+  "host":     "ada-mbp.local",
+  "env":      "LOCAL",
+  "exit":     0,
+  "duration": 8.42,
+  "started":  "2026-07-24T14:02:11Z",
+  "redacted": true
+}</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section style="padding:clamp(56px,7vw,104px) clamp(20px,5vw,64px);border-bottom:1px solid #1b2027;background:#0e1115">
+    <div style="max-width:1180px;margin:0 auto">
+      <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#b8e04a"><span>&#10095;</span>Execution by permission</div>
+      <h2 style="font:500 clamp(26px,3.1vw,40px)/1.15 -apple-system,system-ui,sans-serif;letter-spacing:-.025em;margin:14px 0 0">The assistant proposes. You grant.</h2>
+      <p style="color:#98a0ac;font-size:clamp(15px,1.3vw,17px);line-height:1.6;max-width:64ch;margin:12px 0 0;text-wrap:pretty">Every command the AI writes lands in a proposal, never in your shell. Choose the narrowest grant that gets you moving: paste it, run it once, or allow a class of read only commands for this session.</p>
+
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:24px">
+        <sc-for list="{{ permKinds }}" as="k" hint-placeholder-count="4">
+          <button type="button" onClick="{{ k.select }}" aria-pressed="{{ k.selected }}" style="padding:8px 12px;border:1px solid {{ k.border }};border-radius:7px;background:{{ k.bg }};color:{{ k.color }};font:500 12px/1 'JetBrains Mono',monospace;cursor:pointer" style-hover="border-color:#3b444f">{{ k.label }}</button>
+        </sc-for>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:clamp(20px,2.6vw,34px);margin-top:20px;align-items:start">
+        <div style="border:1px solid {{ permBorder }};border-radius:10px;background:#12151a;overflow:hidden;min-width:0;box-shadow:0 24px 50px -34px rgba(0,0,0,.9)">
+          <div style="display:flex;align-items:center;gap:9px;padding:12px 15px;border-bottom:1px solid #1b2027;background:{{ permHeadBg }}">
+            <span style="font:700 12px/1 'JetBrains Mono',monospace;color:{{ permTone }}">{{ permGlyph }}</span>
+            <span style="font:500 12.5px/1 -apple-system,system-ui,sans-serif;color:#ecedef">{{ permTitle }}</span>
+            <span style="margin-left:auto;padding:4px 8px;border:1px solid {{ permBorder }};border-radius:5px;font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.08em;text-transform:uppercase;color:{{ permTone }}">{{ permRisk }}</span>
+          </div>
+          <div style="padding:15px">
+            <div style="font:400 9.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#7e8795">Proposed command</div>
+            <pre style="margin:9px 0 0;padding:11px 12px;border:1px dashed #2c3946;border-radius:7px;background:#0f1216;font:500 12.5px/1.6 'JetBrains Mono',monospace;color:#ecedef;white-space:pre-wrap;word-break:break-all">{{ permCmd }}</pre>
+            <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;font:400 11px/1.5 'JetBrains Mono',monospace;color:#6b7481">
+              <span>runs in <span style="color:#5ad3e6">{{ permCwd }}</span></span><span>env <span style="color:{{ permEnvTone }}">{{ permEnv }}</span></span>
+            </div>
+            <p style="margin:13px 0 0;font-size:13px;line-height:1.6;color:#98a0ac">{{ permNote }}</p>
+            <sc-if value="{{ permNeedsPhrase }}" hint-placeholder-val="{{ false }}">
+              <div style="margin-top:13px;padding:11px 12px;border:1px solid #4a3a1c;border-radius:7px;background:rgba(240,180,41,.06)">
+                <div style="font:400 10.5px/1.4 'JetBrains Mono',monospace;color:#f0b429">Type <strong style="color:#ffd987">{{ permPhrase }}</strong> to confirm</div>
+                <div style="margin-top:8px;padding:8px 10px;border:1px solid #2a3039;border-radius:6px;background:#0f1216;font:400 12px/1 'JetBrains Mono',monospace;color:#6b7481">{{ permPhraseTyped }}<span style="display:inline-block;width:6px;height:12px;vertical-align:-1px;background:#f0b429;margin-left:2px"></span></div>
+              </div>
+            </sc-if>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:15px">
+              <sc-for list="{{ permButtons }}" as="b" hint-placeholder-count="3">
+                <button type="button" onClick="{{ b.run }}" style="padding:9px 13px;border:1px solid {{ b.border }};border-radius:7px;background:{{ b.bg }};color:{{ b.color }};font:500 12px/1 'JetBrains Mono',monospace;cursor:pointer" style-hover="border-color:#5ad3e6">{{ b.label }}</button>
+              </sc-for>
+            </div>
+            <div style="margin-top:13px;padding-top:12px;border-top:1px solid #1b2027;font:400 11px/1.6 'JetBrains Mono',monospace;color:{{ permResultTone }};min-height:36px">{{ permResult }}</div>
+          </div>
+        </div>
+
+        <div style="min-width:0;display:flex;flex-direction:column;gap:12px">
+          <div style="border:1px solid #232830;border-radius:10px;background:#12151a;overflow:hidden">
+            <div style="padding:13px 16px;border-bottom:1px solid #1b2027;font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#98a0ac">Escalation ladder</div>
+            <div style="display:grid;grid-template-columns:1fr;gap:1px;background:#1b2027">
+              <div style="background:#12151a;padding:12px 16px;display:flex;gap:12px;align-items:flex-start"><span style="font:500 11px/1.5 'JetBrains Mono',monospace;color:#b8e04a;flex:0 0 auto;min-width:88px;white-space:nowrap">read only</span><span style="font-size:13px;line-height:1.55;color:#98a0ac">One click. <code style="font-family:'JetBrains Mono',monospace;color:#d5dae1">ls</code>, <code style="font-family:'JetBrains Mono',monospace;color:#d5dae1">git status</code>, <code style="font-family:'JetBrains Mono',monospace;color:#d5dae1">lsof</code>. “Allow similar” can cover the class for this session.</span></div>
+              <div style="background:#12151a;padding:12px 16px;display:flex;gap:12px;align-items:flex-start"><span style="font:500 11px/1.5 'JetBrains Mono',monospace;color:#f0b429;flex:0 0 auto;min-width:88px;white-space:nowrap">writes</span><span style="font-size:13px;line-height:1.55;color:#98a0ac">Run once only, with the target paths listed. Never covered by a session grant.</span></div>
+              <div style="background:#12151a;padding:12px 16px;display:flex;gap:12px;align-items:flex-start"><span style="font:500 11px/1.5 'JetBrains Mono',monospace;color:#ff6b5e;flex:0 0 auto;min-width:88px;white-space:nowrap">delete&nbsp;/&nbsp;sudo</span><span style="font-size:13px;line-height:1.55;color:#98a0ac">Typed confirmation, an explicit diff of what disappears, and a five second hold before the button arms.</span></div>
+              <div style="background:#12151a;padding:12px 16px;display:flex;gap:12px;align-items:flex-start"><span style="font:500 11px/1.5 'JetBrains Mono',monospace;color:#ff6b5e;flex:0 0 auto;min-width:88px;white-space:nowrap">production</span><span style="font-size:13px;line-height:1.55;color:#98a0ac">Environment badge turns coral, the window gains a border, and the environment name must be typed.</span></div>
+              <div style="background:#12151a;padding:12px 16px;display:flex;gap:12px;align-items:flex-start"><span style="font:500 11px/1.5 'JetBrains Mono',monospace;color:#98a0ac;flex:0 0 auto;min-width:88px;white-space:nowrap">unknown</span><span style="font-size:13px;line-height:1.55;color:#98a0ac">Anything the classifier can't place is treated as a write: single run, no session grant, full argument breakdown shown.</span></div>
+            </div>
+          </div>
+          <div style="border:1px solid #232830;border-radius:10px;background:#0f1216;padding:16px;font-size:13px;line-height:1.6;color:#98a0ac">
+            Grants are per session, per project, and revocable from the permissions inspector. Nothing persists to the next launch unless you pin it.
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="features" style="padding:clamp(56px,7vw,104px) clamp(20px,5vw,64px);border-bottom:1px solid #1b2027">
+    <div style="max-width:1180px;margin:0 auto">
+      <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#ff6b5e"><span>&#10095;</span>Explain / fix this failure</div>
+      <h2 style="font:500 clamp(26px,3.1vw,40px)/1.15 -apple-system,system-ui,sans-serif;letter-spacing:-.025em;margin:14px 0 0">A failure comes with its own evidence.</h2>
+      <p style="color:#98a0ac;font-size:clamp(15px,1.3vw,17px);line-height:1.6;max-width:64ch;margin:12px 0 0">The assistant receives exactly what you see below, nothing more. The repair it proposes is a proposal, subject to the same permission ladder.</p>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:clamp(20px,2.6vw,34px);margin-top:26px;align-items:start">
+        <div style="border:1px solid #232830;border-left:2px solid #ff6b5e;border-radius:10px;background:#12151a;overflow:hidden;min-width:0">
+          <div style="display:flex;align-items:center;gap:8px;padding:12px 15px;border-bottom:1px solid #1b2027">
+            <span style="font:700 12px/1 'JetBrains Mono',monospace;color:#ff6b5e">&#10095;</span>
+            <code style="font:500 12.5px/1.4 'JetBrains Mono',monospace;color:#ecedef;word-break:break-all">alembic upgrade head</code>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:12px;padding:10px 15px;border-bottom:1px solid #1b2027;font:400 10.5px/1 'JetBrains Mono',monospace;color:#6b7481">
+            <span style="color:#5ad3e6">~/work/api-gateway/db</span><span style="color:#ff6b5e">exit 1</span><span>3.1s</span><span>14:19:04</span><span style="padding:3px 6px;border:1px solid #4a3a1c;border-radius:4px;color:#f0b429">STAGING</span>
+          </div>
+          <pre style="margin:0;padding:13px 15px;background:#0f1216;font:400 11.5px/1.7 'JetBrains Mono',monospace;color:#98a0ac;white-space:pre-wrap;word-break:break-word">sqlalchemy.exc.ProgrammingError:
+(psycopg2.errors.DuplicateTable) relation
+"orders_idx_created" already exists
+
+[SQL: CREATE INDEX orders_idx_created ON orders (created_at)]
+alembic revision: 4f2ab91c7d10 (head 4f2ab91c7d10)</pre>
+          <div style="padding:12px 15px;border-top:1px solid #1b2027;display:flex;flex-wrap:wrap;gap:8px">
+            <button type="button" onClick="{{ toggleFix }}" style="padding:8px 12px;border:1px solid #5ad3e6;border-radius:7px;background:rgba(90,211,230,.08);color:#c8f4fc;font:500 11.5px/1 'JetBrains Mono',monospace;cursor:pointer" style-hover="background:rgba(90,211,230,.18)">{{ fixLabel }}</button>
+            <span style="padding:8px 12px;border:1px solid #2a3039;border-radius:7px;background:#161a20;color:#98a0ac;font:400 11.5px/1 'JetBrains Mono',monospace">Copy output</span>
+          </div>
+        </div>
+
+        <sc-if value="{{ fixOpen }}" hint-placeholder-val="{{ true }}">
+          <div style="border:1px solid #26313c;border-radius:10px;background:#0f1216;min-width:0;overflow:hidden">
+            <div style="padding:12px 15px;border-bottom:1px solid #1b2027;display:flex;align-items:center;gap:9px">
+              <span style="font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#5ad3e6">Diagnosis</span>
+              <span style="margin-left:auto;font:400 10.5px/1 'JetBrains Mono',monospace;color:#6b7481">context: 1 block &middot; 0 files</span>
+            </div>
+            <div style="padding:15px;font-size:13.5px;line-height:1.65;color:#b6bdc7">
+              Revision <code style="font-family:'JetBrains Mono',monospace;color:#5ad3e6">4f2ab91c7d10</code> creates an index that already exists on staging. It was applied manually at 09:41 by <code style="font-family:'JetBrains Mono',monospace;color:#d5dae1">psql -f hotfix.sql</code>, recorded in this database. Alembic's version table was never advanced, so the migration replays.
+              <div style="margin-top:14px;font:400 9.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#7e8795">Proposed repair</div>
+              <pre style="margin:8px 0 0;padding:11px 12px;border:1px dashed #2c3946;border-radius:7px;background:#0c0e11;font:500 12px/1.7 'JetBrains Mono',monospace;color:#ecedef;white-space:pre-wrap">alembic stamp 4f2ab91c7d10
+alembic current</pre>
+              <p style="margin:11px 0 0;font-size:12.5px;line-height:1.6;color:#98a0ac">Marks the revision applied without running its DDL again, then verifies. <span style="color:#f0b429">This one writes, on STAGING</span>, so it is offered as a single run, with the version table row shown before and after.</p>
+              <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:14px">
+                <span style="padding:8px 12px;border:1px solid #2a3039;border-radius:7px;background:#161a20;color:#d5dae1;font:500 11.5px/1 'JetBrains Mono',monospace">Paste</span>
+                <span style="padding:8px 12px;border:1px solid #4a3a1c;border-radius:7px;background:rgba(240,180,41,.07);color:#ffd987;font:500 11.5px/1 'JetBrains Mono',monospace">Run once (confirm)</span>
+                <span style="padding:8px 12px;border:1px solid #232830;border-radius:7px;color:#7e8795;font:500 11.5px/1 'JetBrains Mono',monospace">Allow similar (unavailable)</span>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+      </div>
+    </div>
+  </section>
+
+  <section style="padding:clamp(56px,7vw,104px) clamp(20px,5vw,64px);border-bottom:1px solid #1b2027;background:#0e1115">
+    <div style="max-width:1180px;margin:0 auto">
+      <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#5ad3e6"><span>&#10095;</span>The local database</div>
+      <h2 style="font:500 clamp(26px,3.1vw,40px)/1.15 -apple-system,system-ui,sans-serif;letter-spacing:-.025em;margin:14px 0 0">Search what you ran, not what you remember.</h2>
+      <p style="color:#98a0ac;font-size:clamp(15px,1.3vw,17px);line-height:1.6;max-width:64ch;margin:12px 0 0">Filter by command, path, environment or outcome. Context chips show exactly which records would travel with a question. Secrets are redacted at write time, before they hit disk.</p>
+
+      <div style="border:1px solid #232830;border-radius:11px;background:#12151a;margin-top:26px;overflow:hidden;box-shadow:0 30px 60px -40px rgba(0,0,0,.9)">
+        <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;padding:13px 15px;border-bottom:1px solid #1b2027;background:#141821">
+          <div style="display:flex;align-items:center;gap:9px;flex:1 1 240px;min-width:0;padding:9px 12px;border:1px solid #2a3039;border-radius:8px;background:#0f1216">
+            <span style="font:700 11px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>
+            <input type="search" value="{{ query }}" onInput="{{ onQuery }}" placeholder="exit:1 env:staging migrate" aria-label="Search the terminal database" style="flex:1;min-width:0;border:0;outline:0;background:transparent;font:400 12.5px/1 'JetBrains Mono',monospace;color:#ecedef">
+            <span style="font:400 10px/1 'JetBrains Mono',monospace;color:#7e8795">&#8984;K</span>
+          </div>
+          <button type="button" onClick="{{ togglePriv }}" aria-pressed="{{ priv }}" style="display:inline-flex;align-items:center;gap:8px;padding:9px 12px;border:1px solid {{ privBorder }};border-radius:8px;background:{{ privBg }};color:{{ privColor }};font:500 11.5px/1 'JetBrains Mono',monospace;cursor:pointer" style-hover="border-color:#3b444f">
+            <span style="width:7px;height:7px;border-radius:50%;background:{{ privDot }}"></span>{{ privLabel }}
+          </button>
+          <button type="button" onClick="{{ toggleRedact }}" aria-pressed="{{ redact }}" style="display:inline-flex;align-items:center;gap:8px;padding:9px 12px;border:1px solid {{ redBorder }};border-radius:8px;background:{{ redBg }};color:{{ redColor }};font:500 11.5px/1 'JetBrains Mono',monospace;cursor:pointer" style-hover="border-color:#3b444f">{{ redLabel }}</button>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;padding:11px 15px;border-bottom:1px solid #1b2027;background:#0f1216">
+          <span style="font:400 10px/1.6 'JetBrains Mono',monospace;letter-spacing:.1em;text-transform:uppercase;color:#7e8795;margin-right:4px">Context sent with a question</span>
+          <sc-for list="{{ chips }}" as="c" hint-placeholder-count="3">
+            <span style="display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border:1px solid #26313c;border-radius:5px;background:rgba(90,211,230,.06);font:400 10.5px/1 'JetBrains Mono',monospace;color:#7fd8e7">{{ c.label }}<span style="color:#7e8795">&times;</span></span>
+          </sc-for>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr;gap:1px;background:#1b2027">
+          <sc-for list="{{ results }}" as="r" hint-placeholder-count="4">
+            <div style="background:#12151a;padding:12px 15px;display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;align-items:center" style-hover="background:#141921">
+              <div style="min-width:0">
+                <div style="display:flex;align-items:center;gap:8px;font:500 12.5px/1.4 'JetBrains Mono',monospace"><span style="color:{{ r.tone }}">&#10095;</span><span style="color:#ecedef;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.cmd }}</span></div>
+                <div style="margin-top:5px;font:400 10.5px/1.4 'JetBrains Mono',monospace;color:#5ad3e6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.path }}</div>
+              </div>
+              <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;font:400 10.5px/1 'JetBrains Mono',monospace;color:#6b7481">
+                <span style="padding:3px 6px;border:1px solid #232830;border-radius:4px;color:{{ r.envTone }}">{{ r.env }}</span>
+                <span style="color:{{ r.tone }}">{{ r.exit }}</span><span>{{ r.dur }}</span><span>{{ r.when }}</span>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+        <sc-if value="{{ noResults }}" hint-placeholder-val="{{ false }}">
+          <div style="padding:22px 15px;text-align:center;font:400 12px/1.6 'JetBrains Mono',monospace;color:#6b7481">No records match <span style="color:#ecedef">{{ query }}</span>. Try <span style="color:#5ad3e6">exit:1</span> or drop a filter.</div>
+        </sc-if>
+        <div style="padding:11px 15px;border-top:1px solid #1b2027;background:#0e1115;font:400 10.5px/1.6 'JetBrains Mono',monospace;color:#7e8795">{{ dbFooter }}</div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;margin-top:18px">
+        <div style="border:1px solid #232830;border-radius:10px;background:#12151a;padding:16px"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#5ad3e6">Private session</div><p style="margin:9px 0 0;font-size:13px;line-height:1.6;color:#98a0ac">Nothing is written to the database. The window keeps a dim cyan hairline so you always know which mode you're in.</p></div>
+        <div style="border:1px solid #232830;border-radius:10px;background:#12151a;padding:16px"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#f0b429">Secret redaction</div><p style="margin:9px 0 0;font-size:13px;line-height:1.6;color:#98a0ac">Tokens, keys, connection strings and <code style="font-family:'JetBrains Mono',monospace">.env</code> values are masked before storage. Patterns are editable and additive.</p></div>
+        <div style="border:1px solid #232830;border-radius:10px;background:#12151a;padding:16px"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#b8e04a">Explicit context</div><p style="margin:9px 0 0;font-size:13px;line-height:1.6;color:#98a0ac">Chips are the whole payload. Remove one and it is not sent. There is no hidden background collection.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section style="padding:clamp(56px,7vw,104px) clamp(20px,5vw,64px);border-bottom:1px solid #1b2027">
+    <div style="max-width:1180px;margin:0 auto">
+      <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#b8e04a"><span>&#10095;</span>Project aware work</div>
+      <h2 style="font:500 clamp(26px,3.1vw,40px)/1.15 -apple-system,system-ui,sans-serif;letter-spacing:-.025em;margin:14px 0 0">Built for the whole loop, not just the prompt.</h2>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(272px,1fr));gap:14px;margin-top:28px">
+        <div style="border:1px solid #232830;border-radius:10px;background:#12151a;padding:18px;display:flex;flex-direction:column;gap:12px">
+          <h3 style="margin:0;font:500 15px/1.3 -apple-system,system-ui,sans-serif">Coding tools with a paper trail</h3>
+          <p style="margin:0;font-size:13px;line-height:1.6;color:#98a0ac">Edits arrive as reviewable diffs. Run the project's tests from the same pane, and revert the whole change set in one action if they fail.</p>
+          <div style="border:1px solid #1b2027;border-radius:8px;background:#0f1216;overflow:hidden;font:400 11px/1.7 'JetBrains Mono',monospace">
+            <div style="padding:6px 10px;border-bottom:1px solid #1b2027;color:#6b7481">src/gateway/ports.ts</div>
+            <div style="padding:6px 10px;color:#c58a84;background:rgba(255,107,94,.06)">- const PORT = 8080</div>
+            <div style="padding:6px 10px;color:#a8c95f;background:rgba(184,224,74,.06)">+ const PORT = Number(env.PORT ?? 8081)</div>
+            <div style="padding:6px 10px;border-top:1px solid #1b2027;color:#98a0ac"><span style="color:#b8e04a">&#10003;</span> 148 passed &nbsp;<span style="color:#6b7481">&middot; revert available</span></div>
+          </div>
+        </div>
+        <div style="border:1px solid #232830;border-radius:10px;background:#12151a;padding:18px;display:flex;flex-direction:column;gap:12px">
+          <h3 style="margin:0;font:500 15px/1.3 -apple-system,system-ui,sans-serif">Environment badges</h3>
+          <p style="margin:0;font-size:13px;line-height:1.6;color:#98a0ac">Each tab is labelled from your shell, host and profile. The badge colour follows you into every proposal and confirmation.</p>
+          <div style="display:flex;flex-wrap:wrap;gap:8px">
+            <span style="padding:6px 10px;border:1px solid #2f4a20;border-radius:6px;background:rgba(184,224,74,.07);font:500 11px/1 'JetBrains Mono',monospace;color:#b8e04a">LOCAL</span>
+            <span style="padding:6px 10px;border:1px solid #4a3a1c;border-radius:6px;background:rgba(240,180,41,.07);font:500 11px/1 'JetBrains Mono',monospace;color:#f0b429">STAGING</span>
+            <span style="padding:6px 10px;border:1px solid #55251f;border-radius:6px;background:rgba(255,107,94,.08);font:500 11px/1 'JetBrains Mono',monospace;color:#ff6b5e">PRODUCTION</span>
+          </div>
+        </div>
+        <div style="border:1px solid #232830;border-radius:10px;background:#12151a;padding:18px;display:flex;flex-direction:column;gap:12px">
+          <h3 style="margin:0;font:500 15px/1.3 -apple-system,system-ui,sans-serif">Monitored long runs</h3>
+          <p style="margin:0;font-size:13px;line-height:1.6;color:#98a0ac">Builds, syncs and deploys keep a live block with elapsed time and a native notification on exit, even when the window is behind another app.</p>
+          <div style="border:1px solid #1b2027;border-radius:8px;background:#0f1216;padding:11px;font:400 11px/1.6 'JetBrains Mono',monospace;color:#98a0ac">
+            <div style="display:flex;justify-content:space-between;gap:10px"><span style="color:#ecedef">xcodebuild archive</span><span style="color:#f0b429">04:12 elapsed</span></div>
+            <div style="margin-top:8px;height:4px;border-radius:2px;background:#1b2027;overflow:hidden"><span style="display:block;width:64%;height:100%;background:linear-gradient(90deg,#5ad3e6,#b8e04a)"></span></div>
+          </div>
+        </div>
+        <div style="border:1px solid #232830;border-radius:10px;background:#12151a;padding:18px;display:flex;flex-direction:column;gap:12px">
+          <h3 style="margin:0;font:500 15px/1.3 -apple-system,system-ui,sans-serif">Runbooks</h3>
+          <p style="margin:0;font-size:13px;line-height:1.6;color:#98a0ac">Promote a sequence of blocks that worked into a named, parameterised runbook. It replays step by step, pausing at any step that writes.</p>
+          <div style="font:400 11px/1.8 'JetBrains Mono',monospace;color:#98a0ac">
+            <div><span style="color:#5ad3e6">1.</span> reset-local-db &nbsp;<span style="color:#7e8795">3 steps</span></div>
+            <div><span style="color:#5ad3e6">2.</span> rotate-staging-keys &nbsp;<span style="color:#f0b429">2 confirmations</span></div>
+          </div>
+        </div>
+        <div style="border:1px solid #232830;border-radius:10px;background:#12151a;padding:18px;display:flex;flex-direction:column;gap:12px">
+          <h3 style="margin:0;font:500 15px/1.3 -apple-system,system-ui,sans-serif">Restorable workspaces</h3>
+          <p style="margin:0;font-size:13px;line-height:1.6;color:#98a0ac">Tabs, directories, environments, scrollback and the AI thread come back exactly as you left them, per project and across restarts.</p>
+          <div style="font:400 11px/1.8 'JetBrains Mono',monospace;color:#6b7481"><span style="color:#b8e04a">&#10003;</span> api-gateway &middot; 3 tabs &middot; restored 09:02</div>
+        </div>
+        <div style="border:1px solid #232830;border-radius:10px;background:#12151a;padding:18px;display:flex;flex-direction:column;gap:12px">
+          <h3 style="margin:0;font:500 15px/1.3 -apple-system,system-ui,sans-serif">Native, not a web wrapper</h3>
+          <p style="margin:0;font-size:13px;line-height:1.6;color:#98a0ac">A real macOS app: system menus, Services, search in the style of Spotlight, full keyboard control, and window restoration on relaunch.</p>
+          <div style="font:400 11px/1.8 'JetBrains Mono',monospace;color:#6b7481">&#8984;K search &middot; &#8984;&#8679;A ask &middot; &#8984;&#8617; rerun</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section style="padding:clamp(56px,7vw,104px) clamp(20px,5vw,64px);border-bottom:1px solid #1b2027;background:#0e1115">
+    <div style="max-width:1180px;margin:0 auto">
+      <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#5ad3e6"><span>&#10095;</span>Claude integration</div>
+      <h2 style="font:500 clamp(26px,3.1vw,40px)/1.15 -apple-system,system-ui,sans-serif;letter-spacing:-.025em;margin:14px 0 0">Two independent ways to power AI.</h2>
+      <p style="color:#98a0ac;font-size:clamp(15px,1.3vw,17px);line-height:1.6;max-width:66ch;margin:12px 0 0">Sign in with a Claude subscription, or supply an Anthropic API key. They are separate connections: if both exist you choose which one answers, and subscription account management, terminal sessions and usage tracking carry on either way. See <a href="#claude-accounts">Claude account management</a> for per tab switching.</p>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-top:26px">
+        <sc-for list="{{ providers }}" as="p" hint-placeholder-count="2">
+          <div style="border:1px solid {{ p.border }};border-radius:11px;background:#12151a;padding:18px;display:flex;flex-direction:column;gap:12px;min-width:0">
+            <div style="display:flex;align-items:center;gap:10px">
+              <span style="width:8px;height:8px;border-radius:50%;background:{{ p.dot }}"></span>
+              <h3 style="margin:0;font:500 15px/1.3 -apple-system,system-ui,sans-serif">{{ p.title }}</h3>
+              <span style="margin-left:auto;font:400 10px/1 'JetBrains Mono',monospace;letter-spacing:.08em;text-transform:uppercase;color:{{ p.stateTone }}">{{ p.state }}</span>
+            </div>
+            <p style="margin:0;font-size:13px;line-height:1.6;color:#98a0ac">{{ p.body }}</p>
+            <div style="font:400 11px/1.7 'JetBrains Mono',monospace;color:#6b7481">{{ p.meta }}</div>
+            <button type="button" onClick="{{ p.select }}" aria-pressed="{{ p.active }}" style="margin-top:auto;padding:9px 13px;border:1px solid {{ p.btnBorder }};border-radius:8px;background:{{ p.btnBg }};color:{{ p.btnColor }};font:500 11.5px/1 'JetBrains Mono',monospace;cursor:pointer;text-align:left" style-hover="border-color:#5ad3e6">{{ p.btnLabel }}</button>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px;margin-top:14px;align-items:start">
+        <div style="border:1px solid #232830;border-radius:11px;background:#12151a;overflow:hidden;min-width:0">
+          <div style="display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid #1b2027">
+            <span style="font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#98a0ac">Claude accounts</span>
+            <span style="margin-left:auto;font:400 10.5px/1 'JetBrains Mono',monospace;color:#7e8795">3 signed in</span>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr;gap:1px;background:#1b2027">
+            <sc-for list="{{ accounts }}" as="a" hint-placeholder-count="3">
+              <button type="button" onClick="{{ a.select }}" aria-pressed="{{ a.active }}" style="display:flex;align-items:center;gap:11px;width:100%;padding:13px 16px;border:0;border-left:2px solid {{ a.mark }};background:{{ a.bg }};color:#ecedef;text-align:left;cursor:pointer;font:inherit" style-hover="background:#161b22">
+                <span style="display:grid;place-items:center;width:26px;height:26px;border:1px solid #2a3039;border-radius:6px;background:#0f1216;font:500 11px/1 'JetBrains Mono',monospace;color:#5ad3e6">{{ a.initials }}</span>
+                <span style="min-width:0">
+                  <span style="display:block;font:400 12px/1.4 'JetBrains Mono',monospace;color:#ecedef;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ a.email }}</span>
+                  <span style="display:block;margin-top:3px;font:400 10.5px/1 'JetBrains Mono',monospace;color:#6b7481">{{ a.plan }}</span>
+                </span>
+                <span style="margin-left:auto;font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.08em;text-transform:uppercase;color:{{ a.tagTone }}">{{ a.tag }}</span>
+              </button>
+            </sc-for>
+          </div>
+          <div style="padding:12px 16px;border-top:1px solid #1b2027;background:#0e1115;display:flex;flex-wrap:wrap;gap:8px">
+            <span style="padding:7px 11px;border:1px solid #2a3039;border-radius:7px;font:500 11px/1 'JetBrains Mono',monospace;color:#b6bdc7">Add account</span>
+            <span style="padding:7px 11px;border:1px solid #2a3039;border-radius:7px;font:500 11px/1 'JetBrains Mono',monospace;color:#b6bdc7">Sign out</span>
+          </div>
+        </div>
+
+        <div style="border:1px solid #232830;border-radius:11px;background:#12151a;overflow:hidden;min-width:0">
+          <div style="display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid #1b2027">
+            <span style="font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#98a0ac">Usage for {{ activeEmail }}</span>
+          </div>
+          <div style="padding:6px 16px 14px">
+            <sc-for list="{{ usage }}" as="u" hint-placeholder-count="3">
+              <div style="padding:12px 0;border-bottom:1px solid #1b2027">
+                <div style="display:flex;align-items:baseline;gap:10px;font:400 11.5px/1.4 'JetBrains Mono',monospace">
+                  <span style="color:#ecedef">{{ u.label }}</span>
+                  <span style="margin-left:auto;color:{{ u.tone }}">{{ u.pctLabel }}</span>
+                </div>
+                <div style="margin-top:8px;height:5px;border-radius:3px;background:#1b2027;overflow:hidden"><span style="display:block;height:100%;width:{{ u.width }};background:{{ u.tone }}"></span></div>
+                <div style="margin-top:7px;font:400 10.5px/1.4 'JetBrains Mono',monospace;color:#6b7481">resets {{ u.reset }}</div>
+              </div>
+            </sc-for>
+            <p style="margin:13px 0 0;font-size:12.5px;line-height:1.6;color:#98a0ac">Windows and limits are read from the account you are signed in to. Switching the active account switches these figures; switching the provider does not sign anyone out.</p>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:14px;padding:14px 16px;border:1px solid #26313c;border-radius:10px;background:rgba(90,211,230,.04);font-size:13px;line-height:1.6;color:#b6bdc7">
+        <strong style="font-weight:500;color:#ecedef">Currently powering AI:</strong> {{ providerSummary }}
+      </div>
+    </div>
+  </section>
+
+  <section id="security" style="padding:clamp(56px,7vw,104px) clamp(20px,5vw,64px);border-bottom:1px solid #1b2027">
+    <div style="max-width:1180px;margin:0 auto">
+      <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#b8e04a"><span>&#10095;</span>Privacy, security, open source</div>
+      <h2 style="font:500 clamp(26px,3.1vw,40px)/1.15 -apple-system,system-ui,sans-serif;letter-spacing:-.025em;margin:14px 0 0">Auditable by design.</h2>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(258px,1fr));gap:1px;margin-top:28px;background:#1b2027;border:1px solid #232830;border-radius:11px;overflow:hidden">
+        <div style="background:#12151a;padding:20px"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#5ad3e6">History stays local</div><p style="margin:10px 0 0;font-size:13px;line-height:1.6;color:#98a0ac">The database is a file in your home directory. No account is required to use the terminal, and history never leaves the machine on its own.</p></div>
+        <div style="background:#12151a;padding:20px"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#5ad3e6">Explicit context</div><p style="margin:10px 0 0;font-size:13px;line-height:1.6;color:#98a0ac">Only the chips attached to a question are transmitted, to the provider you selected. The payload is inspectable before it is sent.</p></div>
+        <div style="background:#12151a;padding:20px"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#5ad3e6">Permission controls</div><p style="margin:10px 0 0;font-size:13px;line-height:1.6;color:#98a0ac">No command written by the AI runs without a grant. Grants are scoped, listed, and revocable at any time.</p></div>
+        <div style="background:#12151a;padding:20px"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#5ad3e6">Secret redaction</div><p style="margin:10px 0 0;font-size:13px;line-height:1.6;color:#98a0ac">Matching values are masked before the record is stored, so redaction protects the database as well as the request.</p></div>
+        <div style="background:#12151a;padding:20px"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#5ad3e6">MIT license</div><p style="margin:10px 0 0;font-size:13px;line-height:1.6;color:#98a0ac">Use it, fork it, ship it. The full source tree, build scripts and release workflow are public.</p></div>
+        <div style="background:#12151a;padding:20px"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#5ad3e6">No analytics by default</div><p style="margin:10px 0 0;font-size:13px;line-height:1.6;color:#98a0ac">There is no telemetry in the shipped build. Crash reporting is opt in and states what it sends.</p></div>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:16px">
+        <a href="https://github.com/danb235/TerminalDB/blob/main/SECURITY.md" style="padding:9px 13px;border:1px solid #2a3039;border-radius:8px;background:#12151a;font:500 11.5px/1 'JetBrains Mono',monospace;color:#d5dae1;text-decoration:none" style-hover="border-color:#5ad3e6;text-decoration:none">Report a vulnerability</a>
+        <a href="https://github.com/danb235/TerminalDB/blob/main/docs/threat-model.md" style="padding:9px 13px;border:1px solid #2a3039;border-radius:8px;background:#12151a;font:500 11.5px/1 'JetBrains Mono',monospace;color:#d5dae1;text-decoration:none" style-hover="border-color:#5ad3e6;text-decoration:none">Threat model</a>
+        <a href="https://github.com/danb235/TerminalDB/blob/main/LICENSE" style="padding:9px 13px;border:1px solid #2a3039;border-radius:8px;background:#12151a;font:500 11.5px/1 'JetBrains Mono',monospace;color:#d5dae1;text-decoration:none" style-hover="border-color:#5ad3e6;text-decoration:none">MIT license</a>
+      </div>
+    </div>
+  </section>
+
+  <section id="download" style="padding:clamp(56px,7vw,104px) clamp(20px,5vw,64px);border-bottom:1px solid #1b2027;background:#0e1115">
+    <div style="max-width:1180px;margin:0 auto">
+      <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#5ad3e6"><span>&#10095;</span>Download &amp; install</div>
+      <h2 style="font:500 clamp(26px,3.1vw,40px)/1.15 -apple-system,system-ui,sans-serif;letter-spacing:-.025em;margin:14px 0 0">One build. Both architectures.</h2>
+      <p style="color:#98a0ac;font-size:clamp(15px,1.3vw,17px);line-height:1.6;max-width:62ch;margin:12px 0 0">The download always points at the latest asset on GitHub Releases, so it stays valid whatever the final domain turns out to be.</p>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:clamp(18px,2.4vw,30px);margin-top:26px;align-items:start">
+        <div style="border:1px solid {{ dlBorder }};border-radius:11px;background:#12151a;overflow:hidden;min-width:0;box-shadow:0 30px 60px -40px rgba(0,0,0,.9)">
+          <div style="display:flex;align-items:center;gap:9px;padding:13px 16px;border-bottom:1px solid #1b2027;background:{{ dlHeadBg }}">
+            <span style="font:700 12px/1 'JetBrains Mono',monospace;color:{{ dlTone }}">{{ dlGlyph }}</span>
+            <span style="font:500 12.5px/1 -apple-system,system-ui,sans-serif;color:#ecedef">{{ dlTitle }}</span>
+            <span style="margin-left:auto;font:400 10.5px/1 'JetBrains Mono',monospace;color:#6b7481">{{ dlMeta }}</span>
+          </div>
+          <div style="padding:17px">
+            <p style="margin:0;font-size:13.5px;line-height:1.65;color:#98a0ac">{{ dlBody }}</p>
+            <div style="display:flex;flex-wrap:wrap;gap:9px;margin-top:15px">
+              <a href="{{ dlHref }}" aria-disabled="{{ dlDisabled }}" style="display:inline-flex;align-items:center;gap:8px;padding:12px 17px;border:1px solid {{ dlCtaBorder }};border-radius:8px;background:{{ dlCtaBg }};color:{{ dlCtaColor }};font:500 13.5px/1 -apple-system,system-ui,sans-serif;text-decoration:none" style-hover="text-decoration:none;filter:brightness(1.15)">{{ dlCta }}</a>
+              <a href="https://github.com/danb235/TerminalDB/releases" style="display:inline-flex;align-items:center;gap:8px;padding:12px 17px;border:1px solid #2a3039;border-radius:8px;background:#161a20;color:#d5dae1;font:500 13.5px/1 -apple-system,system-ui,sans-serif;text-decoration:none" style-hover="border-color:#3b444f;text-decoration:none">{{ dlAlt }}</a>
+            </div>
+            <div style="margin-top:16px;padding-top:14px;border-top:1px solid #1b2027;display:flex;flex-wrap:wrap;gap:8px">
+              <sc-for list="{{ dlStates }}" as="s" hint-placeholder-count="5">
+                <button type="button" onClick="{{ s.select }}" aria-pressed="{{ s.active }}" style="padding:7px 10px;border:1px solid {{ s.border }};border-radius:6px;background:{{ s.bg }};color:{{ s.color }};font:500 10.5px/1 'JetBrains Mono',monospace;cursor:pointer" style-hover="border-color:#3b444f">{{ s.label }}</button>
+              </sc-for>
+            </div>
+            <p style="margin:10px 0 0;font:400 10.5px/1.6 'JetBrains Mono',monospace;color:#7e8795">Preview the states this page can render. In production the state is resolved from the releases feed at build time, then checked again in the browser only if JavaScript is available.</p>
+          </div>
+        </div>
+
+        <div style="min-width:0;display:flex;flex-direction:column;gap:14px">
+          <div style="border:1px solid #232830;border-radius:10px;background:#12151a;overflow:hidden">
+            <div style="padding:12px 16px;border-bottom:1px solid #1b2027;font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#98a0ac">Requirements</div>
+            <div style="display:grid;grid-template-columns:1fr;gap:1px;background:#1b2027">
+              <div style="background:#12151a;padding:11px 16px;display:flex;gap:12px;font:400 11.5px/1.5 'JetBrains Mono',monospace"><span style="color:#7e8795;min-width:92px">macOS</span><span style="color:#d5dae1">13.0 Ventura or later</span></div>
+              <div style="background:#12151a;padding:11px 16px;display:flex;gap:12px;font:400 11.5px/1.5 'JetBrains Mono',monospace"><span style="color:#7e8795;min-width:92px">Architecture</span><span style="color:#d5dae1">Universal, Apple Silicon and Intel</span></div>
+              <div style="background:#12151a;padding:11px 16px;display:flex;gap:12px;font:400 11.5px/1.5 'JetBrains Mono',monospace"><span style="color:#7e8795;min-width:92px">Shells</span><span style="color:#d5dae1">zsh, bash, fish</span></div>
+              <div style="background:#12151a;padding:11px 16px;display:flex;gap:12px;font:400 11.5px/1.5 'JetBrains Mono',monospace"><span style="color:#7e8795;min-width:92px">Updates</span><span style="color:#d5dae1">automatic, in app, signed</span></div>
+            </div>
+          </div>
+          <div style="border:1px solid #232830;border-radius:10px;background:#0f1216;padding:16px">
+            <div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#7e8795">Verify the download</div>
+            <pre style="margin:11px 0 0;font:400 11px/1.8 'JetBrains Mono',monospace;color:#98a0ac;white-space:pre-wrap;overflow-wrap:anywhere"><span style="color:#5ad3e6">&#10095;</span><span> shasum -a 256 TerminalDB-macOS.zip
+</span><span style="color:#8b939f">4f2ab91c7d10e8c5&hellip;  TerminalDB-macOS.zip
+</span><span style="color:#5ad3e6">&#10095;</span><span> codesign --verify --deep --strict TerminalDB.app
+</span><span style="color:#b8e04a">&#10003;</span><span> valid on disk &middot; notarized</span></pre>
+            <p style="margin:11px 0 0;font-size:12.5px;line-height:1.6;color:#98a0ac">Every release publishes its SHA-256 alongside the asset, plus the signing identity and notarization ticket status.</p>
+          </div>
+          <div style="border:1px solid #232830;border-radius:10px;background:#12151a;padding:16px">
+            <div style="display:flex;align-items:baseline;gap:10px"><span style="font:500 12px/1 'JetBrains Mono',monospace;color:#ecedef">Recent changes on main</span><a href="https://github.com/danb235/TerminalDB/commits/main" style="margin-left:auto;font:400 11px/1 'JetBrains Mono',monospace">commit log &#8599;</a></div>
+            <ul style="margin:11px 0 0;padding:0 0 0 16px;font-size:12.5px;line-height:1.7;color:#98a0ac">
+              <li>Permissions inspector lists active session grants</li>
+              <li>Redaction patterns are now per project</li>
+              <li>Runbooks pause on steps that write</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <sc-if value="{{ showEdgeStates }}" hint-placeholder-val="{{ true }}">
+  <section style="padding:clamp(48px,6vw,84px) clamp(20px,5vw,64px);border-bottom:1px solid #1b2027">
+    <div style="max-width:1180px;margin:0 auto">
+      <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#f0b429"><span>&#10095;</span>Edge states</div>
+      <h2 style="font:500 clamp(24px,2.6vw,34px)/1.2 -apple-system,system-ui,sans-serif;letter-spacing:-.025em;margin:14px 0 0">Designed for the days it doesn't work.</h2>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(276px,1fr));gap:14px;margin-top:24px">
+        <div style="border:1px solid #4a3a1c;border-radius:10px;background:#12151a;padding:16px">
+          <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;color:#f0b429"><span>&#9888;</span>No release available</div>
+          <p style="margin:10px 0 0;font-size:12.5px;line-height:1.6;color:#98a0ac">The button becomes an inert, clearly labelled notice pointing at the source and the build instructions. It is never a dead link.</p>
+        </div>
+        <div style="border:1px solid #4a3a1c;border-radius:10px;background:#12151a;padding:16px">
+          <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;color:#f0b429"><span>&#9888;</span>Unsupported macOS</div>
+          <p style="margin:10px 0 0;font-size:12.5px;line-height:1.6;color:#98a0ac">Detected version is named, the requirement is stated, and the last compatible release is offered instead of a silent failure.</p>
+        </div>
+        <div style="border:1px solid #55251f;border-radius:10px;background:#12151a;padding:16px">
+          <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;color:#ff6b5e"><span>&#10005;</span>Download failed</div>
+          <p style="margin:10px 0 0;font-size:12.5px;line-height:1.6;color:#98a0ac">Retry keeps the same asset URL, with a direct mirror link and the checksum shown so a partial file can be identified.</p>
+        </div>
+        <div style="border:1px solid #2a3039;border-radius:10px;background:#12151a;padding:16px">
+          <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;color:#98a0ac"><span>&#9711;</span>Offline</div>
+          <p style="margin:10px 0 0;font-size:12.5px;line-height:1.6;color:#98a0ac">The page is fully readable without a network. Live release data falls back to the build time snapshot with its date.</p>
+        </div>
+        <div style="border:1px solid #2f4a20;border-radius:10px;background:#12151a;padding:16px">
+          <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;color:#b8e04a"><span>&#10003;</span>Reduced motion</div>
+          <p style="margin:10px 0 0;font-size:12.5px;line-height:1.6;color:#98a0ac">The one animation here (the terminal caret) stops under <code style="font-family:'JetBrains Mono',monospace">prefers-reduced-motion</code>, along with smooth scrolling. Nothing else moves.</p>
+        </div>
+        <div style="border:1px solid #2f4a20;border-radius:10px;background:#12151a;padding:16px">
+          <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;color:#b8e04a"><span>&#10003;</span>Keyboard and no JavaScript</div>
+          <p style="margin:10px 0 0;font-size:12.5px;line-height:1.6;color:#98a0ac">Every control is a real button, link or <code style="font-family:'JetBrains Mono',monospace">&lt;details&gt;</code> with a 2px cyan focus ring. All copy is in the HTML, so the site is crawlable and usable with scripting off.</p>
+        </div>
+      </div>
+
+      <div style="margin-top:26px">
+        <div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#7e8795">Responsive behaviour</div>
+        <div style="display:flex;gap:16px;margin-top:14px;overflow-x:auto;padding-bottom:8px;align-items:flex-start">
+          <div style="flex:0 0 auto;width:400px">
+            <div style="font:400 10px/1 'JetBrains Mono',monospace;color:#6b7481;margin-bottom:7px">DESKTOP 1024 AND UP: two column hero, inline nav</div>
+            <div style="border:1px solid #262c35;border-radius:8px;background:#0f1216;overflow:hidden">
+              <div style="display:flex;align-items:center;gap:6px;padding:7px 9px;border-bottom:1px solid #232830;background:#141821"><span aria-hidden="true" style="width:11px;height:11px;border:1px solid #2c3946;border-radius:3px;background:#12151a;display:flex;align-items:center;justify-content:center;gap:1px;flex:0 0 auto"><span style="font:700 5px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span><span style="display:flex;flex-direction:column;gap:1px"><span style="width:3px;height:1px;background:#8b939f"></span><span style="width:3px;height:1px;background:#8b939f"></span><span style="width:3px;height:1px;background:#b8e04a"></span></span></span><span style="font:600 8px/1 system-ui;color:#ecedef">TerminalDB</span><span style="display:flex;gap:7px;margin-left:8px;font:400 7px/1 system-ui;color:#6b7481"><span>Product</span><span>Features</span><span>Security</span><span>Docs</span><span>GitHub</span></span><span style="margin-left:auto;padding:4px 7px;border:1px solid #5ad3e6;border-radius:4px;font:500 7px/1 system-ui;color:#c8f4fc">Download</span></div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:9px;padding:12px 10px">
+                <div><div style="height:7px;width:88%;border-radius:2px;background:#2c333c"></div><div style="height:7px;width:66%;border-radius:2px;background:#2c333c;margin-top:5px"></div><div style="height:4px;width:96%;border-radius:2px;background:#1e242b;margin-top:9px"></div><div style="height:4px;width:82%;border-radius:2px;background:#1e242b;margin-top:4px"></div><div style="display:flex;gap:5px;margin-top:9px"><span style="width:52px;height:12px;border-radius:3px;border:1px solid #2f5b66;background:rgba(90,211,230,.1)"></span><span style="width:44px;height:12px;border-radius:3px;border:1px solid #2a3039"></span></div></div>
+                <div style="border:1px solid #232830;border-radius:5px;background:#12151a;padding:7px"><div style="height:4px;width:60%;background:#2c333c;border-radius:2px"></div><div style="height:3px;width:44%;background:#1e242b;border-radius:2px;margin-top:5px"></div><div style="height:3px;width:70%;background:#1e242b;border-radius:2px;margin-top:4px"></div><div style="height:3px;width:38%;background:rgba(184,224,74,.5);border-radius:2px;margin-top:6px"></div></div>
+              </div>
+            </div>
+          </div>
+          <div style="flex:0 0 auto;width:300px">
+            <div style="font:400 10px/1 'JetBrains Mono',monospace;color:#6b7481;margin-bottom:7px">TABLET 640 TO 1023: stacked hero, nav wraps</div>
+            <div style="border:1px solid #262c35;border-radius:8px;background:#0f1216;overflow:hidden">
+              <div style="padding:7px 9px;border-bottom:1px solid #232830;background:#141821"><div style="display:flex;align-items:center;gap:6px"><span aria-hidden="true" style="width:11px;height:11px;border:1px solid #2c3946;border-radius:3px;background:#12151a;display:flex;align-items:center;justify-content:center;gap:1px;flex:0 0 auto"><span style="font:700 5px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span><span style="display:flex;flex-direction:column;gap:1px"><span style="width:3px;height:1px;background:#8b939f"></span><span style="width:3px;height:1px;background:#8b939f"></span><span style="width:3px;height:1px;background:#b8e04a"></span></span></span><span style="font:600 8px/1 system-ui;color:#ecedef">TerminalDB</span><span style="margin-left:auto;padding:4px 7px;border:1px solid #5ad3e6;border-radius:4px;font:500 7px/1 system-ui;color:#c8f4fc">Download</span></div><div style="display:flex;gap:7px;margin-top:6px;font:400 7px/1 system-ui;color:#6b7481"><span>Product</span><span>Features</span><span>Security</span><span>Docs</span><span>GitHub</span></div></div>
+              <div style="padding:12px 10px"><div style="height:7px;width:80%;border-radius:2px;background:#2c333c"></div><div style="height:4px;width:94%;border-radius:2px;background:#1e242b;margin-top:8px"></div><div style="display:flex;gap:5px;margin-top:9px"><span style="width:52px;height:12px;border-radius:3px;border:1px solid #2f5b66;background:rgba(90,211,230,.1)"></span><span style="width:44px;height:12px;border-radius:3px;border:1px solid #2a3039"></span></div><div style="border:1px solid #232830;border-radius:5px;background:#12151a;padding:7px;margin-top:10px"><div style="height:4px;width:60%;background:#2c333c;border-radius:2px"></div><div style="height:3px;width:80%;background:#1e242b;border-radius:2px;margin-top:5px"></div><div style="height:3px;width:40%;background:rgba(184,224,74,.5);border-radius:2px;margin-top:5px"></div></div></div>
+            </div>
+          </div>
+          <div style="flex:0 0 auto;width:190px">
+            <div style="font:400 10px/1 'JetBrains Mono',monospace;color:#6b7481;margin-bottom:7px">MOBILE UNDER 640: single column, sticky CTA</div>
+            <div style="border:1px solid #262c35;border-radius:14px;background:#0f1216;overflow:hidden;padding:5px">
+              <div style="height:4px;width:34px;background:#232830;border-radius:2px;margin:2px auto 5px"></div>
+              <div style="display:flex;align-items:center;gap:5px;padding:6px 7px;border:1px solid #232830;border-radius:6px;background:#141821"><span aria-hidden="true" style="width:11px;height:11px;border:1px solid #2c3946;border-radius:3px;background:#12151a;display:flex;align-items:center;justify-content:center;gap:1px;flex:0 0 auto"><span style="font:700 5px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span><span style="display:flex;flex-direction:column;gap:1px"><span style="width:3px;height:1px;background:#8b939f"></span><span style="width:3px;height:1px;background:#8b939f"></span><span style="width:3px;height:1px;background:#b8e04a"></span></span></span><span style="font:600 8px/1 system-ui;color:#ecedef">TerminalDB</span><span style="margin-left:auto;font:400 9px/1 'JetBrains Mono',monospace;color:#98a0ac">&#9776;</span></div>
+              <div style="padding:9px 3px"><div style="height:6px;width:90%;border-radius:2px;background:#2c333c"></div><div style="height:6px;width:62%;border-radius:2px;background:#2c333c;margin-top:4px"></div><div style="height:3px;width:96%;border-radius:2px;background:#1e242b;margin-top:8px"></div><div style="height:3px;width:78%;border-radius:2px;background:#1e242b;margin-top:3px"></div><div style="border:1px solid #232830;border-radius:5px;background:#12151a;padding:6px;margin-top:9px"><div style="height:3px;width:70%;background:#2c333c;border-radius:2px"></div><div style="height:3px;width:46%;background:rgba(184,224,74,.5);border-radius:2px;margin-top:5px"></div></div></div>
+              <div style="padding:6px;border-top:1px solid #232830;background:#141821"><div style="padding:7px;border:1px solid #5ad3e6;border-radius:5px;background:rgba(90,211,230,.1);text-align:center;font:500 8px/1 system-ui;color:#c8f4fc">Download for macOS</div></div>
+            </div>
+          </div>
+        </div>
+        <p style="margin:12px 0 0;font-size:12.5px;line-height:1.6;color:#98a0ac;max-width:70ch">Layouts are fluid rather than locked to breakpoints. Every grid on this page collapses at its own natural minimum, type scales with the viewport, and the app mockups keep their proportions down to 320px. On phones the primary download persists as a bottom bar.</p>
+      </div>
+    </div>
+  </section>
+  </sc-if>
+
+  <section id="docs" style="padding:clamp(56px,7vw,104px) clamp(20px,5vw,64px);border-bottom:1px solid #1b2027;background:#0e1115">
+    <div style="max-width:1180px;margin:0 auto">
+      <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#5ad3e6"><span>&#10095;</span>Contribute &amp; docs</div>
+      <h2 style="font:500 clamp(26px,3.1vw,40px)/1.15 -apple-system,system-ui,sans-serif;letter-spacing:-.025em;margin:14px 0 0">Build it yourself in four commands.</h2>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:clamp(18px,2.4vw,30px);margin-top:26px;align-items:start">
+        <div style="border:1px solid #232830;border-radius:10px;background:#0f1216;padding:17px;min-width:0">
+          <pre style="margin:0;font:400 12px/1.9 'JetBrains Mono',monospace;color:#d5dae1;white-space:pre-wrap;word-break:break-all"><span style="color:#5ad3e6">&#10095;</span> git clone https://github.com/danb235/TerminalDB.git
+<span style="color:#5ad3e6">&#10095;</span> cd TerminalDB
+<span style="color:#5ad3e6">&#10095;</span> make bootstrap
+<span style="color:#5ad3e6">&#10095;</span> make test && make app</pre>
+          <p style="margin:13px 0 0;font-size:12.5px;line-height:1.6;color:#98a0ac">Xcode 16 and the pinned toolchain are all you need; <code style="font-family:'JetBrains Mono',monospace">make bootstrap</code> fetches the rest and prints what it installed.</p>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr;gap:1px;background:#1b2027;border:1px solid #232830;border-radius:10px;overflow:hidden;min-width:0">
+          <a href="https://github.com/danb235/TerminalDB/blob/main/docs/build.md" style="display:flex;align-items:center;gap:12px;padding:14px 16px;background:#12151a;text-decoration:none" style-hover="background:#161b22;text-decoration:none"><span style="font:500 12px/1 'JetBrains Mono',monospace;color:#ecedef;min-width:132px">Build from source</span><span style="font-size:12.5px;color:#98a0ac">toolchain, targets, signing</span><span style="margin-left:auto;color:#5ad3e6">&#8599;</span></a>
+          <a href="https://github.com/danb235/TerminalDB/blob/main/docs/testing.md" style="display:flex;align-items:center;gap:12px;padding:14px 16px;background:#12151a;text-decoration:none" style-hover="background:#161b22;text-decoration:none"><span style="font:500 12px/1 'JetBrains Mono',monospace;color:#ecedef;min-width:132px">Running tests</span><span style="font-size:12.5px;color:#98a0ac">unit, UI, redaction fixtures</span><span style="margin-left:auto;color:#5ad3e6">&#8599;</span></a>
+          <a href="https://github.com/danb235/TerminalDB/blob/main/docs/architecture.md" style="display:flex;align-items:center;gap:12px;padding:14px 16px;background:#12151a;text-decoration:none" style-hover="background:#161b22;text-decoration:none"><span style="font:500 12px/1 'JetBrains Mono',monospace;color:#ecedef;min-width:132px">Architecture</span><span style="font-size:12.5px;color:#98a0ac">shell bridge, store, AI layer</span><span style="margin-left:auto;color:#5ad3e6">&#8599;</span></a>
+          <a href="https://github.com/danb235/TerminalDB/blob/main/SECURITY.md" style="display:flex;align-items:center;gap:12px;padding:14px 16px;background:#12151a;text-decoration:none" style-hover="background:#161b22;text-decoration:none"><span style="font:500 12px/1 'JetBrains Mono',monospace;color:#ecedef;min-width:132px">Security reporting</span><span style="font-size:12.5px;color:#98a0ac">disclosure process, PGP key</span><span style="margin-left:auto;color:#5ad3e6">&#8599;</span></a>
+          <a href="https://github.com/danb235/TerminalDB/blob/main/docs/roadmap.md" style="display:flex;align-items:center;gap:12px;padding:14px 16px;background:#12151a;text-decoration:none" style-hover="background:#161b22;text-decoration:none"><span style="font:500 12px/1 'JetBrains Mono',monospace;color:#ecedef;min-width:132px">Roadmap</span><span style="font-size:12.5px;color:#98a0ac">open milestones, good first issues</span><span style="margin-left:auto;color:#5ad3e6">&#8599;</span></a>
+          <a href="https://github.com/danb235/TerminalDB/blob/main/CONTRIBUTING.md" style="display:flex;align-items:center;gap:12px;padding:14px 16px;background:#12151a;text-decoration:none" style-hover="background:#161b22;text-decoration:none"><span style="font:500 12px/1 'JetBrains Mono',monospace;color:#ecedef;min-width:132px">Contributing</span><span style="font-size:12.5px;color:#98a0ac">conventions, review, DCO</span><span style="margin-left:auto;color:#5ad3e6">&#8599;</span></a>
+        </div>
+      </div>
+      <div style="margin-top:16px;border:1px solid #232830;border-radius:10px;background:#12151a;padding:16px">
+        <div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#7e8795">Build time tokens</div>
+        <p style="margin:9px 0 0;font-size:12.5px;line-height:1.6;color:#98a0ac;max-width:76ch">Every outbound URL on this page is emitted from a token, so the repository or domain can change without touching markup: <code style="font-family:'JetBrains Mono',monospace;color:#5ad3e6">%%REPO_URL%%</code>, <code style="font-family:'JetBrains Mono',monospace;color:#5ad3e6">%%RELEASE_LATEST_URL%%</code>, <code style="font-family:'JetBrains Mono',monospace;color:#5ad3e6">%%ASSET_ZIP_URL%%</code>, <code style="font-family:'JetBrains Mono',monospace;color:#5ad3e6">%%ASSET_SHA256%%</code>, <code style="font-family:'JetBrains Mono',monospace;color:#5ad3e6">%%DOCS_BASE_URL%%</code>, <code style="font-family:'JetBrains Mono',monospace;color:#5ad3e6">%%SITE_ORIGIN%%</code>. The download target stays a stable concept: <code style="font-family:'JetBrains Mono',monospace;color:#5ad3e6">releases/latest/download/TerminalDB-macOS.zip</code> on GitHub Releases, valid for every future tag.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="faq" style="padding:clamp(56px,7vw,104px) clamp(20px,5vw,64px);border-bottom:1px solid #1b2027">
+    <div style="max-width:900px;margin:0 auto">
+      <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#5ad3e6"><span>&#10095;</span>FAQ</div>
+      <h2 style="font:500 clamp(26px,3.1vw,40px)/1.15 -apple-system,system-ui,sans-serif;letter-spacing:-.025em;margin:14px 0 24px">Questions worth answering plainly.</h2>
+      <div style="display:grid;grid-template-columns:1fr;gap:1px;background:#1b2027;border:1px solid #232830;border-radius:11px;overflow:hidden">
+        <details style="background:#12151a">
+          <summary style="display:flex;align-items:center;gap:12px;padding:16px 18px;cursor:pointer;font:500 14px/1.4 -apple-system,system-ui,sans-serif;color:#ecedef;list-style:none"><span style="font:700 11px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>Do I need an API key, or is a Claude subscription enough?</summary>
+          <div style="padding:0 18px 17px 42px;font-size:13.5px;line-height:1.7;color:#98a0ac">Either works, and they are independent. Sign in with a Claude subscription, paste an Anthropic API key, or set up both. With both configured you pick which one powers AI, and subscription account management stays available regardless of the choice.</div>
+        </details>
+        <details style="background:#12151a">
+          <summary style="display:flex;align-items:center;gap:12px;padding:16px 18px;cursor:pointer;font:500 14px/1.4 -apple-system,system-ui,sans-serif;color:#ecedef;list-style:none"><span style="font:700 11px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>How many Claude accounts can I connect, and how do I switch?</summary>
+          <div style="padding:0 18px 17px 42px;font-size:13.5px;line-height:1.7;color:#98a0ac">As many as you use. There is no artificial limit. Each connected account becomes a profile with its own Claude configuration directory and its own macOS Keychain credential. Open the AI menu, pick a profile, and the current terminal tab switches to it. Other tabs are untouched, and a fresh conversation starts so identity and billing context never cross.</div>
+        </details>
+        <details style="background:#12151a">
+          <summary style="display:flex;align-items:center;gap:12px;padding:16px 18px;cursor:pointer;font:500 14px/1.4 -apple-system,system-ui,sans-serif;color:#ecedef;list-style:none"><span style="font:700 11px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>What happens when I remove a Claude profile?</summary>
+          <div style="padding:0 18px 17px 42px;font-size:13.5px;line-height:1.7;color:#98a0ac">TerminalDB deletes that profile directory and the credential it created for it in the Keychain. Nothing else changes: your Anthropic subscription stays active, billing is not modified, and you can sign in again to recreate the profile at any time.</div>
+        </details>
+        <details style="background:#12151a">
+          <summary style="display:flex;align-items:center;gap:12px;padding:16px 18px;cursor:pointer;font:500 14px/1.4 -apple-system,system-ui,sans-serif;color:#ecedef;list-style:none"><span style="font:700 11px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>What can Claude actually see?</summary>
+          <div style="padding:0 18px 17px 42px;font-size:13.5px;line-height:1.7;color:#98a0ac">Only the context chips attached to the question you send: usually specific command blocks and, if you add them, specific files. Values matching your redaction patterns are already masked in the stored record. Nothing is streamed in the background, and the payload can be inspected before it leaves.</div>
+        </details>
+        <details style="background:#12151a">
+          <summary style="display:flex;align-items:center;gap:12px;padding:16px 18px;cursor:pointer;font:500 14px/1.4 -apple-system,system-ui,sans-serif;color:#ecedef;list-style:none"><span style="font:700 11px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>Can the AI run commands on its own?</summary>
+          <div style="padding:0 18px 17px 42px;font-size:13.5px;line-height:1.7;color:#98a0ac">No. Proposals are inert until you grant them. Read only commands can be allowed as a class for the current session. Writes, deletions, <code style="font-family:'JetBrains Mono',monospace">sudo</code>, production targets and anything unclassified run a single time only and require an explicit confirmation.</div>
+        </details>
+        <details style="background:#12151a">
+          <summary style="display:flex;align-items:center;gap:12px;padding:16px 18px;cursor:pointer;font:500 14px/1.4 -apple-system,system-ui,sans-serif;color:#ecedef;list-style:none"><span style="font:700 11px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>Where does my history live?</summary>
+          <div style="padding:0 18px 17px 42px;font-size:13.5px;line-height:1.7;color:#98a0ac">In a local database under <code style="font-family:'JetBrains Mono',monospace;color:#5ad3e6">~/Library/Application Support/TerminalDB</code>. You can export it, prune it by project or age, or delete it. Private sessions write nothing at all.</div>
+        </details>
+        <details style="background:#12151a">
+          <summary style="display:flex;align-items:center;gap:12px;padding:16px 18px;cursor:pointer;font:500 14px/1.4 -apple-system,system-ui,sans-serif;color:#ecedef;list-style:none"><span style="font:700 11px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>Which shells are supported?</summary>
+          <div style="padding:0 18px 17px 42px;font-size:13.5px;line-height:1.7;color:#98a0ac">zsh, bash and fish, using your existing configuration. Block capture works through a shell integration hook you can read in the source; without it TerminalDB still runs as a plain terminal.</div>
+        </details>
+        <details style="background:#12151a">
+          <summary style="display:flex;align-items:center;gap:12px;padding:16px 18px;cursor:pointer;font:500 14px/1.4 -apple-system,system-ui,sans-serif;color:#ecedef;list-style:none"><span style="font:700 11px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>How do updates work?</summary>
+          <div style="padding:0 18px 17px 42px;font-size:13.5px;line-height:1.7;color:#98a0ac">The app checks GitHub Releases, verifies the signature, and installs on quit, or on demand from the menu. You can switch to manual, or turn checks off entirely and download builds yourself.</div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section style="padding:clamp(52px,6vw,88px) clamp(20px,5vw,64px);background:#0e1115;border-bottom:1px solid #1b2027">
+    <div style="max-width:1180px;margin:0 auto;display:flex;flex-wrap:wrap;gap:24px;align-items:center;justify-content:space-between">
+      <div style="min-width:0">
+        <h2 style="margin:0;font:500 clamp(23px,2.6vw,34px)/1.2 -apple-system,system-ui,sans-serif;letter-spacing:-.025em">Keep the command that worked.</h2>
+        <p style="margin:10px 0 0;font-size:14.5px;line-height:1.6;color:#98a0ac;max-width:56ch">Structured command history, assistance that asks permission, and every Claude account a click away. Install the current build, or read the source first. Both take about a minute.</p>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:11px">
+        <a href="https://github.com/danb235/TerminalDB/releases/latest/download/TerminalDB-macOS.zip" style="display:inline-flex;align-items:center;gap:9px;padding:13px 19px;border:1px solid #5ad3e6;border-radius:9px;background:rgba(90,211,230,.09);color:#d8f8ff;font:500 14px/1 -apple-system,system-ui,sans-serif;text-decoration:none" style-hover="background:rgba(90,211,230,.18);text-decoration:none"><span style="font:700 12px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>Download latest for macOS</a>
+        <a href="https://github.com/danb235/TerminalDB" style="display:inline-flex;align-items:center;gap:9px;padding:13px 19px;border:1px solid #2a3039;border-radius:9px;background:#12151a;color:#ecedef;font:500 14px/1 -apple-system,system-ui,sans-serif;text-decoration:none" style-hover="border-color:#3b444f;text-decoration:none">View source on GitHub</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer style="padding:clamp(40px,5vw,64px) clamp(20px,5vw,64px) 32px">
+  <div style="max-width:1180px;margin:0 auto">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:28px">
+      <div style="min-width:0">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span aria-hidden="true" style="width:24px;height:24px;border:1px solid #2c3946;border-radius:7px;background:#171b21;display:flex;align-items:center;justify-content:center;gap:3px;flex:0 0 auto"><span style="font:700 10px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span><span style="display:flex;flex-direction:column;gap:2px"><span style="width:6px;height:2px;border-radius:1px;background:#8b939f"></span><span style="width:6px;height:2px;border-radius:1px;background:#8b939f"></span><span style="width:6px;height:2px;border-radius:1px;background:#b8e04a"></span></span></span>
+          <span style="font:600 15px/1 system-ui;letter-spacing:-.01em">TerminalDB</span>
+        </div>
+        <p style="margin:12px 0 0;font-size:12.5px;line-height:1.65;color:#6b7481;max-width:34ch">A native macOS terminal that remembers and understands terminal work. MIT licensed.</p>
+      </div>
+      <nav aria-label="Product" style="min-width:0"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#7e8795">Product</div><div style="display:flex;flex-direction:column;gap:9px;margin-top:12px;font-size:13px"><a href="#claude-accounts" style="color:#98a0ac">Claude accounts</a><a href="#product" style="color:#98a0ac">Command blocks</a><a href="#features" style="color:#98a0ac">Explain &amp; fix</a><a href="#features" style="color:#98a0ac">Runbooks</a><a href="#download" style="color:#98a0ac">Download</a></div></nav>
+      <nav aria-label="Resources" style="min-width:0"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#7e8795">Resources</div><div style="display:flex;flex-direction:column;gap:9px;margin-top:12px;font-size:13px"><a href="https://github.com/danb235/TerminalDB/blob/main/docs/architecture.md" style="color:#98a0ac">Docs</a><a href="https://github.com/danb235/TerminalDB/blob/main/docs/build.md" style="color:#98a0ac">Build from source</a><a href="https://github.com/danb235/TerminalDB/releases" style="color:#98a0ac">Releases</a><a href="https://github.com/danb235/TerminalDB/blob/main/docs/roadmap.md" style="color:#98a0ac">Roadmap</a></div></nav>
+      <nav aria-label="Project" style="min-width:0"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#7e8795">Project</div><div style="display:flex;flex-direction:column;gap:9px;margin-top:12px;font-size:13px"><a href="https://github.com/danb235/TerminalDB" style="color:#98a0ac">GitHub</a><a href="https://github.com/danb235/TerminalDB/issues" style="color:#98a0ac">Issues</a><a href="https://github.com/danb235/TerminalDB/blob/main/SECURITY.md" style="color:#98a0ac">Security</a><a href="https://github.com/danb235/TerminalDB/blob/main/LICENSE" style="color:#98a0ac">MIT license</a></div></nav>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;justify-content:space-between;margin-top:32px;padding-top:20px;border-top:1px solid #1b2027;font:400 11.5px/1.6 'JetBrains Mono',monospace;color:#7e8795">
+      <span>&copy; 2026 TerminalDB contributors &middot; MIT</span>
+      <span>No trackers. No analytics by default. Built for macOS 13+.</span>
+    </div>
+  </div>
+</footer>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440},&quot;downloadState&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;ready&quot;,&quot;unsupported&quot;,&quot;failed&quot;,&quot;offline&quot;],&quot;default&quot;:&quot;none&quot;,&quot;tsType&quot;:&quot;'none'|'ready'|'unsupported'|'failed'|'offline'&quot;,&quot;section&quot;:&quot;States&quot;},&quot;defaultProvider&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;subscription&quot;,&quot;api&quot;],&quot;default&quot;:&quot;subscription&quot;,&quot;tsType&quot;:&quot;'subscription'|'api'&quot;,&quot;section&quot;:&quot;States&quot;},&quot;showEdgeStates&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Sections&quot;}}">
+class Component extends DCLogic {
+  state = {
+    blockIdx: 0, actionMsg: 'Select an action to see what it records.',
+    permKind: 'read', permResult: '', permResultTone: '#6b7481',
+    fixOpen: true, query: '', priv: false, redact: true,
+    provider: null, account: 0, dl: null,
+    tab: 0, tabAccounts: [0, 1, 0], switcherOpen: true,
+    acctMsg: 'Pick a profile to see what switching does.', acctMsgTone: '#7e8795'
+  };
+
+  BLOCKS = [
+    { label: 'tests · exit 0', cmd: 'pnpm test --filter api', path: '~/work/api-gateway', host: 'ada-mbp.local', env: 'LOCAL', exit: 'exit 0', dur: '8.42s', time: '2026-07-24 14:02:11', id: 'blk_7f31c9', ok: true,
+      out: '✓ 148 passed · 0 failed · 2 skipped\nCoverage 84.1% (+0.3%)' },
+    { label: 'docker · exit 125', cmd: 'docker compose up gateway', path: '~/work/api-gateway', host: 'ada-mbp.local', env: 'LOCAL', exit: 'exit 125', dur: '1.19s', time: '2026-07-24 14:06:40', id: 'blk_7f3204', ok: false,
+      out: 'Error response from daemon: driver failed programming\nexternal connectivity: bind 0.0.0.0:8080 failed:\naddress already in use' },
+    { label: 'migrate · staging', cmd: 'alembic upgrade head', path: '~/work/api-gateway/db', host: 'ada-mbp.local', env: 'STAGING', exit: 'exit 1', dur: '3.10s', time: '2026-07-24 14:19:04', id: 'blk_7f3218', ok: false,
+      out: 'sqlalchemy.exc.ProgrammingError: (psycopg2.errors.DuplicateTable)\nrelation "orders_idx_created" already exists' },
+    { label: 'deploy · production', cmd: 'kubectl rollout status deploy/gateway -n prod', path: '~/work/infra', host: 'bastion-01', env: 'PRODUCTION', exit: 'exit 0', dur: '46.8s', time: '2026-07-24 15:31:52', id: 'blk_7f3260', ok: true,
+      out: 'Waiting for deployment "gateway" rollout to finish: 2 of 3 updated…\ndeployment "gateway" successfully rolled out' }
+  ];
+
+  PERMS = {
+    read:  { label: 'read only', title: 'Read only command', risk: 'low', glyph: '✓', tone: '#b8e04a', border: '#2f4a20', headBg: 'rgba(184,224,74,.05)',
+      cmd: 'lsof -nP -i:8080', cwd: '~/work/api-gateway', env: 'LOCAL', phrase: null,
+      note: 'Inspects listening sockets. No filesystem or network mutation. Safe to allow for the rest of this session.',
+      buttons: [['Paste', 'plain'], ['Run once', 'accent'], ['Allow similar read only commands', 'plain']] },
+    write: { label: 'write', title: 'Write to the filesystem', risk: 'elevated', glyph: '!', tone: '#f0b429', border: '#4a3a1c', headBg: 'rgba(240,180,41,.05)',
+      cmd: 'sed -i "" "s/8080/8081/" .env.local', cwd: '~/work/api-gateway', env: 'LOCAL', phrase: null,
+      note: 'Modifies one file in place. TerminalDB shows the diff first and keeps a copy so the change can be reverted. Session grants never cover writes.',
+      buttons: [['Show diff', 'plain'], ['Run once', 'warn'], ['Allow similar (unavailable)', 'off']] },
+    del:   { label: 'delete / sudo', title: 'Destructive command', risk: 'high', glyph: '✕', tone: '#ff6b5e', border: '#55251f', headBg: 'rgba(255,107,94,.05)',
+      cmd: 'sudo rm -rf ./node_modules ./.turbo', cwd: '~/work/api-gateway', env: 'LOCAL', phrase: 'delete',
+      note: 'Removes 2 directories (18,402 files) and requires administrator rights. The file list is shown in full, and the button arms after five seconds.',
+      buttons: [['Show what will be removed', 'plain'], ['Confirm & run once', 'danger'], ['Cancel', 'plain']] },
+    prod:  { label: 'production', title: 'Targets PRODUCTION', risk: 'critical', glyph: '✕', tone: '#ff6b5e', border: '#55251f', headBg: 'rgba(255,107,94,.07)',
+      cmd: 'kubectl scale deploy/gateway --replicas=0 -n prod', cwd: '~/work/infra', env: 'PRODUCTION', phrase: 'PRODUCTION',
+      note: 'The environment badge is coral and the window gains a coral border. The environment name must be typed exactly, and the grant expires the moment the command finishes.',
+      buttons: [['Copy for review', 'plain'], ['Confirm & run once', 'danger'], ['Cancel', 'plain']] },
+    unknown: { label: 'unknown', title: 'Unclassified command', risk: 'treat as write', glyph: '?', tone: '#98a0ac', border: '#3b444f', headBg: 'rgba(152,160,172,.05)',
+      cmd: './scripts/reconcile.sh --apply --since=24h', cwd: '~/work/api-gateway', env: 'STAGING', phrase: null,
+      note: 'TerminalDB cannot determine what this script does, so it is treated as a write: single run only, no session grant, with every argument and the script\u2019s first 40 lines shown for review.',
+      buttons: [['Read the script', 'plain'], ['Run once', 'warn'], ['Allow similar (unavailable)', 'off']] }
+  };
+
+  HISTORY = [
+    { cmd: 'alembic upgrade head', path: '~/work/api-gateway/db', env: 'STAGING', exit: 'exit 1', dur: '3.1s', when: 'today 14:19', ok: false },
+    { cmd: 'docker compose up gateway', path: '~/work/api-gateway', env: 'LOCAL', exit: 'exit 125', dur: '1.2s', when: 'today 14:06', ok: false },
+    { cmd: 'pnpm test --filter api', path: '~/work/api-gateway', env: 'LOCAL', exit: 'exit 0', dur: '8.4s', when: 'today 14:02', ok: true },
+    { cmd: 'AWS_SECRET_ACCESS_KEY=•••••••••••• terraform plan', path: '~/work/infra', env: 'STAGING', exit: 'exit 0', dur: '22.7s', when: 'today 11:40', ok: true, secret: 'AWS_SECRET_ACCESS_KEY=EXAMPLE_REDACTED_VALUE terraform plan' },
+    { cmd: 'kubectl rollout status deploy/gateway -n prod', path: '~/work/infra', env: 'PRODUCTION', exit: 'exit 0', dur: '46.8s', when: 'yesterday 15:31', ok: true },
+    { cmd: 'psql -f hotfix.sql', path: '~/work/api-gateway/db', env: 'STAGING', exit: 'exit 0', dur: '0.9s', when: 'yesterday 09:41', ok: true }
+  ];
+
+  ACCOUNTS = [
+    { label: 'Demo Team', email: 'developer@example.com', plan: 'Team', auth: 'Signed in', ok: true, initials: 'DT',
+      dir: '~/Library/Application Support/TerminalDB/profiles/demo-team', key: 'Keychain: TerminalDB.claude.demo-team' },
+    { label: 'Operations', email: 'ops@example.com', plan: 'Max', auth: 'Signed in', ok: true, initials: 'OP',
+      dir: '~/Library/Application Support/TerminalDB/profiles/operations', key: 'Keychain: TerminalDB.claude.operations' },
+    { label: 'Personal', email: 'personal@example.com', plan: 'Pro', auth: 'Signed in', ok: true, initials: 'PE',
+      dir: '~/Library/Application Support/TerminalDB/profiles/personal', key: 'Keychain: TerminalDB.claude.personal' }
+  ];
+
+  TABS = [
+    { name: 'api-gateway', env: 'LOCAL' },
+    { name: 'migrations', env: 'STAGING' },
+    { name: 'infra', env: 'PRODUCTION' }
+  ];
+
+  USAGE = [
+    [ [{ label: '5 hour window', pct: 28, reset: '7/24, 8:03 PM' }, { label: '7 day window', pct: 46, reset: '7/29, 6:03 PM' }, { label: 'Fable weekly', pct: 12, reset: '7/28, 6:03 PM' }],
+      [{ label: '5 hour window', pct: 12, reset: '7/24, 9:15 PM' }, { label: '7 day window', pct: 73, reset: '7/28, 10:00 PM' }, { label: 'Fable weekly', pct: 0, reset: '7/28, 6:03 PM' }],
+      [{ label: '5 hour window', pct: 61, reset: '7/24, 7:40 PM' }, { label: '7 day window', pct: 55, reset: '7/30, 7:30 AM' }, { label: 'Fable weekly', pct: 34, reset: '7/28, 6:03 PM' }] ]
+  ][0];
+
+  DL = {
+    ready: { label: 'Ready (after release)', title: 'TerminalDB 0.1.0, the current build', meta: 'state once v0.1.0 is published', glyph: '✓', tone: '#b8e04a', border: '#2f4a20', headBg: 'rgba(184,224,74,.05)',
+      body: 'Universal build for macOS 13 or later, Apple Silicon and Intel. The link resolves to the stable asset path on GitHub Releases: TerminalDB-macOS.zip from the latest tag, so it keeps working across versions.',
+      cta: 'Download TerminalDB-macOS.zip', alt: 'All releases', href: 'https://github.com/danb235/TerminalDB/releases/latest/download/TerminalDB-macOS.zip' },
+    none: { label: 'No release (current)', title: 'No release published yet', meta: 'v0.1.0 in development on main', glyph: '!', tone: '#f0b429', border: '#4a3a1c', headBg: 'rgba(240,180,41,.05)',
+      body: 'TerminalDB is pre release: there is no downloadable asset on the releases feed yet. Build 0.1.0 from source in four commands, or watch the repository to be notified when the first release lands.',
+      cta: 'Read build instructions', alt: 'Watch repository', href: 'https://github.com/danb235/TerminalDB/blob/main/docs/build.md' },
+    unsupported: { label: 'Unsupported macOS', title: 'This Mac runs macOS 12.7', meta: 'requires 13.0+', glyph: '!', tone: '#f0b429', border: '#4a3a1c', headBg: 'rgba(240,180,41,.05)',
+      body: 'TerminalDB needs macOS 13 Ventura or later. There is no build for macOS 12. You can still read the source, or build on a supported machine.',
+      cta: 'Read the requirements', alt: 'View source', href: 'https://github.com/danb235/TerminalDB/blob/main/docs/build.md' },
+    failed: { label: 'Download failed', title: 'Download stopped at 31%', meta: 'network error', glyph: '✕', tone: '#ff6b5e', border: '#55251f', headBg: 'rgba(255,107,94,.06)',
+      body: 'The transfer was interrupted. Retrying uses the same stable asset URL. Delete the partial file first, then verify the SHA-256 below before opening the archive.',
+      cta: 'Retry download', alt: 'Direct asset link', href: 'https://github.com/danb235/TerminalDB/releases/latest/download/TerminalDB-macOS.zip' },
+    offline: { label: 'Offline', title: 'You appear to be offline', meta: 'using build time snapshot', glyph: '○', tone: '#98a0ac', border: '#3b444f', headBg: 'rgba(152,160,172,.04)',
+      body: 'Release details here come from the build time snapshot, so this page stays readable without a network. Reconnect to check the releases feed for the current asset and its checksum.',
+      cta: 'Retry when online', alt: 'Copy release URL', href: 'https://github.com/danb235/TerminalDB/releases/latest' }
+  };
+
+  envTone(env) { return env === 'PRODUCTION' ? '#ff6b5e' : env === 'STAGING' ? '#f0b429' : '#b8e04a'; }
+
+  btnStyle(kind) {
+    if (kind === 'accent') return { border: '#5ad3e6', bg: 'rgba(90,211,230,.1)', color: '#d8f8ff' };
+    if (kind === 'warn') return { border: '#4a3a1c', bg: 'rgba(240,180,41,.08)', color: '#ffd987' };
+    if (kind === 'danger') return { border: '#55251f', bg: 'rgba(255,107,94,.1)', color: '#ffb0a8' };
+    if (kind === 'off') return { border: '#232830', bg: 'transparent', color: '#575f6b' };
+    return { border: '#2a3039', bg: '#161a20', color: '#d5dae1' };
+  }
+
+  renderVals() {
+    const st = this.state;
+    const s = Object.assign({}, st, {
+      dl: st.dl || this.props.downloadState || 'none',
+      provider: st.provider || this.props.defaultProvider || 'subscription'
+    });
+    const b = this.BLOCKS[s.blockIdx];
+    const tone = b.ok ? '#b8e04a' : '#ff6b5e';
+    const p = this.PERMS[s.permKind];
+    const dl = this.DL[s.dl];
+    const q = s.query.trim().toLowerCase();
+
+    const results = this.HISTORY.filter(h => {
+      if (!q) return true;
+      const envM = q.match(/env:(\w+)/);
+      const exitM = q.match(/exit:(\d+)/);
+      let rest = q.replace(/env:\w+/g, '').replace(/exit:\d+/g, '').trim();
+      if (envM && h.env.toLowerCase() !== envM[1]) return false;
+      if (exitM && h.exit !== 'exit ' + exitM[1]) return false;
+      if (rest && !(h.cmd + ' ' + h.path).toLowerCase().includes(rest)) return false;
+      return true;
+    }).map(h => ({
+      cmd: s.redact ? h.cmd : (h.secret || h.cmd),
+      path: h.path, env: h.env, envTone: this.envTone(h.env), exit: h.exit, dur: h.dur, when: h.when,
+      tone: h.ok ? '#b8e04a' : '#ff6b5e'
+    }));
+
+    const acct = this.ACCOUNTS[s.account];
+    const providerSummary = s.provider === 'subscription'
+      ? 'Claude subscription for ' + acct.email + ' (' + acct.label + '). The Anthropic API key stays configured but idle.'
+      : 'Anthropic API key ending ••4c7a, billed to your organisation. Subscription accounts remain signed in and manageable.';
+
+    return {
+      showEdgeStates: this.props.showEdgeStates !== false,
+      blockTabs: this.BLOCKS.map((x, i) => ({
+        label: x.label, selected: i === s.blockIdx,
+        border: i === s.blockIdx ? '#5ad3e6' : '#2a3039',
+        bg: i === s.blockIdx ? 'rgba(90,211,230,.1)' : '#12151a',
+        color: i === s.blockIdx ? '#d8f8ff' : '#98a0ac',
+        select: () => this.setState({ blockIdx: i, actionMsg: 'Select an action to see what it records.' })
+      })),
+      blockCmd: b.cmd, blockPath: b.path, blockHost: b.host, blockEnv: b.env, blockEnvTone: this.envTone(b.env),
+      blockExit: b.exit, blockDur: b.dur, blockTime: b.time, blockId: b.id, blockOut: b.out, blockTone: tone,
+      blockActions: [
+        { label: 'Copy', run: () => this.setState({ actionMsg: '✓ Command copied: ' + b.cmd }) },
+        { label: 'Ask AI', run: () => this.setState({ actionMsg: '✓ Sent 1 context chip: ' + b.id + ' (command, cwd, exit, output, all redacted)' }) },
+        { label: 'Rerun', run: () => this.setState({ actionMsg: '✓ Rerunning in ' + b.path + ' · env ' + b.env + ' · new record created' }) },
+        { label: 'Save', run: () => this.setState({ actionMsg: '✓ Saved to runbook “api-gateway checks” as step 4' }) }
+      ],
+      actionMsg: s.actionMsg,
+
+      permKinds: Object.keys(this.PERMS).map(k => ({
+        label: this.PERMS[k].label, selected: k === s.permKind,
+        border: k === s.permKind ? '#5ad3e6' : '#2a3039',
+        bg: k === s.permKind ? 'rgba(90,211,230,.1)' : '#12151a',
+        color: k === s.permKind ? '#d8f8ff' : '#98a0ac',
+        select: () => this.setState({ permKind: k, permResult: '', permResultTone: '#6b7481' })
+      })),
+      permTitle: p.title, permRisk: p.risk, permGlyph: p.glyph, permTone: p.tone, permBorder: p.border,
+      permHeadBg: p.headBg, permCmd: p.cmd, permCwd: p.cwd, permEnv: p.env, permEnvTone: this.envTone(p.env),
+      permNote: p.note, permNeedsPhrase: !!p.phrase, permPhrase: p.phrase || '', permPhraseTyped: p.phrase ? '' : '',
+      permButtons: p.buttons.map(([label, kind]) => {
+        const st = this.btnStyle(kind);
+        return { label, border: st.border, bg: st.bg, color: st.color, run: () => {
+          if (kind === 'off') return this.setState({ permResult: 'Session grants are not available for this class. Run it once, or edit the command yourself.', permResultTone: '#f0b429' });
+          if (kind === 'danger') return this.setState({ permResult: 'Confirmation required: type ' + p.phrase + ' and hold for five seconds. Nothing has run.', permResultTone: '#ff6b5e' });
+          if (kind === 'warn') return this.setState({ permResult: 'Ran once. Diff recorded, revert available for 24 hours. Grant did not persist.', permResultTone: '#f0b429' });
+          if (label === 'Paste') return this.setState({ permResult: 'Pasted into the prompt, unexecuted. Press ⏎ yourself.', permResultTone: '#98a0ac' });
+          if (label.startsWith('Allow similar')) return this.setState({ permResult: '✓ Read only class allowed for this session (lsof, ls, git status, ps). Revocable in the permissions inspector.', permResultTone: '#b8e04a' });
+          return this.setState({ permResult: '✓ Ran once in ' + p.cwd + ' · new block recorded · grant expired.', permResultTone: '#b8e04a' });
+        } };
+      }),
+      permResult: s.permResult, permResultTone: s.permResultTone,
+
+      fixOpen: s.fixOpen, fixLabel: s.fixOpen ? 'Hide diagnosis' : 'Explain / fix this failure',
+      toggleFix: () => this.setState({ fixOpen: !s.fixOpen }),
+
+      query: s.query, onQuery: e => this.setState({ query: e.target.value }),
+      results, noResults: results.length === 0,
+      dbFooter: results.length + ' of ' + this.HISTORY.length + ' records · ~/Library/Application Support/TerminalDB/history.db · ' + (s.priv ? 'private session: nothing being written' : 'recording'),
+      chips: [{ label: 'blk_7f3218 · alembic upgrade head' }, { label: 'env: STAGING' }, { label: 'cwd: ~/work/api-gateway/db' }],
+      priv: s.priv, togglePriv: () => this.setState({ priv: !s.priv }),
+      privLabel: s.priv ? 'Private session on' : 'Private session off',
+      privBorder: s.priv ? '#5ad3e6' : '#2a3039', privBg: s.priv ? 'rgba(90,211,230,.1)' : '#0f1216',
+      privColor: s.priv ? '#d8f8ff' : '#98a0ac', privDot: s.priv ? '#5ad3e6' : '#3b444f',
+      redact: s.redact, toggleRedact: () => this.setState({ redact: !s.redact }),
+      redLabel: s.redact ? 'Redaction on' : 'Redaction off (preview)',
+      redBorder: s.redact ? '#2f4a20' : '#55251f', redBg: s.redact ? 'rgba(184,224,74,.07)' : 'rgba(255,107,94,.08)',
+      redColor: s.redact ? '#b8e04a' : '#ff6b5e',
+
+      providers: [
+        { key: 'subscription', title: 'Claude subscription', body: 'Sign in with your Claude account. Usage follows your plan\u2019s windows, and multiple accounts can be signed in at once.',
+          meta: 'connected · 3 accounts · active: ' + acct.email, state: s.provider === 'subscription' ? 'powering AI' : 'connected',
+          stateTone: s.provider === 'subscription' ? '#b8e04a' : '#6b7481',
+          dot: '#b8e04a', border: s.provider === 'subscription' ? '#2f5b66' : '#232830',
+          active: s.provider === 'subscription',
+          btnLabel: s.provider === 'subscription' ? '● Selected: subscription powers AI' : '○ Use subscription for AI',
+          btnBorder: s.provider === 'subscription' ? '#5ad3e6' : '#2a3039',
+          btnBg: s.provider === 'subscription' ? 'rgba(90,211,230,.1)' : '#161a20',
+          btnColor: s.provider === 'subscription' ? '#d8f8ff' : '#b6bdc7',
+          select: () => this.setState({ provider: 'subscription' }) },
+        { key: 'api', title: 'Anthropic API key', body: 'Paste a key to bill usage directly to your Anthropic organisation. Stored in the macOS Keychain, never in the database.',
+          meta: 'connected · key ••4c7a · org: studio-dev', state: s.provider === 'api' ? 'powering AI' : 'connected',
+          stateTone: s.provider === 'api' ? '#b8e04a' : '#6b7481',
+          dot: '#5ad3e6', border: s.provider === 'api' ? '#2f5b66' : '#232830',
+          active: s.provider === 'api',
+          btnLabel: s.provider === 'api' ? '● Selected: API key powers AI' : '○ Use API key for AI',
+          btnBorder: s.provider === 'api' ? '#5ad3e6' : '#2a3039',
+          btnBg: s.provider === 'api' ? 'rgba(90,211,230,.1)' : '#161a20',
+          btnColor: s.provider === 'api' ? '#d8f8ff' : '#b6bdc7',
+          select: () => this.setState({ provider: 'api' }) }
+      ],
+      accounts: this.ACCOUNTS.map((a, i) => ({
+        email: a.email, plan: a.plan + ' (' + a.label + ')', initials: a.initials, active: i === s.account,
+        mark: i === s.account ? '#5ad3e6' : 'transparent',
+        bg: i === s.account ? '#141b21' : '#12151a',
+        tag: i === s.account ? 'active' : 'switch',
+        tagTone: i === s.account ? '#5ad3e6' : '#575f6b',
+        select: () => this.setState({ account: i })
+      })),
+      switcherOpen: s.switcherOpen,
+      toggleSwitcher: () => this.setState({ switcherOpen: !s.switcherOpen }),
+      tabName: this.TABS[s.tab].name,
+      tabList: this.TABS.map((t, i) => {
+        const a = this.ACCOUNTS[s.tabAccounts[i]];
+        return { name: t.name, env: t.env, envTone: this.envTone(t.env), current: i === s.tab,
+          who: a.label + ' (' + a.plan + ')',
+          border: i === s.tab ? '#5ad3e6' : '#2a3039',
+          bg: i === s.tab ? 'rgba(90,211,230,.08)' : '#12151a',
+          color: i === s.tab ? '#d8f8ff' : '#b6bdc7',
+          select: () => this.setState({ tab: i, acctMsg: 'Viewing tab ' + t.name + '. Its Claude profile is ' + a.label + '.', acctMsgTone: '#7fd8e7' }) };
+      }),
+      profiles: this.ACCOUNTS.map((a, i) => {
+        const active = s.tabAccounts[s.tab] === i;
+        return {
+          label: a.label, email: a.email, plan: a.plan, auth: a.auth, initials: a.initials, dir: a.dir, keyName: a.key,
+          active, check: active ? '✓' : '', mark: active ? '#5ad3e6' : 'transparent',
+          bg: active ? '#141b21' : '#12151a',
+          authTone: a.ok ? '#b8e04a' : '#f0b429',
+          authLabel: a.auth,
+          actionLabel: a.ok ? (active ? 'Active in this tab' : 'Use in this tab') : 'Sign back in',
+          actionBorder: active ? '#2f4a20' : a.ok ? '#2a3039' : '#4a3a1c',
+          actionColor: active ? '#b8e04a' : a.ok ? '#d5dae1' : '#ffd987',
+          use: () => {
+            const t = this.TABS[s.tab];
+            if (!a.ok) return this.setState({ acctMsg: 'Opening the Claude sign in sheet for ' + a.label + '. The isolated profile and its Keychain item stay in place while you reauthenticate.', acctMsgTone: '#f0b429', account: i });
+            const next = s.tabAccounts.slice(); next[s.tab] = i;
+            return this.setState({ tabAccounts: next, account: i, acctMsg: '✓ Tab ' + t.name + ' now uses ' + a.label + ' (' + a.email + '). A fresh AI conversation started so identity and billing context never cross. Other tabs kept their profiles.', acctMsgTone: '#b8e04a' });
+          },
+          remove: () => this.setState({ acctMsg: 'Removing the ' + a.label + ' profile deletes only its local profile directory and its TerminalDB credential in the Keychain. Your Anthropic subscription and billing are untouched.', acctMsgTone: '#f0b429' })
+        };
+      }),
+      addAccount: () => this.setState({ acctMsg: 'Add Claude Code Account opens Claude sign in, then writes a new isolated profile directory and its own Keychain credential. There is no limit on how many you connect.', acctMsgTone: '#7fd8e7' }),
+      acctMsg: s.acctMsg, acctMsgTone: s.acctMsgTone,
+      stripLabel: this.ACCOUNTS[s.tabAccounts[s.tab]].label,
+      stripEmail: this.ACCOUNTS[s.tabAccounts[s.tab]].email,
+      stripPlan: this.ACCOUNTS[s.tabAccounts[s.tab]].plan,
+      stripAuth: this.ACCOUNTS[s.tabAccounts[s.tab]].ok ? 'Signed in' : 'Session expired',
+      stripAuthTone: this.ACCOUNTS[s.tabAccounts[s.tab]].ok ? '#b8e04a' : '#f0b429',
+      stripEnv: this.TABS[s.tab].env, stripEnvTone: this.envTone(this.TABS[s.tab].env),
+      tabUsage: this.USAGE[s.tabAccounts[s.tab]].map(u => ({
+        label: u.label, pctLabel: u.pct + '% used', width: u.pct + '%', reset: u.reset,
+        tone: u.pct >= 80 ? '#ff6b5e' : u.pct >= 60 ? '#f0b429' : '#b8e04a'
+      })),
+      activeEmail: acct.email,
+      usage: this.USAGE[s.account].map(u => ({
+        label: u.label, pctLabel: u.pct + '% used', width: u.pct + '%', reset: u.reset,
+        tone: u.pct >= 80 ? '#ff6b5e' : u.pct >= 60 ? '#f0b429' : '#b8e04a'
+      })),
+      providerSummary,
+
+      dlStates: Object.keys(this.DL).map(k => ({
+        label: this.DL[k].label, active: k === s.dl,
+        border: k === s.dl ? '#5ad3e6' : '#232830',
+        bg: k === s.dl ? 'rgba(90,211,230,.1)' : 'transparent',
+        color: k === s.dl ? '#d8f8ff' : '#6b7481',
+        select: () => this.setState({ dl: k })
+      })),
+      dlTitle: dl.title, dlMeta: dl.meta, dlBody: dl.body, dlGlyph: dl.glyph, dlTone: dl.tone,
+      dlBorder: dl.border, dlHeadBg: dl.headBg, dlCta: dl.cta, dlAlt: dl.alt, dlHref: dl.href,
+      dlDisabled: s.dl === 'none' || s.dl === 'offline',
+      dlCtaBorder: s.dl === 'ready' ? '#5ad3e6' : s.dl === 'failed' ? '#55251f' : '#2a3039',
+      dlCtaBg: s.dl === 'ready' ? 'rgba(90,211,230,.1)' : s.dl === 'failed' ? 'rgba(255,107,94,.1)' : '#161a20',
+      dlCtaColor: s.dl === 'ready' ? '#d8f8ff' : s.dl === 'failed' ? '#ffb0a8' : '#d5dae1'
+    };
+  }
+}
+</script>
+</body>
+</html>
