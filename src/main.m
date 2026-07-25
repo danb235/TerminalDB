@@ -10,6 +10,7 @@
 #import "TerminalPermissions.h"
 #import "TerminalProduct.h"
 #import "TerminalTheme.h"
+#import "TerminalUpdater.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -503,6 +504,8 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
 @property(nonatomic, copy, nullable) NSDictionary *pendingExecutionApproval;
 @property(nonatomic, copy, nullable) NSString *lastAIApplyPatchPath;
 @property(nonatomic, strong) TerminalProductStore *productStore;
+@property(nonatomic, strong) TerminalUpdater *updater;
+@property(nonatomic, strong) NSMenuItem *checkForUpdatesMenuItem;
 @property(nonatomic, strong, nullable)
     TerminalProductWindowController *productWindowController;
 @property(nonatomic, copy, nullable) NSString *activeMonitorIdentifier;
@@ -545,6 +548,7 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
 - (void)newTerminalSplitVertical:(BOOL)vertical;
 - (void)appendLedgerFooterForRecord:(NSDictionary *)record;
 - (void)trimTerminalScrollbackIfNeeded;
+- (void)updateUpdaterMenuItem;
 @end
 
 @implementation AppDelegate
@@ -555,6 +559,12 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
     self.apiConfiguration = [[ClaudeAPIConfiguration alloc] init];
     self.theme = [TerminalTheme preferredTheme];
     self.productStore = [TerminalProductStore sharedStore];
+    self.updater = [[TerminalUpdater alloc]
+        initWithRepository:@"danb235/TerminalDB"];
+    __weak AppDelegate *weakRoot = self;
+    self.updater.statusDidChange = ^{
+        [weakRoot updateUpdaterMenuItem];
+    };
     self.claudeExecutable = [self discoverClaudeExecutable];
     self.windowControllers = [NSMutableArray array];
     NSWindow.allowsAutomaticWindowTabbing = YES;
@@ -827,6 +837,7 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
                 [self showProductSection:TerminalProductSectionOnboarding];
             });
         }
+        if (!visualQA) [self.updater checkOnLaunchIfDue];
     }
 }
 
@@ -842,6 +853,12 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
                                    action:@selector(orderFrontStandardAboutPanel:)
                             keyEquivalent:@""];
     about.target = NSApp;
+    [applicationMenu addItem:NSMenuItem.separatorItem];
+    self.checkForUpdatesMenuItem =
+        [applicationMenu addItemWithTitle:@"Check for Updates…"
+                                   action:@selector(checkForUpdates:)
+                            keyEquivalent:@""];
+    self.checkForUpdatesMenuItem.target = self;
     [applicationMenu addItem:NSMenuItem.separatorItem];
     NSMenuItem *settings =
         [applicationMenu addItemWithTitle:@"Settings…"
@@ -1256,6 +1273,32 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
     [mainMenu addItem:helpItem];
 
     NSApp.mainMenu = mainMenu;
+}
+
+- (void)updateUpdaterMenuItem {
+    if (self.checkForUpdatesMenuItem == nil) return;
+    if (self.updater.isChecking) {
+        self.checkForUpdatesMenuItem.title = @"Checking for Updates…";
+        self.checkForUpdatesMenuItem.enabled = NO;
+    } else if (self.updater.isDownloading) {
+        self.checkForUpdatesMenuItem.title = @"Installing Update…";
+        self.checkForUpdatesMenuItem.enabled = NO;
+    } else if (self.updater.availableRelease != nil) {
+        self.checkForUpdatesMenuItem.title = [NSString stringWithFormat:
+            @"Update to TerminalDB %@…",
+            self.updater.availableRelease.version];
+        self.checkForUpdatesMenuItem.enabled = YES;
+    } else {
+        self.checkForUpdatesMenuItem.title = @"Check for Updates…";
+        self.checkForUpdatesMenuItem.enabled = YES;
+    }
+}
+
+- (void)checkForUpdates:(id)sender {
+    (void)sender;
+    AppDelegate *root = [self rootController];
+    AppDelegate *active = [root activeTerminalController] ?: root;
+    [root.updater checkForUpdatesFromWindow:active.window];
 }
 
 - (AppDelegate *)activeTerminalController {
@@ -3067,6 +3110,7 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
             containsActions(applicationMenu, @[
                 NSStringFromSelector(@selector(
                     orderFrontStandardAboutPanel:)),
+                NSStringFromSelector(@selector(checkForUpdates:)),
                 NSStringFromSelector(@selector(showTerminalDBSettings:)),
                 NSStringFromSelector(@selector(terminate:)),
             ]) &&
@@ -7425,6 +7469,10 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
     }
     if (![ClaudeCodeClient runStreamParsingSelfTests]) {
         fprintf(stderr, "FAIL Claude Code stream parsing\n");
+        failures++;
+    }
+    if (![TerminalUpdater runSelfTests]) {
+        fprintf(stderr, "FAIL application updater parsing\n");
         failures++;
     }
     AppDelegate *subscriptionProtocolParser = [[AppDelegate alloc] init];

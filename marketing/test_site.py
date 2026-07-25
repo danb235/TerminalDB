@@ -85,6 +85,10 @@ def main() -> None:
         "/Users/daniel",
         "danny@",
         "tkdan",
+        "zsh, bash, fish",
+        "Crash reporting is opt in",
+        "valid on disk · notarized",
+        "Key held in the macOS Keychain",
     ]
     for fragment in forbidden_fragments:
         if fragment.lower() in html.lower():

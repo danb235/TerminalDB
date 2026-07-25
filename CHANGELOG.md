@@ -7,6 +7,8 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-07-25
+
 ### Added
 
 - A native macOS terminal with shell integration and structured command records.
@@ -19,3 +21,6 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Project tools for file search, Git state, diffs, tests, monitored commands, and workspaces.
 - A native TerminalDB application icon and a theme aware terminal interface.
 - Universal support for Apple Silicon and Intel Macs running macOS 13 or later.
+- An in app updater that verifies release checksums, archive paths, architectures, bundle identity, version, code signature, and signing certificate.
+- A standalone marketing site with real product screenshots and independent Cloudflare Pages CI.
+- Contributor, security, build, test, architecture, threat model, and roadmap documentation.

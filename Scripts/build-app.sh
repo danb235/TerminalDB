@@ -23,6 +23,7 @@ SOURCES=(
   src/TerminalLedger.m
   src/TerminalPermissions.m
   src/TerminalProduct.m
+  src/TerminalUpdater.m
 )
 
 if [[ "${CONFIGURATION}" == "debug" ]]; then

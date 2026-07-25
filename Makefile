@@ -3,7 +3,8 @@ BIN := $(APP)/Contents/MacOS/TerminalDB
 SOURCES := src/main.m src/ClaudeAPI.m src/ClaudeAssistantView.m \
 	src/TerminalInspector.m \
 	src/ClaudeProfile.m src/ClaudeStatusBar.m src/TerminalTheme.m \
-	src/TerminalLedger.m src/TerminalPermissions.m src/TerminalProduct.m
+	src/TerminalLedger.m src/TerminalPermissions.m src/TerminalProduct.m \
+	src/TerminalUpdater.m
 ICON_RESOURCE := Resources/AppIcon.icns
 FONT_RESOURCES := \
 	Resources/Fonts/JetBrainsMono-Regular.ttf \

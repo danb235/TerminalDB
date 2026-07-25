@@ -142,9 +142,10 @@ one native window:
 
 ## Project status
 
-TerminalDB is under active development and currently targets developers
-building the application from source. There is no notarized binary release,
-automatic updater, migration guarantee, or stable public API yet.
+TerminalDB is under active development as alpha software. Universal release
+builds and the in app updater are automated through GitHub Releases. The
+current project does not have Apple Developer ID notarization, a migration
+guarantee, or a stable public API.
 
 The design source covers the broader product direction, interaction states,
 menus, accessibility behavior, environment safety, history, runbooks, and
@@ -192,6 +193,12 @@ make run
 The generated bundle is `build/TerminalDB.app`. It is ad-hoc signed for local
 development. A distributed build should use an Apple Developer ID, hardened
 runtime, notarization, and a release-specific bundle/version process.
+
+Release builds check GitHub once per day and on demand from
+**TerminalDB → Check for Updates…**. Before replacing the app, TerminalDB
+verifies the published SHA 256 checksum, archive paths, universal
+architectures, bundle identifier, version, code signature, and the signing
+certificate used by the installed release.
 
 ## Configure AI chat
 
@@ -478,9 +485,9 @@ temporarily make usage unavailable without affecting the subscription itself.
 
 ### The app is blocked after downloading a build
 
-The current project produces a local ad-hoc-signed development bundle, not a
-notarized public release. Build from source. Do not bypass Gatekeeper for an
-untrusted binary.
+The current public release is not notarized. Verify that the download came from
+the TerminalDB GitHub Releases page and compare its published SHA 256 checksum.
+Do not bypass Gatekeeper for an untrusted binary.
 
 ## Design and accessibility
 
@@ -496,7 +503,9 @@ readability. Accessibility issues are treated as product bugs.
 
 ## Contributing
 
-Contributions will be welcome once the repository is opened publicly.
+Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), review
+the [security policy](SECURITY.md), and open an issue before beginning a large
+behavior or interface change.
 
 Before proposing a change:
 
@@ -522,8 +531,8 @@ proportionate regression test.
 - richer multi-file editing, conflict resolution, and durable revert
   checkpoints across app launches;
 - optional encrypted sync and team-shared runbook governance;
-- release signing, notarization, updates, migration tooling, and crash
-  diagnostics; and
+- Apple Developer ID signing and notarization, migration tooling, and optional
+  privacy preserving diagnostics; and
 - broader terminal-protocol compatibility.
 
 ## License

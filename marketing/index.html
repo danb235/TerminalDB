@@ -25,7 +25,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"TerminalDB","applicationCategory":"DeveloperApplication","operatingSystem":"macOS 13.0 or later","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"license":"https://opensource.org/licenses/MIT","softwareVersion":"0.1.0","downloadUrl":"https://github.com/danb235/TerminalDB/releases/latest/download/TerminalDB-macOS.zip","codeRepository":"https://github.com/danb235/TerminalDB","description":"A native macOS terminal that records every command as structured, searchable context, with AI assistance that asks permission and history that stays on the machine."}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"TerminalDB","applicationCategory":"DeveloperApplication","operatingSystem":"macOS 13.0 or later","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"license":"https://opensource.org/licenses/MIT","softwareVersion":"0.1.0","downloadUrl":"https://github.com/danb235/TerminalDB/releases","codeRepository":"https://github.com/danb235/TerminalDB","description":"A native macOS terminal that records every command as structured, searchable context, with AI assistance that asks permission and history that stays on the machine."}
 </script>
 <style>
   html { scroll-behavior: smooth; }
@@ -83,8 +83,8 @@
           TerminalDB records every command as a structured record. Path, host, environment, exit status, duration and output are all captured, then kept in a searchable database on your Mac. Your shell history stops being a flat list of strings and becomes context you and your AI assistant can actually reason about. Connect as many Claude subscription accounts as you use, and switch the active one per terminal tab in a single action.
         </p>
         <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:28px">
-          <a href="https://github.com/danb235/TerminalDB/releases/latest/download/TerminalDB-macOS.zip" style="display:inline-flex;align-items:center;gap:9px;padding:13px 20px;border:1px solid #5ad3e6;border-radius:9px;background:rgba(90,211,230,.09);color:#d8f8ff;font:500 14.5px/1 -apple-system,system-ui,sans-serif;text-decoration:none" style-hover="background:rgba(90,211,230,.18);text-decoration:none" style-active="background:rgba(90,211,230,.28)">
-            <span style="font:700 13px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>Download latest for macOS
+          <a href="https://github.com/danb235/TerminalDB/releases" style="display:inline-flex;align-items:center;gap:9px;padding:13px 20px;border:1px solid #5ad3e6;border-radius:9px;background:rgba(90,211,230,.09);color:#d8f8ff;font:500 14.5px/1 -apple-system,system-ui,sans-serif;text-decoration:none" style-hover="background:rgba(90,211,230,.18);text-decoration:none" style-active="background:rgba(90,211,230,.28)">
+            <span style="font:700 13px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>View releases
           </a>
           <a href="https://github.com/danb235/TerminalDB" rel="noopener" style="display:inline-flex;align-items:center;gap:9px;padding:13px 20px;border:1px solid #2a3039;border-radius:9px;background:#12151a;color:#ecedef;font:500 14.5px/1 -apple-system,system-ui,sans-serif;text-decoration:none" style-hover="border-color:#3b444f;background:#171b21;text-decoration:none">View source on GitHub</a>
         </div>
@@ -170,7 +170,7 @@
             <ul style="margin:11px 0 0;padding:0 0 0 17px;font-size:12.5px;line-height:1.75;color:#98a0ac">
               <li>Usage billed to your Anthropic organisation</li>
               <li>Model choice independent of a plan</li>
-              <li>Key held in the macOS Keychain, never in the database</li>
+              <li>Stored in local preferences, masked in the app, and excluded from history</li>
               <li>Best for scripted work and shared team budgets</li>
             </ul>
           </div>
@@ -543,11 +543,11 @@ alembic current</pre>
       <h2 style="font:500 clamp(26px,3.1vw,40px)/1.15 -apple-system,system-ui,sans-serif;letter-spacing:-.025em;margin:14px 0 0">Auditable by design.</h2>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(258px,1fr));gap:1px;margin-top:28px;background:#1b2027;border:1px solid #232830;border-radius:11px;overflow:hidden">
         <div style="background:#12151a;padding:20px"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#5ad3e6">History stays local</div><p style="margin:10px 0 0;font-size:13px;line-height:1.6;color:#98a0ac">The database is a file in your home directory. No account is required to use the terminal, and history never leaves the machine on its own.</p></div>
-        <div style="background:#12151a;padding:20px"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#5ad3e6">Explicit context</div><p style="margin:10px 0 0;font-size:13px;line-height:1.6;color:#98a0ac">Only the chips attached to a question are transmitted, to the provider you selected. The payload is inspectable before it is sent.</p></div>
+        <div style="background:#12151a;padding:20px"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#5ad3e6">Explicit context</div><p style="margin:10px 0 0;font-size:13px;line-height:1.6;color:#98a0ac">Claude receives a bounded terminal snapshot plus the visible context chips attached to your question. Remove a chip before sending whenever it should stay local.</p></div>
         <div style="background:#12151a;padding:20px"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#5ad3e6">Permission controls</div><p style="margin:10px 0 0;font-size:13px;line-height:1.6;color:#98a0ac">No command written by the AI runs without a grant. Grants are scoped, listed, and revocable at any time.</p></div>
         <div style="background:#12151a;padding:20px"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#5ad3e6">Secret redaction</div><p style="margin:10px 0 0;font-size:13px;line-height:1.6;color:#98a0ac">Matching values are masked before the record is stored, so redaction protects the database as well as the request.</p></div>
         <div style="background:#12151a;padding:20px"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#5ad3e6">MIT license</div><p style="margin:10px 0 0;font-size:13px;line-height:1.6;color:#98a0ac">Use it, fork it, ship it. The full source tree, build scripts and release workflow are public.</p></div>
-        <div style="background:#12151a;padding:20px"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#5ad3e6">No analytics by default</div><p style="margin:10px 0 0;font-size:13px;line-height:1.6;color:#98a0ac">There is no telemetry in the shipped build. Crash reporting is opt in and states what it sends.</p></div>
+        <div style="background:#12151a;padding:20px"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#5ad3e6">No analytics</div><p style="margin:10px 0 0;font-size:13px;line-height:1.6;color:#98a0ac">The current build has no analytics, tracking, telemetry, or crash reporting.</p></div>
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:16px">
         <a href="https://github.com/danb235/TerminalDB/blob/main/SECURITY.md" style="padding:9px 13px;border:1px solid #2a3039;border-radius:8px;background:#12151a;font:500 11.5px/1 'JetBrains Mono',monospace;color:#d5dae1;text-decoration:none" style-hover="border-color:#5ad3e6;text-decoration:none">Report a vulnerability</a>
@@ -581,7 +581,7 @@ alembic current</pre>
                 <button type="button" onClick="{{ s.select }}" aria-pressed="{{ s.active }}" style="padding:7px 10px;border:1px solid {{ s.border }};border-radius:6px;background:{{ s.bg }};color:{{ s.color }};font:500 10.5px/1 'JetBrains Mono',monospace;cursor:pointer" style-hover="border-color:#3b444f">{{ s.label }}</button>
               </sc-for>
             </div>
-            <p style="margin:10px 0 0;font:400 10.5px/1.6 'JetBrains Mono',monospace;color:#7e8795">Preview the states this page can render. In production the state is resolved from the releases feed at build time, then checked again in the browser only if JavaScript is available.</p>
+            <p style="margin:10px 0 0;font:400 10.5px/1.6 'JetBrains Mono',monospace;color:#7e8795">Preview the download states used by this design. The published site links to GitHub Releases, which remains the source of truth for assets and checksums.</p>
           </div>
         </div>
 
@@ -591,8 +591,8 @@ alembic current</pre>
             <div style="display:grid;grid-template-columns:1fr;gap:1px;background:#1b2027">
               <div style="background:#12151a;padding:11px 16px;display:flex;gap:12px;font:400 11.5px/1.5 'JetBrains Mono',monospace"><span style="color:#7e8795;min-width:92px">macOS</span><span style="color:#d5dae1">13.0 Ventura or later</span></div>
               <div style="background:#12151a;padding:11px 16px;display:flex;gap:12px;font:400 11.5px/1.5 'JetBrains Mono',monospace"><span style="color:#7e8795;min-width:92px">Architecture</span><span style="color:#d5dae1">Universal, Apple Silicon and Intel</span></div>
-              <div style="background:#12151a;padding:11px 16px;display:flex;gap:12px;font:400 11.5px/1.5 'JetBrains Mono',monospace"><span style="color:#7e8795;min-width:92px">Shells</span><span style="color:#d5dae1">zsh, bash, fish</span></div>
-              <div style="background:#12151a;padding:11px 16px;display:flex;gap:12px;font:400 11.5px/1.5 'JetBrains Mono',monospace"><span style="color:#7e8795;min-width:92px">Updates</span><span style="color:#d5dae1">automatic, in app, signed</span></div>
+              <div style="background:#12151a;padding:11px 16px;display:flex;gap:12px;font:400 11.5px/1.5 'JetBrains Mono',monospace"><span style="color:#7e8795;min-width:92px">Shell</span><span style="color:#d5dae1">zsh</span></div>
+              <div style="background:#12151a;padding:11px 16px;display:flex;gap:12px;font:400 11.5px/1.5 'JetBrains Mono',monospace"><span style="color:#7e8795;min-width:92px">Updates</span><span style="color:#d5dae1">daily and on demand</span></div>
             </div>
           </div>
           <div style="border:1px solid #232830;border-radius:10px;background:#0f1216;padding:16px">
@@ -600,8 +600,8 @@ alembic current</pre>
             <pre style="margin:11px 0 0;font:400 11px/1.8 'JetBrains Mono',monospace;color:#98a0ac;white-space:pre-wrap;overflow-wrap:anywhere"><span style="color:#5ad3e6">&#10095;</span><span> shasum -a 256 TerminalDB-macOS.zip
 </span><span style="color:#8b939f">4f2ab91c7d10e8c5&hellip;  TerminalDB-macOS.zip
 </span><span style="color:#5ad3e6">&#10095;</span><span> codesign --verify --deep --strict TerminalDB.app
-</span><span style="color:#b8e04a">&#10003;</span><span> valid on disk &middot; notarized</span></pre>
-            <p style="margin:11px 0 0;font-size:12.5px;line-height:1.6;color:#98a0ac">Every release publishes its SHA-256 alongside the asset, plus the signing identity and notarization ticket status.</p>
+</span><span style="color:#b8e04a">&#10003;</span><span> valid on disk</span></pre>
+            <p style="margin:11px 0 0;font-size:12.5px;line-height:1.6;color:#98a0ac">Every release publishes SHA 256 checksums and a universal bundle. The current prerelease is not notarized.</p>
           </div>
           <div style="border:1px solid #232830;border-radius:10px;background:#12151a;padding:16px">
             <div style="display:flex;align-items:baseline;gap:10px"><span style="font:500 12px/1 'JetBrains Mono',monospace;color:#ecedef">Recent changes on main</span><a href="https://github.com/danb235/TerminalDB/commits/main" style="margin-left:auto;font:400 11px/1 'JetBrains Mono',monospace">commit log &#8599;</a></div>
@@ -707,7 +707,7 @@ alembic current</pre>
       </div>
       <div style="margin-top:16px;border:1px solid #232830;border-radius:10px;background:#12151a;padding:16px">
         <div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#7e8795">Build time tokens</div>
-        <p style="margin:9px 0 0;font-size:12.5px;line-height:1.6;color:#98a0ac;max-width:76ch">Every outbound URL on this page is emitted from a token, so the repository or domain can change without touching markup: <code style="font-family:'JetBrains Mono',monospace;color:#5ad3e6">%%REPO_URL%%</code>, <code style="font-family:'JetBrains Mono',monospace;color:#5ad3e6">%%RELEASE_LATEST_URL%%</code>, <code style="font-family:'JetBrains Mono',monospace;color:#5ad3e6">%%ASSET_ZIP_URL%%</code>, <code style="font-family:'JetBrains Mono',monospace;color:#5ad3e6">%%ASSET_SHA256%%</code>, <code style="font-family:'JetBrains Mono',monospace;color:#5ad3e6">%%DOCS_BASE_URL%%</code>, <code style="font-family:'JetBrains Mono',monospace;color:#5ad3e6">%%SITE_ORIGIN%%</code>. The download target stays a stable concept: <code style="font-family:'JetBrains Mono',monospace;color:#5ad3e6">releases/latest/download/TerminalDB-macOS.zip</code> on GitHub Releases, valid for every future tag.</p>
+        <p style="margin:9px 0 0;font-size:12.5px;line-height:1.6;color:#98a0ac;max-width:76ch">GitHub Releases is the canonical source for every application asset and checksum. The stable asset name is <code style="font-family:'JetBrains Mono',monospace;color:#5ad3e6">TerminalDB-macOS.zip</code>, so the website can always point to the current published tag.</p>
       </div>
     </div>
   </section>
@@ -743,11 +743,11 @@ alembic current</pre>
         </details>
         <details style="background:#12151a">
           <summary style="display:flex;align-items:center;gap:12px;padding:16px 18px;cursor:pointer;font:500 14px/1.4 -apple-system,system-ui,sans-serif;color:#ecedef;list-style:none"><span style="font:700 11px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>Which shells are supported?</summary>
-          <div style="padding:0 18px 17px 42px;font-size:13.5px;line-height:1.7;color:#98a0ac">zsh, bash and fish, using your existing configuration. Block capture works through a shell integration hook you can read in the source; without it TerminalDB still runs as a plain terminal.</div>
+          <div style="padding:0 18px 17px 42px;font-size:13.5px;line-height:1.7;color:#98a0ac">zsh is supported in the current build. Block capture uses temporary shell integration hooks that are available to inspect in the source.</div>
         </details>
         <details style="background:#12151a">
           <summary style="display:flex;align-items:center;gap:12px;padding:16px 18px;cursor:pointer;font:500 14px/1.4 -apple-system,system-ui,sans-serif;color:#ecedef;list-style:none"><span style="font:700 11px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>How do updates work?</summary>
-          <div style="padding:0 18px 17px 42px;font-size:13.5px;line-height:1.7;color:#98a0ac">The app checks GitHub Releases, verifies the signature, and installs on quit, or on demand from the menu. You can switch to manual, or turn checks off entirely and download builds yourself.</div>
+          <div style="padding:0 18px 17px 42px;font-size:13.5px;line-height:1.7;color:#98a0ac">The app checks GitHub Releases once per day and whenever you choose Check for Updates. Before installation it verifies the published SHA 256 checksum, archive paths, architectures, bundle identity, version, code signature, and release signing certificate. You can always download the same asset manually.</div>
         </details>
       </div>
     </div>
@@ -760,7 +760,7 @@ alembic current</pre>
         <p style="margin:10px 0 0;font-size:14.5px;line-height:1.6;color:#98a0ac;max-width:56ch">Structured command history, assistance that asks permission, and every Claude account a click away. Install the current build, or read the source first. Both take about a minute.</p>
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:11px">
-        <a href="https://github.com/danb235/TerminalDB/releases/latest/download/TerminalDB-macOS.zip" style="display:inline-flex;align-items:center;gap:9px;padding:13px 19px;border:1px solid #5ad3e6;border-radius:9px;background:rgba(90,211,230,.09);color:#d8f8ff;font:500 14px/1 -apple-system,system-ui,sans-serif;text-decoration:none" style-hover="background:rgba(90,211,230,.18);text-decoration:none"><span style="font:700 12px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>Download latest for macOS</a>
+        <a href="https://github.com/danb235/TerminalDB/releases" style="display:inline-flex;align-items:center;gap:9px;padding:13px 19px;border:1px solid #5ad3e6;border-radius:9px;background:rgba(90,211,230,.09);color:#d8f8ff;font:500 14px/1 -apple-system,system-ui,sans-serif;text-decoration:none" style-hover="background:rgba(90,211,230,.18);text-decoration:none"><span style="font:700 12px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>View releases</a>
         <a href="https://github.com/danb235/TerminalDB" style="display:inline-flex;align-items:center;gap:9px;padding:13px 19px;border:1px solid #2a3039;border-radius:9px;background:#12151a;color:#ecedef;font:500 14px/1 -apple-system,system-ui,sans-serif;text-decoration:none" style-hover="border-color:#3b444f;text-decoration:none">View source on GitHub</a>
       </div>
     </div>
@@ -993,7 +993,7 @@ class Component extends DCLogic {
           btnBg: s.provider === 'subscription' ? 'rgba(90,211,230,.1)' : '#161a20',
           btnColor: s.provider === 'subscription' ? '#d8f8ff' : '#b6bdc7',
           select: () => this.setState({ provider: 'subscription' }) },
-        { key: 'api', title: 'Anthropic API key', body: 'Paste a key to bill usage directly to your Anthropic organisation. Stored in the macOS Keychain, never in the database.',
+        { key: 'api', title: 'Anthropic API key', body: 'Paste a key to bill usage directly to your Anthropic organisation. Stored in TerminalDB preferences, masked in the app, and excluded from command history.',
           meta: 'connected · key ••4c7a · org: studio-dev', state: s.provider === 'api' ? 'powering AI' : 'connected',
           stateTone: s.provider === 'api' ? '#b8e04a' : '#6b7481',
           dot: '#5ad3e6', border: s.provider === 'api' ? '#2f5b66' : '#232830',
