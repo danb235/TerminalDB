@@ -1,0 +1,120 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Validate release tag
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+
+      - name: Test before releasing
+        run: make test
+
+      - name: Import stable signing identity
+        env:
+          TERMINALDB_SIGNING_P12: ${{ secrets.TERMINALDB_SIGNING_P12 }}
+          TERMINALDB_SIGNING_PASSWORD: ${{ secrets.TERMINALDB_SIGNING_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${TERMINALDB_SIGNING_P12:-}" ]]; then
+            echo "::warning::No stable signing identity is configured. The release will use an ad hoc signature."
+            exit 0
+          fi
+
+          KEYCHAIN_PATH="${RUNNER_TEMP}/terminaldb.keychain-db"
+          security create-keychain -p ci "${KEYCHAIN_PATH}"
+          security set-keychain-settings -lut 3600 "${KEYCHAIN_PATH}"
+          security unlock-keychain -p ci "${KEYCHAIN_PATH}"
+          printf '%s' "${TERMINALDB_SIGNING_P12}" |
+            base64 --decode > "${RUNNER_TEMP}/terminaldb-signing.p12"
+          security import "${RUNNER_TEMP}/terminaldb-signing.p12" \
+            -k "${KEYCHAIN_PATH}" \
+            -P "${TERMINALDB_SIGNING_PASSWORD}" \
+            -A \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k ci \
+            "${KEYCHAIN_PATH}" \
+            >/dev/null
+          EXISTING_KEYCHAINS=()
+          while IFS= read -r KEYCHAIN; do
+            EXISTING_KEYCHAINS+=("${KEYCHAIN//\"/}")
+          done < <(security list-keychains -d user)
+          security list-keychains \
+            -d user \
+            -s "${KEYCHAIN_PATH}" \
+            "${EXISTING_KEYCHAINS[@]}"
+
+      - name: Build and package
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          TERMINALDB_VERSION="${VERSION}" \
+            TERMINALDB_BUILD="${GITHUB_RUN_NUMBER}" \
+            ./Scripts/build-app.sh release
+
+          APP="build/TerminalDB.app"
+          BIN="${APP}/Contents/MacOS/TerminalDB"
+          codesign --verify --deep --strict --verbose=2 "${APP}"
+          lipo "${BIN}" -verify_arch arm64 x86_64
+
+          VERSIONED_ZIP="TerminalDB-${GITHUB_REF_NAME}-macOS-universal.zip"
+          STABLE_ZIP="TerminalDB-macOS.zip"
+          CHECKSUM_FILE="TerminalDB-${GITHUB_REF_NAME}-SHA256.txt"
+
+          ditto -c -k --sequesterRsrc --keepParent "${APP}" "${VERSIONED_ZIP}"
+          cp "${VERSIONED_ZIP}" "${STABLE_ZIP}"
+          shasum -a 256 "${VERSIONED_ZIP}" "${STABLE_ZIP}" > "${CHECKSUM_FILE}"
+
+          {
+            echo "VERSIONED_ZIP=${VERSIONED_ZIP}"
+            echo "STABLE_ZIP=${STABLE_ZIP}"
+            echo "CHECKSUM_FILE=${CHECKSUM_FILE}"
+          } >> "${GITHUB_ENV}"
+
+          {
+            awk -v version="${VERSION}" '
+              $0 ~ "^## \\[" version "\\]" { printing = 1; next }
+              printing && /^## \\[/ { printing = 0 }
+              printing { print }
+            ' CHANGELOG.md
+            echo ""
+            echo "### Install"
+            echo ""
+            echo "1. Download \`${VERSIONED_ZIP}\`."
+            echo "2. Unzip it and move **TerminalDB.app** to \`/Applications\`."
+            echo "3. This build is not notarized. Open it once, then use **System Settings > Privacy & Security > Open Anyway** if macOS blocks the first launch."
+            echo ""
+            echo "The stable download URL is:"
+            echo "\`https://github.com/danb235/TerminalDB/releases/latest/download/TerminalDB-macOS.zip\`"
+          } > RELEASE_NOTES.md
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.VERSIONED_ZIP }}
+            ${{ env.STABLE_ZIP }}
+            ${{ env.CHECKSUM_FILE }}
+          body_path: RELEASE_NOTES.md
+          fail_on_unmatched_files: true
+          prerelease: ${{ startsWith(github.ref_name, 'v0.') }}

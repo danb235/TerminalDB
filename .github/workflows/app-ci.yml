@@ -1,0 +1,47 @@
+name: App CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "marketing/**"
+      - "marketing-build/**"
+      - "WEBSITE.md"
+  pull_request:
+    paths-ignore:
+      - "marketing/**"
+      - "marketing-build/**"
+      - "WEBSITE.md"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build and test
+        run: make test
+
+      - name: Build universal release bundle
+        env:
+          TERMINALDB_VERSION: 0.1.0
+          TERMINALDB_BUILD: ci
+        run: ./Scripts/build-app.sh release
+
+      - name: Verify release bundle
+        run: |
+          set -euo pipefail
+          APP="build/TerminalDB.app"
+          BIN="${APP}/Contents/MacOS/TerminalDB"
+          codesign --verify --deep --strict --verbose=2 "${APP}"
+          lipo "${BIN}" -verify_arch arm64 x86_64
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${APP}/Contents/Info.plist")" = "0.1.0"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "${APP}/Contents/Info.plist")" = "13.0"
