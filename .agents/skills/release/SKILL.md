@@ -129,4 +129,10 @@ On failure, report the failing step with:
 gh run view RUN_ID --log-failed
 ```
 
-Fix forward. Do not move or overwrite an already published tag.
+Fix forward. Do not move or overwrite an already published tag. If the tag
+workflow itself needs correction, commit the workflow fix to `main`, then retry
+the existing immutable tag with:
+
+```sh
+gh workflow run Release --ref main -f tag=vX.Y.Z
+```

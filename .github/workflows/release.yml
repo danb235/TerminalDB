@@ -4,9 +4,18 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to publish or retry
+        required: true
+        type: string
 
 permissions:
   contents: write
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:
   release:
@@ -14,13 +23,19 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Validate release tag
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
+          if ! git rev-parse "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "Release tag does not exist: ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+          VERSION="${RELEASE_TAG#v}"
           if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Invalid release tag: ${GITHUB_REF_NAME}" >&2
+            echo "Invalid release tag: ${RELEASE_TAG}" >&2
             exit 1
           fi
 
@@ -67,7 +82,7 @@ jobs:
       - name: Build and package
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           TERMINALDB_VERSION="${VERSION}" \
             TERMINALDB_BUILD="${GITHUB_RUN_NUMBER}" \
             ./Scripts/build-app.sh release
@@ -77,9 +92,9 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "${APP}"
           lipo "${BIN}" -verify_arch arm64 x86_64
 
-          VERSIONED_ZIP="TerminalDB-${GITHUB_REF_NAME}-macOS-universal.zip"
+          VERSIONED_ZIP="TerminalDB-${RELEASE_TAG}-macOS-universal.zip"
           STABLE_ZIP="TerminalDB-macOS.zip"
-          CHECKSUM_FILE="TerminalDB-${GITHUB_REF_NAME}-SHA256.txt"
+          CHECKSUM_FILE="TerminalDB-${RELEASE_TAG}-SHA256.txt"
 
           ditto -c -k --sequesterRsrc --keepParent "${APP}" "${VERSIONED_ZIP}"
           cp "${VERSIONED_ZIP}" "${STABLE_ZIP}"
@@ -92,9 +107,9 @@ jobs:
           } >> "${GITHUB_ENV}"
 
           {
-            awk -v version="${VERSION}" '
-              $0 ~ "^## \\[" version "\\]" { printing = 1; next }
-              printing && /^## \\[/ { printing = 0 }
+            awk -v header="## [${VERSION}]" '
+              $0 == header { printing = 1; next }
+              printing && substr($0, 1, 4) == "## [" { exit }
               printing { print }
             ' CHANGELOG.md
             echo ""
@@ -117,4 +132,5 @@ jobs:
             ${{ env.CHECKSUM_FILE }}
           body_path: RELEASE_NOTES.md
           fail_on_unmatched_files: true
-          prerelease: ${{ startsWith(github.ref_name, 'v0.') }}
+          tag_name: ${{ env.RELEASE_TAG }}
+          prerelease: ${{ startsWith(env.RELEASE_TAG, 'v0.') }}
