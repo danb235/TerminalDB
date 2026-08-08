@@ -8419,6 +8419,10 @@ static BOOL TerminalDBWriteAll(int descriptor,
         fprintf(stderr, "FAIL remote PTY output preserves split UTF-8\n");
         failures++;
     }
+    if (![TerminalRemoteWindowController runAccountControlsSelfTests]) {
+        fprintf(stderr, "FAIL Remote Control exposes a visible Create Account action\n");
+        failures++;
+    }
 
     if (![ClaudeStatusBar runUsageNormalizationSelfTests]) {
         fprintf(stderr, "FAIL Fable 5 usage normalization\n");

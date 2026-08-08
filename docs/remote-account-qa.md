@@ -49,6 +49,9 @@ guest regression, encryption check, or production security gate fails.
   account deletion. Verify a change rejects the old password, accepts the new
   password only with the existing MFA factor, rejects pre-change API tokens,
   and disconnects existing account controllers.
+- Verify the native Remote Control window keeps Create Account visible within
+  its bounds, enables it only after an account-capable agent responds, and
+  explains how to clear an older background agent after an app update.
 
 ## 4. Anonymous-link regression
 
@@ -70,6 +73,9 @@ guest regression, encryption check, or production security gate fails.
   its owned remote records are gone, and an unrelated one-time link still works.
 - Exercise phone, tablet, and desktop viewports, keyboard input, accessibility,
   offline/reconnect, controller rotation, and stale-session handling.
+- Open Accounts through a one-time session from a pre-account Mac build and
+  verify the web app keeps sign-in and the terminal usable, explains the
+  required Mac update, and never enters a waiting state.
 - Confirm no OAuth token, pairing fragment, enrollment code, or terminal text
   appears in application or access logs.
 
@@ -115,8 +121,8 @@ Never record pairing URLs, enrollment codes, OAuth tokens, or terminal output.
 Status: **release-candidate local and deployed gates passed**.
 
 - Repository production build: passed.
-- Protocol, infrastructure, web, and harness tests: 102 passed.
-- Playwright phone, tablet, and desktop suite: 89 passed, 1 skipped. The
+- Protocol, infrastructure, web, and harness tests: 105 passed.
+- Playwright phone, tablet, and desktop suite: 92 passed, 1 skipped. The
   skipped desktop touch-target check is intentionally limited to coarse-pointer
   devices; the same check passed on phone and tablet projects.
 - macOS interactive and headless suites: passed, including compile, ad hoc
@@ -150,6 +156,17 @@ Status: **release-candidate local and deployed gates passed**.
 - Changed the password through the enrolled Mac. The old password failed, the
   new password required the existing TOTP, the active account controller was
   revoked, and the pre-change API token returned 401: passed.
+- Opened a disposable secure link from the actual running pre-account Mac
+  binary against the deployed web app. The terminal and sign-in remained
+  available, the unsupported create action was absent, and an immediate update
+  explanation replaced the indefinite waiting state. Repeated on the automated
+  phone, tablet, and desktop projects, then revoked the disposable live
+  controller: passed.
+- Started a fresh session with the final account-capable native agent, verified
+  it advertised account approval, clicked Create account with this Mac in the
+  deployed web app, and received the enabled username/password form through a
+  real one-time Mac grant. Disabled and removed the temporary session without
+  creating a Cognito user: passed.
 - Deleted the disposable account from the web after exact `DELETE`
   confirmation. Cognito returned to zero users and no live tenant records
   remained: passed.

@@ -62,6 +62,17 @@ const TerminalSurface = lazy(async () => {
 });
 
 type View = "dashboard" | "terminal" | "accounts" | "devices" | "diagnostics" | "lab";
+type AccountBootstrapSupport = "checking" | "supported" | "upgrade-required";
+
+export function accountBootstrapSupport(
+  inventory: Pick<InventoryPayload, "capabilities" | "instances">,
+): AccountBootstrapSupport {
+  if (inventory.capabilities?.includes("account-bootstrap-v1")) return "supported";
+  if (inventory.capabilities !== undefined || inventory.instances.length > 0) {
+    return "upgrade-required";
+  }
+  return "checking";
+}
 
 const TERMINAL_INPUT_BATCH_DELAY_MS = 40;
 
@@ -309,6 +320,7 @@ function AccountAccess({
   onSessionReady,
   context = "landing",
   activeAccessMode,
+  accountBootstrapSupport = "checking",
   bootstrapToken,
   onRequestBootstrap,
   onBootstrapConsumed,
@@ -317,6 +329,7 @@ function AccountAccess({
   readonly onSessionReady: () => Promise<void>;
   readonly context?: "landing" | "session";
   readonly activeAccessMode?: "pairing" | "account";
+  readonly accountBootstrapSupport?: AccountBootstrapSupport;
   readonly bootstrapToken?: string | undefined;
   readonly onRequestBootstrap?: () => Promise<void>;
   readonly onBootstrapConsumed?: () => void;
@@ -582,7 +595,9 @@ function AccountAccess({
         <span>YOUR TERMINALS, ANYWHERE</span>
         <h2>Sign in to TerminalDB</h2>
         <p>{context === "session"
-          ? "Sign in, or create an account with this Mac's one-time approval. Your current secure-link session stays active while you decide."
+          ? accountBootstrapSupport === "upgrade-required"
+            ? "Sign in with an existing account. Creating a new account requires an updated TerminalDB app on this Mac."
+            : "Sign in, or create an account with this Mac's one-time approval. Your current secure-link session stays active while you decide."
           : "Sign in to see every Mac connected to your account. To create an account, start from TerminalDB on a Mac or from an open one-time session."}</p>
         <div className="account-auth-actions">
           <button
@@ -595,9 +610,10 @@ function AccountAccess({
           >
             Sign in
           </button>
-          {context === "session" && activeAccessMode === "pairing" && onRequestBootstrap ? (
+          {context === "session" && activeAccessMode === "pairing" && onRequestBootstrap &&
+          accountBootstrapSupport !== "upgrade-required" ? (
             <button
-              disabled={loading || bootstrapRequestBusy}
+              disabled={loading || bootstrapRequestBusy || accountBootstrapSupport === "checking"}
               onClick={() => {
                 setBootstrapRequestBusy(true);
                 setError(undefined);
@@ -605,14 +621,24 @@ function AccountAccess({
                   setError(bootstrapError instanceof Error
                     ? bootstrapError.message
                     : "The Mac could not approve account creation.");
-                  setBootstrapRequestBusy(false);
-                });
+                }).finally(() => setBootstrapRequestBusy(false));
               }}
             >
-              {bootstrapRequestBusy ? "Waiting for Mac…" : "Create account with this Mac"}
+              {bootstrapRequestBusy
+                ? "Waiting for Mac…"
+                : accountBootstrapSupport === "checking"
+                  ? "Checking Mac…"
+                  : "Create account with this Mac"}
             </button>
           ) : null}
         </div>
+        {context === "session" && activeAccessMode === "pairing" &&
+        accountBootstrapSupport === "upgrade-required" ? (
+          <div className="account-compatibility" role="alert">
+            <strong>Update TerminalDB on this Mac</strong>
+            <span>This one-time session came from an older Mac app that cannot approve account creation. Install TerminalDB v0.3.0 or newer, then reopen Remote Control. Sign-in and this one-time terminal remain available.</span>
+          </div>
+        ) : null}
         {error ? <small role="alert">{error}</small> : null}
       </section>
     );
@@ -1020,6 +1046,7 @@ function AccountsView({
   remoteAccountConfiguration,
   onRemoteSessionReady,
   activeAccessMode,
+  accountBootstrapSupport,
   bootstrapToken,
   onRequestBootstrap,
   onBootstrapConsumed,
@@ -1033,6 +1060,7 @@ function AccountsView({
   readonly remoteAccountConfiguration: NonNullable<RemotePublicConfiguration["accountAuth"]> | undefined;
   readonly onRemoteSessionReady: () => Promise<void>;
   readonly activeAccessMode: "pairing" | "account";
+  readonly accountBootstrapSupport: AccountBootstrapSupport;
   readonly bootstrapToken?: string | undefined;
   readonly onRequestBootstrap: () => Promise<void>;
   readonly onBootstrapConsumed: () => void;
@@ -1043,7 +1071,9 @@ function AccountsView({
         <span className="eyebrow">TERMINALDB</span>
         <h1 id="accounts-heading">Accounts</h1>
         <p>{activeAccessMode === "pairing"
-          ? "Create or sign in to your TerminalDB account without giving up this one-time session."
+          ? accountBootstrapSupport === "upgrade-required"
+            ? "Sign in without giving up this one-time session. Update the Mac app before creating a new account."
+            : "Create or sign in to your TerminalDB account without giving up this one-time session."
           : "Manage your TerminalDB sessions and the Claude accounts available on this Mac."}</p>
       </header>
       {remoteAccountConfiguration ? (
@@ -1052,6 +1082,7 @@ function AccountsView({
           onSessionReady={onRemoteSessionReady}
           context="session"
           activeAccessMode={activeAccessMode}
+          accountBootstrapSupport={accountBootstrapSupport}
           bootstrapToken={bootstrapToken}
           onRequestBootstrap={onRequestBootstrap}
           onBootstrapConsumed={onBootstrapConsumed}
@@ -1330,8 +1361,14 @@ export function App() {
     import.meta.env.DEV && !forceUnpaired ? "terminal" : "dashboard",
   );
   const [connection, dispatch] = useConnectionModel();
+  const mockCapabilities = import.meta.env.DEV
+    ? (window as Window & { __terminaldbMockCapabilities?: readonly string[] })
+      .__terminaldbMockCapabilities
+    : undefined;
   const initialInventory: InventoryPayload = import.meta.env.DEV
-    ? mockInventory
+    ? mockCapabilities !== undefined
+      ? { ...mockInventory, capabilities: mockCapabilities }
+      : mockInventory
     : { instances: [], accounts: [] };
   const [inventory, setInventory] = useState<InventoryPayload>(initialInventory);
   const [selectedTabId, setSelectedTabId] = useState(initialInventory.selectedTabId);
@@ -2124,7 +2161,10 @@ export function App() {
   const requestAccountBootstrap = async () => {
     const client = clientRef.current;
     if (!client) throw new Error("The one-time session is not connected to the Mac.");
-    await client.send("account.bootstrap", {}, 30_000, true);
+    if (!inventory.capabilities?.includes("account-bootstrap-v1")) {
+      throw new Error("Update TerminalDB on this Mac before creating an account.");
+    }
+    await client.send("account.bootstrap", {}, 15_000, true);
   };
 
   const consumeAccountBootstrap = () => {
@@ -2217,6 +2257,7 @@ export function App() {
               remoteAccountConfiguration={remoteConfiguration?.accountAuth}
               onRemoteSessionReady={connect}
               activeAccessMode={activeAccessMode}
+              accountBootstrapSupport={accountBootstrapSupport(inventory)}
               bootstrapToken={accountBootstrapToken}
               onRequestBootstrap={requestAccountBootstrap}
               onBootstrapConsumed={consumeAccountBootstrap}

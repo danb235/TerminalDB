@@ -6,6 +6,13 @@ import Security
 
 private let protocolVersion = 1
 private let maximumWireBytes = 30_000
+private let accountBootstrapCapability = "account-bootstrap-v1"
+private let browserCapabilities = [
+    "sequenced-input-v1",
+    "causal-input-output-v1",
+    accountBootstrapCapability,
+]
+private let localAgentCapabilities = [accountBootstrapCapability]
 
 private func base64URL(_ data: Data) -> String {
     data.base64EncodedString()
@@ -1141,10 +1148,7 @@ private final class RemoteAgent: @unchecked Sendable {
         var payload: [String: Any] = [
             "instances": cleanedInstances,
             "accounts": Array(accountsByID.values),
-            "capabilities": [
-                "sequenced-input-v1",
-                "causal-input-output-v1",
-            ],
+            "capabilities": browserCapabilities,
         ]
         if let selectedTabID = viewedTabs.values.first {
             payload["selectedTabId"] = selectedTabID
@@ -2548,6 +2552,7 @@ private final class RemoteAgent: @unchecked Sendable {
             "state": status ?? lastStatus,
             "enabled": state.enabled,
             "accountOwned": state.accountOwned == true,
+            "capabilities": localAgentCapabilities,
             "controllers": trustedControllers,
         ]
         if let pairingURL { message["pairingURL"] = pairingURL }
@@ -2647,6 +2652,12 @@ private struct TerminalDBRemoteAgentMain {
                 return
             }
             if CommandLine.arguments.contains("--self-test") {
+                guard browserCapabilities.contains(accountBootstrapCapability),
+                      localAgentCapabilities.contains(accountBootstrapCapability) else {
+                    throw AgentError.server(
+                        "Account bootstrap capability was not advertised"
+                    )
+                }
                 let expected = Data(
                     String(repeating: "TerminalDB compression vector ", count: 40).utf8
                 )

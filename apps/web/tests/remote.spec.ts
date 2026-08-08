@@ -911,6 +911,43 @@ test("requires a Mac approval for account creation and keeps sign-in available",
   expect(sizes.content).toBeLessThanOrEqual(sizes.viewport);
 });
 
+test("explains the required Mac update instead of waiting on an unsupported account command", async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as Window & { __terminaldbMockCapabilities?: readonly string[] })
+      .__terminaldbMockCapabilities = ["sequenced-input-v1", "causal-input-output-v1"];
+  });
+  await page.route("**/api/config", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        apiBaseUrl: "",
+        websocketUrl: "",
+        protocolVersion: 1,
+        region: "us-west-2",
+        pairingEnabled: true,
+        mockMode: true,
+        accountAuth: {
+          clientId: "web-client",
+          domain: "https://login.example.invalid",
+          issuer: "https://cognito-idp.us-west-2.amazonaws.com/us-west-2_pool",
+          callbackPath: "/auth/callback",
+        },
+      }),
+    });
+  });
+
+  await page.reload();
+  await expect(page.locator(".terminal-stage")).toBeVisible();
+  await page.getByRole("button", { name: "Accounts", exact: true }).click();
+
+  await expect(page.getByRole("alert")).toContainText("Update TerminalDB on this Mac");
+  await expect(page.getByRole("alert")).toContainText("v0.3.0 or newer");
+  await expect(page.getByRole("button", { name: "Create account with this Mac" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Waiting for Mac…" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeEnabled();
+  await expect(page.locator(".terminal-stage")).toBeVisible();
+});
+
 test("discovers tenant sessions and creates a Mac enrollment from an account", async ({ page }) => {
   let controllerRegistration: Record<string, unknown> | undefined;
   await page.addInitScript(() => {

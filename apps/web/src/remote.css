@@ -1417,6 +1417,26 @@ p {
   color: var(--tdb-lime) !important;
 }
 
+.account-compatibility {
+  display: grid;
+  gap: 5px;
+  padding: 11px;
+  border: 1px solid rgb(239 181 78 / 38%);
+  border-radius: 5px;
+  background: rgb(239 181 78 / 8%);
+}
+
+.account-compatibility strong {
+  color: var(--tdb-amber);
+  font-size: 12px;
+}
+
+.account-compatibility span {
+  color: var(--tdb-muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
 .account-access header {
   display: flex;
   align-items: start;
