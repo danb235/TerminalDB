@@ -71,6 +71,7 @@ clang \
   -framework AppKit \
   -framework Foundation \
   -framework CoreImage \
+  -framework LocalAuthentication \
   "${SOURCES[@]}" \
   -o "${BIN_PATH}"
 

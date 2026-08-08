@@ -3,6 +3,14 @@ import {
   DeleteConnectionCommand,
 } from "@aws-sdk/client-apigatewaymanagementapi";
 import {
+  AdminDeleteUserCommand,
+  AdminSetUserPasswordCommand,
+  AdminUserGlobalSignOutCommand,
+  CognitoIdentityProviderClient,
+} from "@aws-sdk/client-cognito-identity-provider";
+import {
+  BatchWriteCommand,
+  type BatchWriteCommandInput,
   DeleteCommand,
   GetCommand,
   QueryCommand,
@@ -30,6 +38,7 @@ import {
   stringField,
   tableName,
   verifyAuthenticatedRequest,
+  verifyP256Signature,
 } from "./common.js";
 
 interface AdminEnrollmentEvent {
@@ -39,6 +48,8 @@ interface AdminEnrollmentEvent {
 const pairingDisabled = process.env.DISABLE_NEW_PAIRINGS === "true";
 const ACTIVE_SESSION_TTL_SECONDS = 24 * 60 * 60;
 const ENDED_RECORD_TTL_SECONDS = 7 * 24 * 60 * 60;
+const ACCOUNT_DELETION_TTL_SECONDS = 2 * 60 * 60;
+const ACCOUNT_BOOTSTRAP_TTL_SECONDS = 20 * 60;
 const publicRegion = process.env.AWS_REGION ?? "us-west-2";
 const stage = process.env.STAGE ?? "dev";
 const publicWebSocketUrl = process.env.PUBLIC_WEBSOCKET_URL ?? "";
@@ -46,6 +57,8 @@ const cognitoAuthEnabled = process.env.COGNITO_AUTH_ENABLED === "true";
 const cognitoClientId = process.env.COGNITO_CLIENT_ID ?? "";
 const cognitoDomain = process.env.COGNITO_DOMAIN ?? "";
 const cognitoIssuer = process.env.COGNITO_ISSUER ?? "";
+const cognitoUserPoolId = process.env.COGNITO_USER_POOL_ID ?? "";
+const cognito = new CognitoIdentityProviderClient({});
 const websocketManagementEndpoint = process.env.WEBSOCKET_MANAGEMENT_ENDPOINT ?? "";
 const websocketManagement = websocketManagementEndpoint
   ? new ApiGatewayManagementApiClient({ endpoint: websocketManagementEndpoint })
@@ -60,13 +73,19 @@ async function disconnectConnections(connectionIds: readonly string[]): Promise<
   );
 }
 
-function accountSubject(event: APIGatewayProxyEventV2): string {
+function accountIdentity(event: APIGatewayProxyEventV2): {
+  readonly sub: string;
+  readonly username?: string;
+  readonly issuedAt?: number;
+} {
   const context = event.requestContext as typeof event.requestContext & {
     authorizer?: { jwt?: { claims?: Record<string, string | number | boolean | string[]> } };
   };
   const authorizer = context.authorizer;
   const sub = authorizer?.jwt?.claims?.sub;
+  const username = authorizer?.jwt?.claims?.username;
   const tokenUse = authorizer?.jwt?.claims?.token_use;
+  const issuedAt = authorizer?.jwt?.claims?.iat;
   if (
     tokenUse !== "access" ||
     typeof sub !== "string" ||
@@ -74,7 +93,330 @@ function accountSubject(event: APIGatewayProxyEventV2): string {
   ) {
     throw new Error("Account authentication required");
   }
-  return sub;
+  return {
+    sub,
+    ...(typeof username === "string" && username.length > 0 && username.length <= 128
+      ? { username }
+      : {}),
+    ...(typeof issuedAt === "number" && Number.isSafeInteger(issuedAt)
+      ? { issuedAt }
+      : typeof issuedAt === "string" && /^\d+$/u.test(issuedAt)
+        ? { issuedAt: Number(issuedAt) }
+        : {}),
+  };
+}
+
+function accountSubject(event: APIGatewayProxyEventV2): string {
+  return accountIdentity(event).sub;
+}
+
+async function assertAccountActive(ownerSub: string, issuedAt?: number): Promise<void> {
+  const [deletion, account] = await Promise.all([
+    dynamo.send(new GetCommand({
+      TableName: tableName,
+      Key: { PK: `USER#${ownerSub}`, SK: "ACCOUNT#DELETED" },
+      ConsistentRead: true,
+    })),
+    issuedAt === undefined
+      ? Promise.resolve({ Item: undefined })
+      : dynamo.send(new GetCommand({
+          TableName: tableName,
+          Key: { PK: `USER#${ownerSub}`, SK: "ACCOUNT#META" },
+          ConsistentRead: true,
+        })),
+  ]);
+  if (deletion.Item) throw new Error("Account has been deleted");
+  if (
+    issuedAt !== undefined &&
+    Number(account.Item?.credentialsChangedAt ?? 0) > issuedAt
+  ) {
+    throw new Error("Account credentials changed. Sign in again.");
+  }
+}
+
+function accountActiveCondition(
+  ownerSub: string | undefined,
+): NonNullable<TransactWriteCommandInput["TransactItems"]> {
+  return ownerSub
+    ? [{
+        ConditionCheck: {
+          TableName: tableName,
+          Key: { PK: `USER#${ownerSub}`, SK: "ACCOUNT#DELETED" },
+          ConditionExpression: "attribute_not_exists(PK)",
+        },
+      }]
+    : [];
+}
+
+interface AccountBootstrapProof {
+  readonly fingerprint: string;
+  readonly deviceName: string;
+  readonly signingPublicKey: JsonWebKey;
+  readonly agreementPublicKey: JsonWebKey;
+  readonly previousDeviceId?: string;
+  readonly nonce?: string;
+}
+
+async function accountBootstrapProof(
+  event: APIGatewayProxyEventV2,
+  body: Record<string, unknown>,
+): Promise<AccountBootstrapProof> {
+  const principalHeader = Object.entries(event.headers).find(
+    ([name]) => name.toLowerCase() === "x-terminaldb-principal",
+  )?.[1];
+  if (principalHeader) {
+    const { principalId, principal } = await verifyAuthenticatedRequest(event);
+    if (principal.deviceId !== principalId) {
+      throw new Error("Only a TerminalDB Mac can approve account creation");
+    }
+    if (typeof principal.ownerSub === "string") {
+      throw new Error("This Mac is already connected to a TerminalDB account");
+    }
+    const signingPublicKey = principal.signingPublicKey as JsonWebKey;
+    const agreementPublicKey = principal.agreementPublicKey as JsonWebKey;
+    return {
+      fingerprint: sha256(`${signingPublicKey.x}.${signingPublicKey.y}`),
+      deviceName: String(principal.name ?? "Mac").slice(0, 100),
+      signingPublicKey,
+      agreementPublicKey,
+      previousDeviceId: principalId,
+    };
+  }
+
+  const timestamp = Number(body.timestamp);
+  const nonce = stringField(body, "nonce", 128);
+  const deviceName = stringField(body, "deviceName", 100);
+  const signature = stringField(body, "signature", 256);
+  const signingPublicKey = jsonWebKeyField(body, "signingPublicKey");
+  const agreementPublicKey = jsonWebKeyField(body, "agreementPublicKey");
+  if (!Number.isSafeInteger(timestamp) || Math.abs(Date.now() - timestamp) > 60_000) {
+    throw new Error("Stale account bootstrap proof");
+  }
+  const canonical = [
+    String(timestamp),
+    nonce,
+    deviceName,
+    signingPublicKey.x,
+    signingPublicKey.y,
+    agreementPublicKey.x,
+    agreementPublicKey.y,
+  ].join("\n");
+  if (!verifyP256Signature(signingPublicKey, canonical, signature)) {
+    throw new Error("Invalid account bootstrap signature");
+  }
+  return {
+    fingerprint: sha256(`${signingPublicKey.x}.${signingPublicKey.y}`),
+    deviceName,
+    signingPublicKey,
+    agreementPublicKey,
+    nonce,
+  };
+}
+
+async function createAccountBootstrap(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
+  if (!cognitoClientId) throw new Error("Account creation is not configured");
+  const body = parseBody(event);
+  const proof = await accountBootstrapProof(event, body);
+  const token = randomSecret(32);
+  const now = nowSeconds();
+  const expiresAt = now + ACCOUNT_BOOTSTRAP_TTL_SECONDS;
+  const transactItems: NonNullable<TransactWriteCommandInput["TransactItems"]> = [
+    ...(proof.nonce
+      ? [{
+          Put: {
+            TableName: tableName,
+            Item: {
+              PK: `BOOTSTRAP_NONCE#${proof.fingerprint}`,
+              SK: proof.nonce,
+              ttl: now + 120,
+            },
+            ConditionExpression: "attribute_not_exists(PK)",
+          },
+        }]
+      : []),
+    {
+      Put: {
+        TableName: tableName,
+        Item: {
+          PK: `BOOTSTRAP_RATE#${proof.fingerprint}`,
+          SK: "META",
+          ttl: now + 60,
+        },
+        ConditionExpression: "attribute_not_exists(PK) OR #ttl < :now",
+        ExpressionAttributeNames: { "#ttl": "ttl" },
+        ExpressionAttributeValues: { ":now": now },
+      },
+    },
+    {
+      Put: {
+        TableName: tableName,
+        Item: {
+          PK: `ACCOUNT_BOOTSTRAP#${sha256(token)}`,
+          SK: "META",
+          status: "pending",
+          clientId: cognitoClientId,
+          deviceName: proof.deviceName,
+          signingPublicKey: proof.signingPublicKey,
+          agreementPublicKey: proof.agreementPublicKey,
+          createdAt: now,
+          expiresAt,
+          ttl: expiresAt,
+          ...(proof.previousDeviceId
+            ? { previousDeviceId: proof.previousDeviceId }
+            : {}),
+        },
+        ConditionExpression: "attribute_not_exists(PK)",
+      },
+    },
+  ];
+  await dynamo.send(new TransactWriteCommand({ TransactItems: transactItems }));
+  return json(201, { bootstrapToken: token, expiresAt });
+}
+
+async function accountBootstrapStatus(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
+  const body = parseBody(event);
+  const token = stringField(body, "bootstrapToken", 256);
+  const result = await dynamo.send(
+    new GetCommand({
+      TableName: tableName,
+      Key: { PK: `ACCOUNT_BOOTSTRAP#${sha256(token)}`, SK: "META" },
+      ConsistentRead: true,
+    }),
+  );
+  if (!result.Item || Number(result.Item.ttl) <= nowSeconds()) {
+    return json(410, { error: "Account setup expired. Start again from TerminalDB." });
+  }
+  if (result.Item.status === "complete" && result.Item.deviceId) {
+    return json(200, { status: "complete", deviceId: result.Item.deviceId });
+  }
+  return json(200, { status: "pending" });
+}
+
+async function completeAccountBootstrap(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
+  const { sub: ownerSub, username } = accountIdentity(event);
+  if (!username) throw new Error("Account username claim is missing");
+  const body = parseBody(event);
+  const token = stringField(body, "bootstrapToken", 256);
+  const key = { PK: `ACCOUNT_BOOTSTRAP#${sha256(token)}`, SK: "META" };
+  const result = await dynamo.send(
+    new GetCommand({ TableName: tableName, Key: key, ConsistentRead: true }),
+  );
+  const bootstrap = result.Item;
+  if (!bootstrap || Number(bootstrap.ttl) <= nowSeconds()) {
+    return json(410, { error: "Account setup expired. Start again from TerminalDB." });
+  }
+  if (bootstrap.status === "complete") {
+    if (bootstrap.ownerSub !== ownerSub) {
+      return json(403, { error: "This account setup belongs to another account" });
+    }
+    return json(200, { completed: true, deviceId: bootstrap.deviceId });
+  }
+  if (
+    bootstrap.status !== "signup-confirmed" ||
+    typeof bootstrap.cognitoUsername !== "string" ||
+    !constantEqual(bootstrap.cognitoUsername, username)
+  ) {
+    return json(403, { error: "Complete the approved Cognito signup before connecting this Mac" });
+  }
+  const deviceId = typeof bootstrap.previousDeviceId === "string"
+    ? bootstrap.previousDeviceId
+    : crypto.randomUUID();
+  const completedAt = nowSeconds();
+  const deviceRecord = {
+    deviceId,
+    name: String(bootstrap.deviceName ?? "Mac"),
+    signingPublicKey: bootstrap.signingPublicKey,
+    agreementPublicKey: bootstrap.agreementPublicKey,
+    ownerSub,
+    registeredAt: completedAt,
+  };
+  const deviceWrite = typeof bootstrap.previousDeviceId === "string"
+    ? {
+        Update: {
+          TableName: tableName,
+          Key: { PK: `DEVICE#${deviceId}`, SK: "META" },
+          UpdateExpression: "SET ownerSub = :owner, #name = :name REMOVE #ttl, #temporary",
+          ConditionExpression:
+            "attribute_exists(PK) AND (attribute_not_exists(ownerSub) OR ownerSub = :owner)",
+          ExpressionAttributeNames: {
+            "#name": "name",
+            "#ttl": "ttl",
+            "#temporary": "temporary",
+          },
+          ExpressionAttributeValues: {
+            ":owner": ownerSub,
+            ":name": deviceRecord.name,
+          },
+        },
+      }
+    : {
+        Put: {
+          TableName: tableName,
+          Item: { PK: `DEVICE#${deviceId}`, SK: "META", ...deviceRecord },
+          ConditionExpression: "attribute_not_exists(PK)",
+        },
+      };
+  await dynamo.send(
+    new TransactWriteCommand({
+      TransactItems: [
+        {
+          Update: {
+            TableName: tableName,
+            Key: key,
+            UpdateExpression:
+              "SET #status = :complete, ownerSub = :owner, deviceId = :device, completedAt = :now, #ttl = :ttl",
+            ConditionExpression:
+              "#status = :confirmed AND cognitoUsername = :username AND #ttl > :now",
+            ExpressionAttributeNames: { "#status": "status", "#ttl": "ttl" },
+            ExpressionAttributeValues: {
+              ":complete": "complete",
+              ":confirmed": "signup-confirmed",
+              ":owner": ownerSub,
+              ":device": deviceId,
+              ":username": username,
+              ":now": completedAt,
+              ":ttl": completedAt + 5 * 60,
+            },
+          },
+        },
+        deviceWrite,
+        {
+          Put: {
+            TableName: tableName,
+            Item: {
+              PK: `USER#${ownerSub}`,
+              SK: `DEVICE#${deviceId}`,
+              deviceId,
+              name: deviceRecord.name,
+              registeredAt: completedAt,
+            },
+            ConditionExpression: "attribute_not_exists(PK)",
+          },
+        },
+        {
+          Put: {
+            TableName: tableName,
+            Item: {
+              PK: `USER#${ownerSub}`,
+              SK: "ACCOUNT#META",
+              username,
+              createdAt: completedAt,
+              recovery: "trusted-mac",
+            },
+            ConditionExpression: "attribute_not_exists(PK)",
+          },
+        },
+        ...accountActiveCondition(ownerSub),
+      ],
+    }),
+  );
+  return json(200, { completed: true, deviceId });
 }
 
 async function createEnrollment(ownerSub?: string): Promise<Record<string, unknown>> {
@@ -106,6 +448,7 @@ async function createEnrollment(ownerSub?: string): Promise<Record<string, unkno
     createdAt: nowSeconds(),
     expiresAt,
     ttl: expiresAt,
+    codeHash: sha256(code),
     ...(ownerSub ? { ownerSub } : {}),
   };
   await dynamo.send(
@@ -126,10 +469,278 @@ async function createEnrollment(ownerSub?: string): Promise<Record<string, unkno
               },
             }]
           : []),
+        ...accountActiveCondition(ownerSub),
       ],
     }),
   );
   return { enrollmentCode: code, expiresAt };
+}
+
+async function queryPartition(partitionKey: string): Promise<Record<string, unknown>[]> {
+  const items: Record<string, unknown>[] = [];
+  let exclusiveStartKey: Record<string, unknown> | undefined;
+  do {
+    const result = await dynamo.send(
+      new QueryCommand({
+        TableName: tableName,
+        KeyConditionExpression: "PK = :pk",
+        ExpressionAttributeValues: { ":pk": partitionKey },
+        ConsistentRead: true,
+        ...(exclusiveStartKey ? { ExclusiveStartKey: exclusiveStartKey } : {}),
+      }),
+    );
+    items.push(...(result.Items ?? []));
+    exclusiveStartKey = result.LastEvaluatedKey;
+  } while (exclusiveStartKey);
+  return items;
+}
+
+async function batchDelete(keys: readonly { readonly PK: string; readonly SK: string }[]): Promise<void> {
+  const unique = [...new Map(keys.map((key) => [`${key.PK}\u0000${key.SK}`, key])).values()];
+  for (let offset = 0; offset < unique.length; offset += 25) {
+    let pending: NonNullable<BatchWriteCommandInput["RequestItems"]>[string] =
+      unique.slice(offset, offset + 25).map((Key) => ({ DeleteRequest: { Key } }));
+    for (let attempt = 0; pending.length > 0 && attempt < 6; attempt += 1) {
+      const result = await dynamo.send(
+        new BatchWriteCommand({ RequestItems: { [tableName]: pending } }),
+      );
+      pending = result.UnprocessedItems?.[tableName] ?? [];
+    }
+    if (pending.length > 0) throw new Error("Account data deletion could not be completed");
+  }
+}
+
+async function revokeAccountControllers(ownerSub: string): Promise<void> {
+  const userItems = await queryPartition(`USER#${ownerSub}`);
+  const mappings = userItems.filter(
+    (item) =>
+      String(item.SK).startsWith("CONTROLLER#") &&
+      typeof item.controllerId === "string" &&
+      typeof item.sessionId === "string",
+  );
+  if (mappings.length === 0) return;
+
+  const sessionIds = [...new Set(mappings.map((item) => String(item.sessionId)))];
+  const accountControllerIds = new Set(mappings.map((item) => String(item.controllerId)));
+  const sessionPartitions = await Promise.all(
+    sessionIds.map((sessionId) => queryPartition(`SESSION#${sessionId}`)),
+  );
+  const connectionIds: string[] = [];
+  const keys = mappings.map((item) => ({ PK: String(item.PK), SK: String(item.SK) }));
+
+  for (let index = 0; index < sessionIds.length; index += 1) {
+    const sessionId = sessionIds[index];
+    const items = sessionPartitions[index] ?? [];
+    const sessionControllerIds = new Set(
+      mappings
+        .filter((item) => String(item.sessionId) === sessionId)
+        .map((item) => String(item.controllerId)),
+    );
+    for (const controllerId of sessionControllerIds) {
+      keys.push(
+        { PK: `CONTROLLER#${controllerId}`, SK: "META" },
+        { PK: `SESSION#${sessionId}`, SK: `CONTROLLER#${controllerId}` },
+      );
+    }
+    for (const item of items) {
+      if (
+        String(item.SK).startsWith("SOCKET#controller#") &&
+        accountControllerIds.has(String(item.clientId))
+      ) {
+        keys.push({ PK: String(item.PK), SK: String(item.SK) });
+        if (typeof item.connectionId === "string") {
+          connectionIds.push(item.connectionId);
+          keys.push({ PK: `CONNECTION#${item.connectionId}`, SK: "META" });
+        }
+      }
+    }
+    const remainingControllers = items.filter(
+      (item) =>
+        String(item.SK).startsWith("CONTROLLER#") &&
+        !sessionControllerIds.has(String(item.controllerId)) &&
+        !item.revokedAt &&
+        Number(item.ttl) > nowSeconds(),
+    ).length;
+    await dynamo.send(new UpdateCommand({
+      TableName: tableName,
+      Key: { PK: `SESSION#${sessionId}`, SK: "META" },
+      UpdateExpression: "SET controllerCount = :count",
+      ConditionExpression: "attribute_exists(PK)",
+      ExpressionAttributeValues: { ":count": remainingControllers },
+    }));
+  }
+
+  await batchDelete(keys);
+  await disconnectConnections([...new Set(connectionIds)]);
+}
+
+async function deleteAccountData(
+  ownerSub: string,
+  username: string,
+): Promise<APIGatewayProxyStructuredResultV2> {
+  if (!cognitoUserPoolId) throw new Error("Account deletion is not configured");
+  const deletedAt = nowSeconds();
+  await dynamo.send(
+    new UpdateCommand({
+      TableName: tableName,
+      Key: { PK: `USER#${ownerSub}`, SK: "ACCOUNT#DELETED" },
+      UpdateExpression: "SET deletedAt = if_not_exists(deletedAt, :now), #ttl = :ttl",
+      ExpressionAttributeNames: { "#ttl": "ttl" },
+      ExpressionAttributeValues: {
+        ":now": deletedAt,
+        ":ttl": deletedAt + ACCOUNT_DELETION_TTL_SECONDS,
+      },
+    }),
+  );
+
+  const userItems = await queryPartition(`USER#${ownerSub}`);
+  const sessionIds = [...new Set(userItems.flatMap((item) =>
+    typeof item.sessionId === "string" && String(item.SK).startsWith("SESSION#")
+      ? [item.sessionId]
+      : [],
+  ))];
+  const deviceIds = [...new Set(userItems.flatMap((item) =>
+    typeof item.deviceId === "string" && String(item.SK).startsWith("DEVICE#")
+      ? [item.deviceId]
+      : [],
+  ))];
+  const [sessionPartitions, devicePartitions] = await Promise.all([
+    Promise.all(sessionIds.map((sessionId) => queryPartition(`SESSION#${sessionId}`))),
+    Promise.all(deviceIds.map((deviceId) => queryPartition(`DEVICE#${deviceId}`))),
+  ]);
+  const sessionItems = sessionPartitions.flat();
+  const connectionIds = [...new Set(sessionItems.flatMap((item) =>
+    typeof item.connectionId === "string" && String(item.SK).startsWith("SOCKET#")
+      ? [item.connectionId]
+      : [],
+  ))];
+  const controllerIds = [...new Set([
+    ...userItems.flatMap((item) =>
+      typeof item.controllerId === "string" ? [item.controllerId] : [],
+    ),
+    ...sessionItems.flatMap((item) =>
+      typeof item.controllerId === "string" ? [item.controllerId] : [],
+    ),
+  ])];
+  const pairingIds = [...new Set(sessionItems.flatMap((item) =>
+    typeof item.pairingId === "string" ? [item.pairingId] : [],
+  ))];
+  const enrollmentHashes = [...new Set(userItems.flatMap((item) =>
+    typeof item.codeHash === "string" ? [item.codeHash] : [],
+  ))];
+  const directKeys = [
+    ...controllerIds.map((controllerId) => ({ PK: `CONTROLLER#${controllerId}`, SK: "META" })),
+    ...pairingIds.map((pairingId) => ({ PK: `PAIRING#${pairingId}`, SK: "META" })),
+    ...enrollmentHashes.map((hash) => ({ PK: `ENROLLMENT#${hash}`, SK: "META" })),
+    ...connectionIds.map((connectionId) => ({ PK: `CONNECTION#${connectionId}`, SK: "META" })),
+  ];
+  const ownedPartitionKeys = [
+    ...sessionItems.map((item) => ({ PK: String(item.PK), SK: String(item.SK) })),
+    ...devicePartitions.flat().map((item) => ({ PK: String(item.PK), SK: String(item.SK) })),
+  ];
+  const userKeys = userItems
+    .filter((item) => item.SK !== "ACCOUNT#DELETED")
+    .map((item) => ({ PK: String(item.PK), SK: String(item.SK) }));
+  // Keep the user indexes until their direct records are gone so a retry can
+  // rediscover every owned partition after a partially throttled batch.
+  await batchDelete(directKeys);
+  await disconnectConnections(connectionIds);
+  await batchDelete(ownedPartitionKeys);
+  await batchDelete(userKeys);
+
+  try {
+    await cognito.send(new AdminUserGlobalSignOutCommand({
+      UserPoolId: cognitoUserPoolId,
+      Username: username,
+    }));
+    await cognito.send(new AdminDeleteUserCommand({
+      UserPoolId: cognitoUserPoolId,
+      Username: username,
+    }));
+  } catch (error) {
+    if (!(error instanceof Error) || error.name !== "UserNotFoundException") throw error;
+  }
+  return { statusCode: 204 };
+}
+
+async function deleteAccount(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
+  const { sub: ownerSub, username } = accountIdentity(event);
+  if (!username) throw new Error("Account username claim is missing");
+  return deleteAccountData(ownerSub, username);
+}
+
+async function deviceAccountIdentity(
+  event: APIGatewayProxyEventV2,
+): Promise<{ readonly ownerSub: string; readonly username: string }> {
+  const { principalId, principal } = await verifyAuthenticatedRequest(event);
+  if (principal.deviceId !== principalId || typeof principal.ownerSub !== "string") {
+    throw new Error("A connected TerminalDB Mac is required");
+  }
+  const ownerSub = principal.ownerSub;
+  await assertAccountActive(ownerSub);
+  const account = await dynamo.send(
+    new GetCommand({
+      TableName: tableName,
+      Key: { PK: `USER#${ownerSub}`, SK: "ACCOUNT#META" },
+      ConsistentRead: true,
+    }),
+  );
+  if (!account.Item || typeof account.Item.username !== "string") {
+    throw new Error("This Mac has no recoverable TerminalDB account");
+  }
+  return { ownerSub, username: account.Item.username };
+}
+
+async function recoverAccountFromDevice(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
+  if (!cognitoUserPoolId) throw new Error("Account recovery is not configured");
+  const { ownerSub, username } = await deviceAccountIdentity(event);
+  const body = parseBody(event);
+  const password = stringField(body, "password", 256);
+  if (
+    password.length < 12 ||
+    !/[a-z]/u.test(password) ||
+    !/[A-Z]/u.test(password) ||
+    !/\d/u.test(password) ||
+    !/[^\p{L}\p{N}]/u.test(password)
+  ) {
+    throw new TypeError(
+      "Password must contain at least 12 characters, upper and lowercase letters, a number, and a symbol",
+    );
+  }
+  await cognito.send(new AdminSetUserPasswordCommand({
+    UserPoolId: cognitoUserPoolId,
+    Username: username,
+    Password: password,
+    Permanent: true,
+  }));
+  await cognito.send(new AdminUserGlobalSignOutCommand({
+    UserPoolId: cognitoUserPoolId,
+    Username: username,
+  }));
+  const credentialsChangedAt = nowSeconds();
+  await dynamo.send(new UpdateCommand({
+    TableName: tableName,
+    Key: { PK: `USER#${ownerSub}`, SK: "ACCOUNT#META" },
+    UpdateExpression: "SET credentialsChangedAt = :now",
+    ConditionExpression: "attribute_exists(PK) AND username = :username",
+    ExpressionAttributeValues: {
+      ":now": credentialsChangedAt,
+      ":username": username,
+    },
+  }));
+  await revokeAccountControllers(ownerSub);
+  return { statusCode: 204 };
+}
+
+async function deleteAccountFromDevice(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
+  const { ownerSub, username } = await deviceAccountIdentity(event);
+  return deleteAccountData(ownerSub, username);
 }
 
 async function redeemEnrollment(
@@ -175,6 +786,7 @@ async function redeemEnrollment(
   const registeredAt = nowSeconds();
   const temporary = body.temporary === true;
   const ownerSub = typeof match.ownerSub === "string" ? match.ownerSub : undefined;
+  if (ownerSub) await assertAccountActive(ownerSub);
   const deviceName = stringField(body, "deviceName", 100);
   const transactItems: NonNullable<TransactWriteCommandInput["TransactItems"]> = [
     {
@@ -229,6 +841,7 @@ async function redeemEnrollment(
           },
         }]
       : []),
+    ...accountActiveCondition(ownerSub),
   ];
   await dynamo.send(
     new TransactWriteCommand({
@@ -280,6 +893,7 @@ async function claimDeviceForAccount(
     return json(200, { claimed: false });
   }
   const ownerSub = enrollment.Item.ownerSub;
+  await assertAccountActive(ownerSub);
   await dynamo.send(
     new TransactWriteCommand({
       TransactItems: [
@@ -325,6 +939,7 @@ async function claimDeviceForAccount(
             },
           },
         },
+        ...accountActiveCondition(ownerSub),
       ],
     }),
   );
@@ -345,6 +960,7 @@ async function createSession(
   const createdAt = nowSeconds();
   const ttl = createdAt + ACTIVE_SESSION_TTL_SECONDS;
   const ownerSub = typeof principal.ownerSub === "string" ? principal.ownerSub : undefined;
+  if (ownerSub) await assertAccountActive(ownerSub);
   const deviceName = String(principal.name ?? "Mac");
   await dynamo.send(
     new TransactWriteCommand({
@@ -401,10 +1017,11 @@ async function createSession(
               },
             }]
           : []),
+        ...accountActiveCondition(ownerSub),
       ],
     }),
   );
-  return json(201, { sessionId, generation });
+  return json(201, { sessionId, generation, accountOwned: Boolean(ownerSub) });
 }
 
 async function createPairing(
@@ -413,6 +1030,8 @@ async function createPairing(
   if (pairingDisabled) return json(503, { error: "New pairings are temporarily disabled" });
   const { principalId, principal } = await verifyAuthenticatedRequest(event);
   if (principal.deviceId !== principalId) return json(403, { error: "Only a registered Mac can create pairings" });
+  const ownerSub = typeof principal.ownerSub === "string" ? principal.ownerSub : undefined;
+  if (ownerSub) await assertAccountActive(ownerSub);
   const body = parseBody(event);
   const sessionId = stringField(body, "sessionId", 128);
   const session = await dynamo.send(
@@ -473,6 +1092,7 @@ async function createPairing(
             Item: { PK: `SESSION#${sessionId}`, SK: `PAIRING#${pairingId}`, ...item },
           },
         },
+        ...accountActiveCondition(ownerSub),
       ],
     }),
   );
@@ -503,6 +1123,7 @@ async function redeemPairing(
   if (!session.Item || session.Item.status !== "active" || Number(session.Item.ttl) <= nowSeconds()) {
     return json(410, { error: "Remote session ended" });
   }
+  if (typeof session.Item.ownerSub === "string") await assertAccountActive(session.Item.ownerSub);
   if (
     Number(body.protocolVersion) !== 1 ||
     Number(session.Item.protocolVersion ?? 1) !== 1
@@ -585,6 +1206,9 @@ async function redeemPairing(
             },
           },
         },
+        ...accountActiveCondition(
+          typeof session.Item.ownerSub === "string" ? session.Item.ownerSub : undefined,
+        ),
       ],
     }),
   );
@@ -797,6 +1421,7 @@ async function createAccountController(
             },
           },
         },
+        ...accountActiveCondition(ownerSub),
       ],
     }),
   );
@@ -840,6 +1465,7 @@ async function createTicket(
   } else if (requiredOwnerSub) {
     return json(403, { error: "Account ticket requires an account controller" });
   }
+  if (typeof session.Item.ownerSub === "string") await assertAccountActive(session.Item.ownerSub);
 
   const ticket = randomSecret(32);
   const expiresAt = nowSeconds() + 60;
@@ -935,6 +1561,9 @@ async function createTicket(
           },
         },
         ...refreshes,
+        ...accountActiveCondition(
+          typeof session.Item.ownerSub === "string" ? session.Item.ownerSub : undefined,
+        ),
       ],
     }),
   );
@@ -1290,6 +1919,25 @@ async function handleHttp(
       mockMode: false,
     });
   }
+  if (method === "POST" && path === "/api/v1/account-bootstrap") {
+    return createAccountBootstrap(event);
+  }
+  if (method === "POST" && path === "/api/v1/account-bootstrap/status") {
+    return accountBootstrapStatus(event);
+  }
+  if (method === "POST" && path === "/api/v1/device/account/recover") {
+    return recoverAccountFromDevice(event);
+  }
+  if (method === "DELETE" && path === "/api/v1/device/account") {
+    return deleteAccountFromDevice(event);
+  }
+  if (path.startsWith("/api/v1/account/") && !(method === "DELETE" && path === "/api/v1/account")) {
+    const identity = accountIdentity(event);
+    await assertAccountActive(identity.sub, identity.issuedAt);
+  }
+  if (method === "DELETE" && path === "/api/v1/account") {
+    return deleteAccount(event);
+  }
   if (method === "GET") {
     if (path === "/api/v1/account/sessions") return listAccountSessions(event);
     const controllerListMatch = path.match(
@@ -1315,6 +1963,9 @@ async function handleHttp(
   if (method !== "POST") return json(405, { error: "Method not allowed" });
   if (path === "/api/v1/account/enrollments") {
     return json(201, await createEnrollment(accountSubject(event)));
+  }
+  if (path === "/api/v1/account/bootstrap/complete") {
+    return completeAccountBootstrap(event);
   }
   if (path === "/api/v1/account/tickets") {
     return createTicket(event, accountSubject(event));
@@ -1351,7 +2002,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (
     const statusCode =
       error instanceof SyntaxError || error instanceof TypeError
         ? 400
-        : error instanceof Error && /auth|signature|principal|replay|stale/iu.test(error.message)
+        : error instanceof Error && /auth|signature|principal|replay|stale|account has been deleted|credentials changed/iu.test(error.message)
           ? 401
           : 409;
     return json(statusCode, { error: error instanceof Error ? error.message : "Request failed" });

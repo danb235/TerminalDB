@@ -6,13 +6,21 @@ guest regression, encryption check, or production security gate fails.
 
 ## 1. Identity and OAuth
 
-- Complete Cognito managed-login signup with username, verified email,
-  password, and required TOTP.
+- Start signup from the native Remote Control window and an already-open guest
+  terminal. Reject standalone signup without a fresh Mac approval.
+- Prove the Mac grant is random, expires in 20 minutes, is stored only as a
+  hash, is single-use, and is never placed in an HTTP URL or log.
+- Submit username/password directly to Cognito, consume the grant in the
+  pre-signup trigger, auto-confirm without email/phone, and complete required
+  TOTP or user-verified passkey setup.
 - Prove OAuth uses authorization code with PKCE and rejects a mismatched state.
+- Reject an external post-authentication return URL and never place the PKCE
+  verifier, access token, or enrollment code in the authorization URL.
 - Accept only Cognito access tokens with the required scope; reject missing,
   expired, ID, wrong-client, and wrong-issuer tokens at API Gateway.
 - Refresh an expired access token and revoke the refresh token at sign-out.
-- Confirm the web app never accepts or stores the Cognito password.
+- Confirm TerminalDB's backend and Mac never receive the Cognito signup
+  password; the browser holds it only in the live form state sent to Cognito.
 
 ## 2. Tenant boundary
 
@@ -26,15 +34,21 @@ guest regression, encryption check, or production security gate fails.
 - Prove concurrent registration remains idempotent and the five-controller cap
   self-heals expired records without allowing a race past the cap.
 
-## 3. Mac enrollment and encryption
+## 3. Mac enrollment, recovery, and encryption
 
 - Redeem a new account-bound enrollment code once; reject replay and expiry.
+- Require local Mac approval before account enrollment. If a guest session is
+  active, end it before claiming the Mac and starting the account session.
 - Claim an existing link-only Mac without rotating its Keychain identity.
 - Reject attempts to transfer an already-owned Mac to a different subject.
 - Derive identical Mac/browser ECDH material from an account controller salt;
   prove AWS stores no private key or terminal plaintext.
 - Confirm account enrollment creates no unsolicited guest link. Creating a
   guest link explicitly afterward must still work.
+- Require Touch ID or the Mac login password for desktop password changes and
+  account deletion. Verify a change rejects the old password, accepts the new
+  password only with the existing MFA factor, rejects pre-change API tokens,
+  and disconnects existing account controllers.
 
 ## 4. Anonymous-link regression
 
@@ -50,6 +64,10 @@ guest regression, encryption check, or production security gate fails.
   Mac session.
 - Add a Mac, observe automatic session discovery, open it, switch to another
   session, sign out, and verify account tickets stop immediately.
+- Sign back in after logout and confirm the same active account session remains
+  discoverable. Delete a disposable account only after the exact `DELETE`
+  confirmation, then verify its credentials and previously issued token fail,
+  its owned remote records are gone, and an unrelated one-time link still works.
 - Exercise phone, tablet, and desktop viewports, keyboard input, accessibility,
   offline/reconnect, controller rotation, and stale-session handling.
 - Confirm no OAuth token, pairing fragment, enrollment code, or terminal text
@@ -62,9 +80,10 @@ guest regression, encryption check, or production security gate fails.
 - Inspect the synthesized account route for JWT authorization, access-token
   scope, Cognito Plus threat protection, required TOTP, private origins, WAF,
   no-payload logs, DynamoDB TTL/recovery, and production deletion protection.
-- In production, verify the SES identity and sandbox exit before enabling public
-  signup. Exercise alarms, budgets, emergency pairing disablement, controller
-  revocation, and account recovery.
+- Verify the pool has no required email/phone attributes, uses `admin_only`
+  recovery, and rejects direct signup without the pre-signup grant. Exercise
+  alarms, budgets, emergency pairing disablement, controller revocation, and
+  trusted-Mac recovery.
 
 ## Deployed smoke matrix
 
@@ -72,13 +91,19 @@ Run this final matrix against a disposable development deployment with two
 fresh Cognito users and two Macs. It requires deployed AWS resources and is not
 replaced by local mocks:
 
+The native live-Mac fixture can redeem an account-bound code without exposing
+it in the process list: save the code in a mode-`0600` temporary file and pass
+its path to `npm run live:mac -w @terminaldb/test-harness --
+--enrollment-code-file /path/to/code`. Remove the file when the fixture stops.
+
 1. User A enrolls Mac A; user B enrolls Mac B.
 2. Both users open their own sessions from a second browser and a phone.
 3. Attempt every A-to-B session-ID substitution at HTTP, ticket, WebSocket, and
    relay layers; all must fail without revealing ownership.
 4. Pair a guest phone to Mac A and prove it cannot enumerate account sessions.
-5. Revoke A's browser, sign out, reset A's password/TOTP through the approved
-   recovery flow, and verify old tickets and refresh tokens no longer work.
+5. Revoke A's browser, sign out, change A's password through the approved Mac
+   flow, and verify old tickets, API tokens, controllers, and refresh tokens no
+   longer work while the existing MFA factor remains required.
 6. Disable both Macs and confirm session indexes disappear immediately and TTL
    cleanup retains no terminal content.
 
@@ -87,21 +112,51 @@ Never record pairing URLs, enrollment codes, OAuth tokens, or terminal output.
 
 ## Local execution record — 2026-08-08
 
-Status: **local release-candidate gates passed; deployed smoke gate not run**.
+Status: **release-candidate local and deployed gates passed**.
 
-- Repository build: passed.
-- Protocol, infrastructure, web, and harness tests: 90 passed.
-- Playwright phone, tablet, and desktop suite: 77 passed, 1 skipped. The
+- Repository production build: passed.
+- Protocol, infrastructure, web, and harness tests: 102 passed.
+- Playwright phone, tablet, and desktop suite: 89 passed, 1 skipped. The
   skipped desktop touch-target check is intentionally limited to coarse-pointer
   devices; the same check passed on phone and tablet projects.
-- macOS compile/sign and native self-test suite: passed, including the existing
-  guest pairing secret path and the new account controller-salt path.
-- Development and production CDK synthesis with `cdk-nag`: passed.
-- Production-only assertions: custom domain/certificate and verified SES sender
-  are mandatory; Cognito and DynamoDB are retained and deletion-protected.
-- Production dependency audit at high severity: zero vulnerabilities.
+- macOS interactive and headless suites: passed, including compile, ad hoc
+  signature verification, Keychain identity, local socket permissions, secret
+  scan, terminal tabs, Claude state, and remote-agent self-tests.
+- Universal release build: passed for `arm64` and `x86_64`, version `0.3.0`.
+- Development deployment: `TerminalDBRemote-dev` reached `UPDATE_COMPLETE`.
+- Live pool policy: username-only, no auto-verified attributes, `admin_only`
+  recovery, required TOTP, MFA-capable user-verified passkeys, Plus threat
+  protection, and no email/SMS sender.
+- Production dependency audit (`npm audit --omit=dev --audit-level=high`): zero
+  vulnerabilities. The latest CDK development bundle has one upstream-only
+  `brace-expansion` advisory and no fixed CDK release; it is not shipped in the
+  app or Lambda artifacts.
 - Patch hygiene (`git diff --check`): passed.
 
-The deployed smoke matrix above remains a release blocker until it is run in a
-disposable AWS environment with two fresh accounts and two Macs. Local mocks do
-not qualify that gate, and this QA run did not create or mutate cloud resources.
+## Deployed account and guest execution record — 2026-08-08
+
+- Redeemed a fresh single-use guest link, connected an encrypted browser
+  controller, discovered two native-backed tabs, and rendered a live terminal:
+  passed.
+- Started account creation from that open guest terminal, received the Mac's
+  encrypted one-time approval, and verified the username/password form became
+  immediately typeable: passed.
+- Submitted the password directly to Cognito, auto-confirmed without email,
+  completed required TOTP, observed the optional passkey prompt, completed
+  PKCE login, bound the waiting Mac, and discovered/opened its account session:
+  passed.
+- Logged out, signed back in with username/password/TOTP, and rediscovered the
+  same session without a link: passed.
+- Changed the password through the enrolled Mac. The old password failed, the
+  new password required the existing TOTP, the active account controller was
+  revoked, and the pre-change API token returned 401: passed.
+- Deleted the disposable account from the web after exact `DELETE`
+  confirmation. Cognito returned to zero users and no live tenant records
+  remained: passed.
+- Repeated the backend matrix with two fresh accounts and two independently
+  signed Mac identities. Each account listed exactly its own session, and
+  cross-tenant controller registration was rejected with a non-enumerating 404
+  in both directions: passed.
+- Deleted both matrix accounts. Cognito returned to zero users, DynamoDB had no
+  live `USER#` records, and the CloudFormation stack remained
+  `UPDATE_COMPLETE`: passed.

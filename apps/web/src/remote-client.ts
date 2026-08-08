@@ -126,6 +126,7 @@ export interface RemoteClientEvents {
   readonly onMacOffline: () => void;
   readonly onRotating: () => void;
   readonly onSessionEnded: (reason?: string | undefined) => void;
+  readonly onAccountBootstrap: (bootstrapToken: string, expiresAt: number) => void;
   readonly onAck: (requestId: string, accepted: boolean, detail?: string | undefined) => void;
   readonly onProtocolError: (error: Error) => void;
 }
@@ -247,6 +248,36 @@ export async function createAccountEnrollment(
     enrollmentCode: string;
     expiresAt: number;
   };
+}
+
+export async function completeAccountBootstrap(input: {
+  readonly accessToken: string;
+  readonly bootstrapToken: string;
+}): Promise<{ readonly completed: true; readonly deviceId: string }> {
+  const response = await fetch("/api/v1/account/bootstrap/complete", {
+    method: "POST",
+    headers: {
+      ...bearerHeaders(input.accessToken),
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ bootstrapToken: input.bootstrapToken }),
+  });
+  if (!response.ok) {
+    const failure = await response.json().catch(() => ({})) as { error?: string };
+    throw new Error(failure.error ?? `Mac connection failed (${response.status})`);
+  }
+  return (await response.json()) as { completed: true; deviceId: string };
+}
+
+export async function deleteTerminalDBAccount(accessToken: string): Promise<void> {
+  const response = await fetch("/api/v1/account", {
+    method: "DELETE",
+    headers: bearerHeaders(accessToken),
+  });
+  if (!response.ok) {
+    const failure = await response.json().catch(() => ({})) as { error?: string };
+    throw new Error(failure.error ?? `Account deletion failed (${response.status})`);
+  }
 }
 
 export async function openAccountSession(input: {
@@ -605,6 +636,14 @@ export class RemoteClient {
         const ended = payload as { reason?: string };
         this.#events.onSessionEnded(ended.reason);
         this.close();
+      } else if (envelope.route === "account.bootstrap.ready") {
+        const bootstrap = payload as { bootstrapToken?: string; expiresAt?: number };
+        if (bootstrap.bootstrapToken && Number.isSafeInteger(bootstrap.expiresAt)) {
+          this.#events.onAccountBootstrap(
+            bootstrap.bootstrapToken,
+            Number(bootstrap.expiresAt),
+          );
+        }
       } else if (envelope.route === "ack") {
         const ack = payload as { requestId: string; accepted: boolean; detail?: string };
         this.#events.onAck(ack.requestId, ack.accepted, ack.detail);
@@ -639,6 +678,7 @@ export class RemoteClient {
       route === "tab.close" ||
       route === "account.switch" ||
       route === "usage.refresh" ||
+      route === "account.bootstrap" ||
       route === "session.end",
   ): Promise<string> {
     const sendOperation = this.#outgoing.then(async () => {

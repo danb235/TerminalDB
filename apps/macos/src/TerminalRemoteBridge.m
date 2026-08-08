@@ -1,6 +1,7 @@
 #import "TerminalRemoteBridge.h"
 
 #import <CoreImage/CoreImage.h>
+#import <LocalAuthentication/LocalAuthentication.h>
 #import <sys/socket.h>
 #import <sys/un.h>
 #import <unistd.h>
@@ -13,6 +14,34 @@ static NSString *const TerminalRemoteDefaultAWSProfile = @"stelao";
 static NSString *const TerminalRemoteDefaultAWSRegion = @"us-west-2";
 static NSString *const TerminalRemoteDefaultEnrollmentFunction =
     @"terminaldb-remote-dev-control";
+
+static NSURL *TerminalRemoteAccountOnboardingURL(NSString *baseURL) {
+    NSURLComponents *components =
+        [NSURLComponents componentsWithString:baseURL];
+    NSString *scheme = components.scheme.lowercaseString;
+    if (components.URL == nil ||
+        !([scheme isEqualToString:@"https"] ||
+          [scheme isEqualToString:@"http"]) ||
+        components.host.length == 0) {
+        return nil;
+    }
+    NSMutableArray<NSURLQueryItem *> *items =
+        [components.queryItems mutableCopy] ?: [NSMutableArray array];
+    NSIndexSet *existing = [items indexesOfObjectsPassingTest:
+        ^BOOL(NSURLQueryItem *item, NSUInteger index, BOOL *stop) {
+            (void)index;
+            (void)stop;
+            return [item.name isEqualToString:@"account"] ||
+                [item.name isEqualToString:@"source"];
+        }];
+    [items removeObjectsAtIndexes:existing];
+    [items addObject:[NSURLQueryItem queryItemWithName:@"account"
+                                                value:@"create"]];
+    [items addObject:[NSURLQueryItem queryItemWithName:@"source"
+                                                value:@"desktop"]];
+    components.queryItems = items;
+    return components.URL;
+}
 
 static NSTimeInterval TerminalRemoteOutputDelay(
     BOOL interactive, NSTimeInterval sinceLast) {
@@ -92,6 +121,7 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
 @property(nonatomic, copy, readwrite, nullable) NSString *statusDetail;
 @property(nonatomic, copy, readwrite) NSArray<NSDictionary *> *trustedControllers;
 @property(nonatomic, readwrite, getter=isEnabled) BOOL enabled;
+@property(nonatomic, readwrite) BOOL accountOwned;
 @property(nonatomic, copy) NSString *instanceIdentifier;
 @property(nonatomic) int socketDescriptor;
 @property(nonatomic) dispatch_source_t readSource;
@@ -361,6 +391,7 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
         if ([message[@"controllers"] isKindOfClass:NSArray.class]) {
             self.trustedControllers = message[@"controllers"];
         }
+        self.accountOwned = [message[@"accountOwned"] boolValue];
         [self updateState:nextState
                   enabled:[message[@"enabled"] boolValue]
                pairingURL:nextPairingURL
@@ -376,6 +407,24 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
                   enabled:self.enabled
                pairingURL:self.pairingURL
                     detail:detail];
+        return;
+    }
+    if ([type isEqualToString:@"accountBootstrap"]) {
+        NSString *urlValue = [message[@"url"] isKindOfClass:NSString.class]
+            ? message[@"url"] : @"";
+        NSURL *url = TerminalRemoteAccountOnboardingURL(urlValue);
+        if (url != nil) {
+            [NSWorkspace.sharedWorkspace openURL:url];
+            [self updateState:@"connecting"
+                      enabled:self.enabled
+                   pairingURL:self.pairingURL
+                        detail:@"Finish account setup in the browser. This Mac will connect automatically."];
+        } else {
+            [self updateState:@"error"
+                      enabled:self.enabled
+                   pairingURL:self.pairingURL
+                        detail:@"The account setup URL was invalid."];
+        }
         return;
     }
     if ([type isEqualToString:@"snapshotRequest"]) {
@@ -613,6 +662,26 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
     [self sendMessage:@{@"type" : @"createPairing"}];
 }
 
+- (void)createAccountWithBaseURL:(NSString *)baseURL {
+    [self start];
+    [self sendMessage:@{
+        @"type" : @"createAccountBootstrap",
+        @"baseURL" : baseURL,
+    }];
+}
+
+- (void)resetAccountPassword:(NSString *)password {
+    if (password.length == 0) return;
+    [self sendMessage:@{
+        @"type" : @"resetAccountPassword",
+        @"password" : password,
+    }];
+}
+
+- (void)deleteAccount {
+    [self sendMessage:@{@"type" : @"deleteAccount"}];
+}
+
 - (void)refreshControllers {
     [self sendMessage:@{@"type" : @"refreshControllers"}];
 }
@@ -747,9 +816,29 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
     NSMutableData *invalid = [NSMutableData
         dataWithBytes:invalidByte length:sizeof(invalidByte)];
     NSString *fallback = TerminalRemoteTakeDecodedOutput(invalid);
+    NSURL *accountURL = TerminalRemoteAccountOnboardingURL(
+        @"https://remote.example.invalid/app?stage=dev");
+    NSDictionary<NSString *, NSString *> *accountQuery = @{
+        @"account" : @"create",
+        @"source" : @"desktop",
+        @"stage" : @"dev",
+    };
+    NSMutableDictionary<NSString *, NSString *> *actualQuery =
+        [NSMutableDictionary dictionary];
+    for (NSURLQueryItem *item in
+         [NSURLComponents componentsWithURL:accountURL
+                    resolvingAgainstBaseURL:NO].queryItems) {
+        if (item.name.length > 0 && item.value.length > 0) {
+            actualQuery[item.name] = item.value;
+        }
+    }
     return first.length == 0 &&
         [second isEqualToString:@"┌"] &&
         [fallback isEqualToString:@"ÿ"] &&
+        [accountURL.path isEqualToString:@"/app"] &&
+        [actualQuery isEqualToDictionary:accountQuery] &&
+        TerminalRemoteAccountOnboardingURL(@"not a URL") == nil &&
+        TerminalRemoteAccountOnboardingURL(@"javascript://example.invalid") == nil &&
         split.length == 0 && invalid.length == 0 &&
         fabs(TerminalRemoteOutputDelay(YES, 1.0) - 0.012) < 0.0001 &&
         fabs(TerminalRemoteOutputDelay(YES, 0.02) - 0.03) < 0.0001 &&
@@ -898,6 +987,10 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
 @property(nonatomic, strong) NSButton *pairingCopyButton;
 @property(nonatomic, strong) NSButton *advancedButton;
 @property(nonatomic, strong) NSButton *disableButton;
+@property(nonatomic, strong) NSButton *createAccountButton;
+@property(nonatomic, strong) NSButton *connectAccountButton;
+@property(nonatomic, strong) NSButton *resetAccountButton;
+@property(nonatomic, strong) NSButton *deleteAccountButton;
 @property(nonatomic, strong) NSTextField *controllersLabel;
 @property(nonatomic, strong) NSPopUpButton *controllersPopUp;
 @property(nonatomic, strong) NSButton *revokeControllerButton;
@@ -906,13 +999,16 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
 @property(nonatomic) BOOL showPhonePairing;
 @property(nonatomic, copy, nullable) NSString *automaticSetupError;
 @property(nonatomic, copy, nullable) NSString *lastAutomaticallyOpenedPairingURL;
+@property(nonatomic) BOOL accountSetupInProgress;
+@property(nonatomic, copy, nullable) NSString *pendingAccountBaseURL;
+@property(nonatomic, copy, nullable) NSString *pendingAccountEnrollmentCode;
 @end
 
 @implementation TerminalRemoteWindowController
 
 - (instancetype)initWithBridge:(TerminalRemoteBridge *)bridge {
     NSWindow *window = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(0, 0, 500, 430)
+        initWithContentRect:NSMakeRect(0, 0, 500, 600)
                   styleMask:NSWindowStyleMaskTitled |
                             NSWindowStyleMaskClosable
                     backing:NSBackingStoreBuffered
@@ -1165,6 +1261,37 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
                            target:self
                            action:@selector(disableRemote:)];
     self.disableButton.bezelStyle = NSBezelStyleInline;
+    NSTextField *accountTitle =
+        [self labelWithString:@"TERMINALDB ACCOUNT"
+                        font:[NSFont monospacedSystemFontOfSize:10
+                                                       weight:NSFontWeightBold]
+                       color:[NSColor colorWithRed:0.255 green:0.839 blue:0.792 alpha:1]];
+    NSTextField *accountDetail =
+        [self labelWithString:
+            @"Create an account to open this Mac's sessions from any signed-in browser. "
+             "Passwords stay in Cognito's secure browser flow."
+                        font:[NSFont systemFontOfSize:11]
+                       color:[NSColor colorWithWhite:0.58 alpha:1]];
+    self.createAccountButton =
+        [NSButton buttonWithTitle:@"Create Account"
+                           target:self
+                           action:@selector(createAccount:)];
+    self.createAccountButton.bezelStyle = NSBezelStyleRounded;
+    self.connectAccountButton =
+        [NSButton buttonWithTitle:@"Connect Account…"
+                           target:self
+                           action:@selector(connectAccount:)];
+    self.connectAccountButton.bezelStyle = NSBezelStyleRounded;
+    self.resetAccountButton =
+        [NSButton buttonWithTitle:@"Change Password…"
+                           target:self
+                           action:@selector(resetAccountLogin:)];
+    self.resetAccountButton.bezelStyle = NSBezelStyleRounded;
+    self.deleteAccountButton =
+        [NSButton buttonWithTitle:@"Delete Account…"
+                           target:self
+                           action:@selector(deleteAccount:)];
+    self.deleteAccountButton.bezelStyle = NSBezelStyleRounded;
     self.controllersLabel =
         [self labelWithString:@"TRUSTED BROWSERS"
                         font:[NSFont monospacedSystemFontOfSize:10
@@ -1183,6 +1310,9 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
         eyebrow, title, privacy, self.statusLabel, self.detailLabel,
         self.pairingQRCode, self.primaryButton, self.pairPhoneButton,
         self.pairingCopyButton, self.advancedButton, self.disableButton,
+        accountTitle, accountDetail, self.createAccountButton,
+        self.connectAccountButton, self.resetAccountButton,
+        self.deleteAccountButton,
         self.controllersLabel, self.controllersPopUp,
         self.revokeControllerButton,
     ];
@@ -1221,7 +1351,28 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
         [self.advancedButton.leadingAnchor constraintEqualToAnchor:eyebrow.leadingAnchor],
         [self.disableButton.centerYAnchor constraintEqualToAnchor:self.advancedButton.centerYAnchor],
         [self.disableButton.leadingAnchor constraintEqualToAnchor:self.advancedButton.trailingAnchor constant:14],
-        [self.controllersLabel.topAnchor constraintEqualToAnchor:self.advancedButton.bottomAnchor constant:24],
+        [accountTitle.topAnchor constraintEqualToAnchor:self.advancedButton.bottomAnchor constant:22],
+        [accountTitle.leadingAnchor constraintEqualToAnchor:eyebrow.leadingAnchor],
+        [accountDetail.topAnchor constraintEqualToAnchor:accountTitle.bottomAnchor constant:7],
+        [accountDetail.leadingAnchor constraintEqualToAnchor:eyebrow.leadingAnchor],
+        [accountDetail.trailingAnchor constraintEqualToAnchor:title.trailingAnchor],
+        [self.createAccountButton.topAnchor constraintEqualToAnchor:accountDetail.bottomAnchor constant:10],
+        [self.createAccountButton.leadingAnchor constraintEqualToAnchor:eyebrow.leadingAnchor],
+        [self.createAccountButton.widthAnchor constraintEqualToConstant:145],
+        [self.createAccountButton.heightAnchor constraintEqualToConstant:34],
+        [self.connectAccountButton.centerYAnchor constraintEqualToAnchor:self.createAccountButton.centerYAnchor],
+        [self.connectAccountButton.leadingAnchor constraintEqualToAnchor:self.createAccountButton.trailingAnchor constant:10],
+        [self.connectAccountButton.widthAnchor constraintEqualToConstant:155],
+        [self.connectAccountButton.heightAnchor constraintEqualToConstant:34],
+        [self.resetAccountButton.topAnchor constraintEqualToAnchor:self.createAccountButton.bottomAnchor constant:10],
+        [self.resetAccountButton.leadingAnchor constraintEqualToAnchor:eyebrow.leadingAnchor],
+        [self.resetAccountButton.widthAnchor constraintEqualToConstant:145],
+        [self.resetAccountButton.heightAnchor constraintEqualToConstant:32],
+        [self.deleteAccountButton.centerYAnchor constraintEqualToAnchor:self.resetAccountButton.centerYAnchor],
+        [self.deleteAccountButton.leadingAnchor constraintEqualToAnchor:self.resetAccountButton.trailingAnchor constant:10],
+        [self.deleteAccountButton.widthAnchor constraintEqualToConstant:155],
+        [self.deleteAccountButton.heightAnchor constraintEqualToConstant:32],
+        [self.controllersLabel.topAnchor constraintEqualToAnchor:self.resetAccountButton.bottomAnchor constant:20],
         [self.controllersLabel.leadingAnchor constraintEqualToAnchor:eyebrow.leadingAnchor],
         [self.controllersPopUp.topAnchor constraintEqualToAnchor:self.controllersLabel.bottomAnchor constant:8],
         [self.controllersPopUp.leadingAnchor constraintEqualToAnchor:eyebrow.leadingAnchor],
@@ -1235,12 +1386,38 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
 
 - (void)refresh {
     TerminalRemoteBridge *bridge = self.bridge;
+    if (self.pendingAccountEnrollmentCode.length > 0 &&
+        !bridge.enabled &&
+        [bridge.connectionState isEqualToString:@"disabled"]) {
+        NSString *baseURL = self.pendingAccountBaseURL;
+        NSString *code = self.pendingAccountEnrollmentCode;
+        self.pendingAccountBaseURL = nil;
+        self.pendingAccountEnrollmentCode = nil;
+        [bridge enableWithBaseURL:baseURL enrollmentCode:code];
+    }
+    BOOL accountSetupFailed =
+        [bridge.connectionState isEqualToString:@"error"] ||
+        [bridge.connectionState isEqualToString:@"agent-unavailable"];
+    if (self.accountSetupInProgress && accountSetupFailed) {
+        self.pendingAccountBaseURL = nil;
+        self.pendingAccountEnrollmentCode = nil;
+        self.accountSetupInProgress = NO;
+    } else if (self.accountSetupInProgress &&
+               self.pendingAccountEnrollmentCode.length == 0 &&
+               [bridge.connectionState isEqualToString:@"live"]) {
+        self.accountSetupInProgress = NO;
+    }
     NSString *visibleState = bridge.connectionState;
-    if (self.automaticSetupInProgress) visibleState = @"setting up";
+    if (self.automaticSetupInProgress || self.accountSetupInProgress) {
+        visibleState = @"setting up";
+    }
     else if (self.automaticSetupError.length > 0) visibleState = @"setup needed";
     else if ([visibleState isEqualToString:@"disabled"]) visibleState = @"ready";
     self.statusLabel.stringValue = visibleState.uppercaseString;
-    if (self.automaticSetupInProgress) {
+    if (self.accountSetupInProgress) {
+        self.detailLabel.stringValue =
+            @"Connecting this Mac to your TerminalDB account…";
+    } else if (self.automaticSetupInProgress) {
         self.detailLabel.stringValue =
             @"Securely enrolling this Mac and preparing the browser…";
     } else if (self.automaticSetupError.length > 0) {
@@ -1258,11 +1435,16 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
     self.pairingQRCode.hidden = !hasPhonePairing;
     self.pairingCopyButton.hidden = !hasPhonePairing;
     self.pairingCopyButton.enabled = hasPhonePairing;
-    self.primaryButton.enabled = !self.automaticSetupInProgress;
+    BOOL setupInProgress =
+        self.automaticSetupInProgress || self.accountSetupInProgress;
+    self.primaryButton.enabled = !setupInProgress;
     self.primaryButton.title = self.automaticSetupInProgress
         ? @"Opening…" : @"Open Remote Web App";
-    self.pairPhoneButton.enabled =
-        !self.automaticSetupInProgress;
+    self.pairPhoneButton.enabled = !setupInProgress;
+    self.createAccountButton.enabled = !setupInProgress;
+    self.connectAccountButton.enabled = !setupInProgress;
+    self.resetAccountButton.enabled = !setupInProgress && bridge.accountOwned;
+    self.deleteAccountButton.enabled = !setupInProgress && bridge.accountOwned;
     self.disableButton.hidden = !bridge.enabled;
     [self.controllersPopUp removeAllItems];
     for (NSDictionary *controller in bridge.trustedControllers) {
@@ -1373,6 +1555,192 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
         NSMakeSize(size, size)];
     [image addRepresentation:representation];
     return image;
+}
+
+- (void)createAccount:(id)sender {
+    (void)sender;
+    NSString *baseURL = [self
+        configuredValueForKey:@"TerminalDBRemoteBaseURL"
+                  defaultValue:TerminalRemoteDefaultBaseURL];
+    if (TerminalRemoteAccountOnboardingURL(baseURL) == nil) {
+        self.automaticSetupError =
+            @"Set a valid Remote web URL in Advanced Setup first.";
+        [self refresh];
+        return;
+    }
+    self.automaticSetupError = nil;
+    self.accountSetupInProgress = YES;
+    [self.bridge createAccountWithBaseURL:baseURL];
+    [self refresh];
+}
+
+- (void)connectAccount:(id)sender {
+    (void)sender;
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Connect this Mac to your TerminalDB account";
+    alert.informativeText = self.bridge.enabled
+        ? @"Paste the short-lived code from the web app. Connecting the account ends the current one-time remote session, then starts a new account session without changing this Mac's identity."
+        : @"Paste the short-lived code from the web app. TerminalDB will enroll this Mac without changing its local identity.";
+    [alert addButtonWithTitle:@"Connect Account"];
+    [alert addButtonWithTitle:@"Cancel"];
+
+    NSTextField *baseURL = [[NSTextField alloc] init];
+    baseURL.placeholderString = @"Remote web URL";
+    baseURL.stringValue = [self
+        configuredValueForKey:@"TerminalDBRemoteBaseURL"
+                  defaultValue:TerminalRemoteDefaultBaseURL];
+    NSSecureTextField *enrollment = [[NSSecureTextField alloc] init];
+    enrollment.placeholderString = @"15-minute account code";
+    NSStackView *fields = [NSStackView stackViewWithViews:@[
+        [NSTextField labelWithString:@"Web URL"], baseURL,
+        [NSTextField labelWithString:@"Account code"], enrollment,
+    ]];
+    fields.orientation = NSUserInterfaceLayoutOrientationVertical;
+    fields.alignment = NSLayoutAttributeLeading;
+    fields.spacing = 6;
+    fields.frame = NSMakeRect(0, 0, 380, 100);
+    [baseURL.widthAnchor constraintEqualToConstant:380].active = YES;
+    [enrollment.widthAnchor constraintEqualToConstant:380].active = YES;
+    alert.accessoryView = fields;
+
+    [alert beginSheetModalForWindow:self.window
+                  completionHandler:^(NSModalResponse response) {
+        if (response != NSAlertFirstButtonReturn) return;
+        NSString *url = [baseURL.stringValue
+            stringByTrimmingCharactersInSet:
+                NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSString *code = [enrollment.stringValue
+            stringByTrimmingCharactersInSet:
+                NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (TerminalRemoteAccountOnboardingURL(url) == nil || code.length == 0) {
+            self.automaticSetupError =
+                @"Enter a valid deployed web URL and a fresh account code.";
+            [self refresh];
+            return;
+        }
+        [NSUserDefaults.standardUserDefaults setObject:url
+            forKey:@"TerminalDBRemoteBaseURL"];
+        self.automaticSetupError = nil;
+        self.accountSetupInProgress = YES;
+        self.showPhonePairing = NO;
+        self.openBrowserWhenPairingReady = NO;
+        if (self.bridge.enabled) {
+            self.pendingAccountBaseURL = url;
+            self.pendingAccountEnrollmentCode = code;
+            [self.bridge disable];
+        } else {
+            [self.bridge enableWithBaseURL:url enrollmentCode:code];
+        }
+        [self refresh];
+    }];
+}
+
+- (void)authorizeAccountAction:(NSString *)reason
+                     completion:(void (^)(BOOL approved))completion {
+    LAContext *context = [[LAContext alloc] init];
+    context.localizedCancelTitle = @"Cancel";
+    NSError *availabilityError = nil;
+    if (![context canEvaluatePolicy:LAPolicyDeviceOwnerAuthentication
+                              error:&availabilityError]) {
+        self.automaticSetupError = availabilityError.localizedDescription ?:
+            @"Mac authentication is unavailable.";
+        [self refresh];
+        completion(NO);
+        return;
+    }
+    [context evaluatePolicy:LAPolicyDeviceOwnerAuthentication
+            localizedReason:reason
+                      reply:^(BOOL success, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!success && error.code != LAErrorUserCancel &&
+                error.code != LAErrorAppCancel) {
+                self.automaticSetupError = error.localizedDescription ?:
+                    @"Mac authentication failed.";
+                [self refresh];
+            }
+            completion(success);
+        });
+    }];
+}
+
+- (void)resetAccountLogin:(id)sender {
+    (void)sender;
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Change TerminalDB account password";
+    alert.informativeText =
+        @"This changes the Cognito password and signs out every account browser. Your existing authenticator and passkeys remain required.";
+    [alert addButtonWithTitle:@"Authenticate and Change"];
+    [alert addButtonWithTitle:@"Cancel"];
+    NSSecureTextField *password = [[NSSecureTextField alloc] init];
+    password.placeholderString = @"New password";
+    NSSecureTextField *confirmation = [[NSSecureTextField alloc] init];
+    confirmation.placeholderString = @"Confirm new password";
+    NSStackView *fields = [NSStackView stackViewWithViews:@[
+        [NSTextField labelWithString:
+            @"12+ characters with upper/lowercase, a number, and a symbol"],
+        password,
+        confirmation,
+    ]];
+    fields.orientation = NSUserInterfaceLayoutOrientationVertical;
+    fields.spacing = 7;
+    fields.frame = NSMakeRect(0, 0, 380, 86);
+    [password.widthAnchor constraintEqualToConstant:380].active = YES;
+    [confirmation.widthAnchor constraintEqualToConstant:380].active = YES;
+    alert.accessoryView = fields;
+    [alert beginSheetModalForWindow:self.window
+                  completionHandler:^(NSModalResponse response) {
+        if (response != NSAlertFirstButtonReturn) return;
+        NSString *next = password.stringValue;
+        BOOL strong = next.length >= 12 &&
+            [next rangeOfCharacterFromSet:NSCharacterSet.lowercaseLetterCharacterSet].location != NSNotFound &&
+            [next rangeOfCharacterFromSet:NSCharacterSet.uppercaseLetterCharacterSet].location != NSNotFound &&
+            [next rangeOfCharacterFromSet:NSCharacterSet.decimalDigitCharacterSet].location != NSNotFound &&
+            [next rangeOfCharacterFromSet:NSCharacterSet.alphanumericCharacterSet.invertedSet].location != NSNotFound;
+        if (!strong || ![next isEqualToString:confirmation.stringValue]) {
+            self.automaticSetupError = !strong
+                ? @"The new password does not meet the account policy."
+                : @"The new passwords do not match.";
+            [self refresh];
+            return;
+        }
+        [self authorizeAccountAction:@"Reset your TerminalDB account login"
+                           completion:^(BOOL approved) {
+            if (!approved) return;
+            self.automaticSetupError = nil;
+            [self.bridge resetAccountPassword:next];
+            [self refresh];
+        }];
+    }];
+}
+
+- (void)deleteAccount:(id)sender {
+    (void)sender;
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Permanently delete TerminalDB account?";
+    alert.informativeText =
+        @"This removes the Cognito login, enrolled Macs, active account sessions, and trusted account browsers. One-time links that were never attached to the account are unaffected.";
+    [alert addButtonWithTitle:@"Authenticate and Delete"];
+    [alert addButtonWithTitle:@"Cancel"];
+    NSTextField *confirmation = [[NSTextField alloc] init];
+    confirmation.placeholderString = @"Type DELETE";
+    confirmation.frame = NSMakeRect(0, 0, 380, 24);
+    alert.accessoryView = confirmation;
+    [alert beginSheetModalForWindow:self.window
+                  completionHandler:^(NSModalResponse response) {
+        if (response != NSAlertFirstButtonReturn) return;
+        if (![confirmation.stringValue isEqualToString:@"DELETE"]) {
+            self.automaticSetupError = @"Type DELETE exactly to confirm account deletion.";
+            [self refresh];
+            return;
+        }
+        [self authorizeAccountAction:@"Delete your TerminalDB account"
+                           completion:^(BOOL approved) {
+            if (!approved) return;
+            self.automaticSetupError = nil;
+            [self.bridge deleteAccount];
+            [self refresh];
+        }];
+    }];
 }
 
 - (void)primaryAction:(id)sender {

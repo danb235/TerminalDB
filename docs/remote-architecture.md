@@ -45,6 +45,14 @@ Remote supports two independent access grants:
   discover and register a controller only for sessions indexed under that
   subject.
 
+Account creation begins with a random, short-lived bootstrap capability signed
+by a Mac's non-exportable identity. The browser sends username and password
+directly to Cognito with that capability as client metadata. A pre-signup
+trigger atomically consumes it and auto-confirms the no-email user. After OAuth
+login, the control Lambda binds the immutable Cognito `sub` to the exact Mac
+public keys captured by the grant. The Mac polls only for completion, never for
+the password or OAuth tokens.
+
 Cognito is a control-plane identity, not a terminal encryption key. An account
 browser still creates non-extractable P-256 signing and ECDH keys. The Mac and
 browser derive their directional content keys from ECDH plus a random
@@ -128,10 +136,6 @@ lambdaReservedConcurrency=8
 budgetEmail=you@example.com
 domainName=remote.example.com
 certificateArn=arn:aws:acm:us-east-1:...
-cognitoFromEmail=verified-sender@example.com
-cognitoFromName=TerminalDB
-cognitoReplyTo=support@example.com
-cognitoSesRegion=us-west-2
 ```
 
 The CloudFront Free flat-rate plan is selected operationally after deployment

@@ -41,10 +41,6 @@ export interface TerminalDBRemoteStackProps extends StackProps {
   readonly cloudfrontPlan: "FREE" | "PAYG";
   readonly domainName?: string;
   readonly certificateArn?: string;
-  readonly cognitoFromEmail?: string;
-  readonly cognitoFromName?: string;
-  readonly cognitoReplyTo?: string;
-  readonly cognitoSesRegion?: string;
 }
 
 export class TerminalDBRemoteStack extends Stack {
@@ -58,9 +54,6 @@ export class TerminalDBRemoteStack extends Stack {
     if (isProduction && (!props.domainName || !props.certificateArn)) {
       throw new Error("Production requires a custom domain and us-east-1 ACM certificate");
     }
-    if (isProduction && !props.cognitoFromEmail) {
-      throw new Error("Production requires a verified SES cognitoFromEmail for account verification and recovery");
-    }
     const removalPolicy = isProduction ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY;
     const table = new dynamodb.Table(this, "RemoteState", {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -72,15 +65,11 @@ export class TerminalDBRemoteStack extends Stack {
       deletionProtection: isProduction,
       removalPolicy,
     });
-    const userPool = new cognito.UserPool(this, "UserPool", {
-      userPoolName: `terminaldb-remote-${props.stage}`,
+    const userPool = new cognito.UserPool(this, "UserPoolV2", {
+      userPoolName: `terminaldb-remote-${props.stage}-v2`,
       selfSignUpEnabled: true,
-      signInAliases: { username: true, email: true },
+      signInAliases: { username: true },
       signInCaseSensitive: false,
-      autoVerify: { email: true },
-      standardAttributes: {
-        email: { required: true, mutable: true },
-      },
       passwordPolicy: {
         minLength: 12,
         requireLowercase: true,
@@ -91,25 +80,27 @@ export class TerminalDBRemoteStack extends Stack {
       },
       mfa: cognito.Mfa.REQUIRED,
       mfaSecondFactor: { sms: false, otp: true },
+      signInPolicy: {
+        allowedFirstAuthFactors: { password: true, passkey: true },
+      },
+      passkeyUserVerification: cognito.PasskeyUserVerification.REQUIRED,
       featurePlan: cognito.FeaturePlan.PLUS,
       standardThreatProtectionMode:
         cognito.StandardThreatProtectionMode.FULL_FUNCTION,
-      accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
-      email: props.cognitoFromEmail
-        ? cognito.UserPoolEmail.withSES({
-            fromEmail: props.cognitoFromEmail,
-            fromName: props.cognitoFromName ?? "TerminalDB",
-            replyTo: props.cognitoReplyTo,
-            sesRegion: props.cognitoSesRegion ?? this.region,
-          })
-        : cognito.UserPoolEmail.withCognito(),
+      accountRecovery: cognito.AccountRecovery.NONE,
       deletionProtection: isProduction,
       removalPolicy,
     });
-    const userPoolDomain = userPool.addDomain("UserPoolDomain", {
+    // Required-MFA pools cannot use Cognito's default single-factor WebAuthn
+    // mode. In this mode, a user-verified passkey satisfies the MFA requirement
+    // as one phishing-resistant ceremony.
+    const cfnUserPool = userPool.node.defaultChild as cognito.CfnUserPool;
+    cfnUserPool.webAuthnFactorConfiguration =
+      "MULTI_FACTOR_WITH_USER_VERIFICATION";
+    const userPoolDomain = userPool.addDomain("UserPoolDomainV2", {
       managedLoginVersion: cognito.ManagedLoginVersion.NEWER_MANAGED_LOGIN,
       cognitoDomain: {
-        domainPrefix: `terminaldb-${props.stage}-${this.account}-${this.region}`,
+        domainPrefix: `terminaldb-v2-${props.stage}-${this.account}-${this.region}`,
       },
     });
     const cognitoDomainUrl = userPoolDomain.baseUrl();
@@ -180,12 +171,14 @@ export class TerminalDBRemoteStack extends Stack {
       return functionResource;
     };
 
-    const controlFunction = createFunction("ControlFunction", "control", Duration.seconds(10));
+    const controlFunction = createFunction("ControlFunction", "control", Duration.seconds(30));
     const connectionFunction = createFunction("ConnectionFunction", "connection", Duration.seconds(5));
     const relayFunction = createFunction("RelayFunction", "relay", Duration.seconds(5));
+    const preSignupFunction = createFunction("PreSignupFunction", "pre-signup", Duration.seconds(5));
     table.grantReadWriteData(controlFunction);
     table.grantReadWriteData(connectionFunction);
     table.grantReadWriteData(relayFunction);
+    table.grant(preSignupFunction, "dynamodb:UpdateItem");
 
     const relayIntegration = new apigatewayv2Integrations.WebSocketLambdaIntegration(
       "RelayIntegration",
@@ -340,7 +333,7 @@ export class TerminalDBRemoteStack extends Stack {
         contentSecurityPolicy: {
           override: true,
           contentSecurityPolicy:
-            `default-src 'self'; connect-src 'self' ${cognitoDomainUrl} wss:; font-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
+            `default-src 'self'; connect-src 'self' ${cognitoDomainUrl} https://cognito-idp.${this.region}.${this.urlSuffix} wss:; font-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
         },
         contentTypeOptions: { override: true },
         frameOptions: { frameOption: cloudfront.HeadersFrameOption.DENY, override: true },
@@ -438,7 +431,7 @@ export class TerminalDBRemoteStack extends Stack {
       `wss://${props.domainName ?? distribution.distributionDomainName}/socket`,
     );
     const applicationOrigin = `https://${props.domainName ?? distribution.distributionDomainName}`;
-    const userPoolClient = userPool.addClient("WebClient", {
+    const userPoolClient = userPool.addClient("WebClientV2", {
       userPoolClientName: `terminaldb-remote-${props.stage}-web`,
       generateSecret: false,
       preventUserExistenceErrors: true,
@@ -446,6 +439,10 @@ export class TerminalDBRemoteStack extends Stack {
       accessTokenValidity: Duration.hours(1),
       idTokenValidity: Duration.hours(1),
       refreshTokenValidity: Duration.days(30),
+      authFlows: {
+        user: true,
+        userSrp: true,
+      },
       supportedIdentityProviders: [
         cognito.UserPoolClientIdentityProvider.COGNITO,
       ],
@@ -456,13 +453,27 @@ export class TerminalDBRemoteStack extends Stack {
         },
         scopes: [
           cognito.OAuthScope.OPENID,
-          cognito.OAuthScope.EMAIL,
           cognito.OAuthScope.PROFILE,
         ],
         callbackUrls: [`${applicationOrigin}/auth/callback`],
         logoutUrls: [applicationOrigin],
       },
     });
+    userPool.addTrigger(cognito.UserPoolOperation.PRE_SIGN_UP, preSignupFunction);
+    const managedLoginBranding = new cognito.CfnManagedLoginBranding(
+      this,
+      "ManagedLoginBranding",
+      {
+        userPoolId: userPool.userPoolId,
+        clientId: userPoolClient.userPoolClientId,
+        useCognitoProvidedValues: true,
+      },
+    );
+    const userPoolDomainResource = userPoolDomain.node.defaultChild;
+    if (!(userPoolDomainResource instanceof cognito.CfnUserPoolDomain)) {
+      throw new Error("Expected a Cognito user-pool domain resource");
+    }
+    managedLoginBranding.addResourceDependency(userPoolDomainResource);
     const accountAuthorizer = new apigatewayv2Authorizers.HttpJwtAuthorizer(
       "AccountAuthorizer",
       userPool.userPoolProviderUrl,
@@ -475,10 +486,26 @@ export class TerminalDBRemoteStack extends Stack {
       authorizer: accountAuthorizer,
       authorizationScopes: ["openid"],
     });
+    httpApi.addRoutes({
+      path: "/api/v1/account",
+      methods: [apigatewayv2.HttpMethod.DELETE],
+      integration: httpIntegration,
+      authorizer: accountAuthorizer,
+      authorizationScopes: ["openid"],
+    });
     controlFunction.addEnvironment("COGNITO_AUTH_ENABLED", "true");
     controlFunction.addEnvironment("COGNITO_CLIENT_ID", userPoolClient.userPoolClientId);
     controlFunction.addEnvironment("COGNITO_DOMAIN", cognitoDomainUrl);
     controlFunction.addEnvironment("COGNITO_ISSUER", userPool.userPoolProviderUrl);
+    controlFunction.addEnvironment("COGNITO_USER_POOL_ID", userPool.userPoolId);
+    controlFunction.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        "cognito-idp:AdminDeleteUser",
+        "cognito-idp:AdminSetUserPassword",
+        "cognito-idp:AdminUserGlobalSignOut",
+      ],
+      resources: [userPool.userPoolArn],
+    }));
     NagSuppressions.addResourceSuppressions(
       distribution,
       [

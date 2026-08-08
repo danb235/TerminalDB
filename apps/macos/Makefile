@@ -34,7 +34,7 @@ $(BIN): $(SOURCES) $(REMOTE_AGENT_SOURCE) Info.plist Makefile $(FONT_RESOURCES) 
 	chmod 755 $(APP)/Contents/Resources/Scripts/claude-status-bridge.sh
 	chmod 755 $(APP)/Contents/Resources/Scripts/claude-tab-state.sh
 	clang -fobjc-arc -Wall -Wextra -framework AppKit -framework Foundation \
-		-framework CoreImage \
+		-framework CoreImage -framework LocalAuthentication \
 		$(SOURCES) -o $(BIN)
 	xcrun swiftc -parse-as-library -O \
 		-target $$(uname -m)-apple-macosx13.0 \

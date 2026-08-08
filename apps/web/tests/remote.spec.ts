@@ -727,14 +727,14 @@ test("waits for a matching Claude grid so frames and bottom options stay intact"
 
 test("account and connection controls are sheets over the live terminal", async ({ page }) => {
   const before = await terminalGeometry(page);
-  const accountButton = page.getByRole("button", { name: "Claude account" });
+  const accountButton = page.getByRole("button", { name: "Accounts", exact: true });
   if (await accountButton.isVisible()) {
     await accountButton.click();
   } else {
     await page.getByRole("button", { name: "Back to sessions" }).click();
     await page.getByRole("button", { name: "Accounts" }).click();
   }
-  await expect(page.getByRole("heading", { name: "Account & usage" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Accounts", exact: true })).toBeVisible();
   await expect(page.locator(".terminal-stage")).toBeVisible();
   expect((await terminalGeometry(page)).stage).toEqual(before.stage);
   await page.getByRole("button", { name: "Close panel" }).click();
@@ -746,7 +746,7 @@ test("account and connection controls are sheets over the live terminal", async 
 });
 
 test("blocks account switching while the selected tab is busy", async ({ page }) => {
-  const accountButton = page.getByRole("button", { name: "Claude account" });
+  const accountButton = page.getByRole("button", { name: "Accounts", exact: true });
   if (await accountButton.isVisible()) await accountButton.click();
   else {
     await page.getByRole("button", { name: "Back to sessions" }).click();
@@ -841,6 +841,76 @@ test("keeps the unpaired gate within every target viewport", async ({ page }) =>
   expect(sizes.content).toBeLessThanOrEqual(sizes.viewport);
 });
 
+test("requires a Mac approval for account creation and keeps sign-in available", async ({ page }) => {
+  let signupBody: Record<string, unknown> | undefined;
+  await page.route("**/api/config", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        apiBaseUrl: "",
+        websocketUrl: "",
+        protocolVersion: 1,
+        region: "us-west-2",
+        pairingEnabled: true,
+        mockMode: true,
+        accountAuth: {
+          clientId: "web-client",
+          domain: "https://login.example.invalid",
+          issuer: "https://cognito-idp.us-west-2.amazonaws.com/us-west-2_pool",
+          callbackPath: "/auth/callback",
+        },
+      }),
+    });
+  });
+  await page.route("https://cognito-idp.us-west-2.amazonaws.com/", async (route) => {
+    signupBody = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/x-amz-json-1.1",
+      body: JSON.stringify({ UserConfirmed: true }),
+    });
+  });
+  await page.route("https://login.example.invalid/**", async (route) => {
+    await route.fulfill({ status: 200, contentType: "text/html", body: "Cognito login" });
+  });
+
+  await page.goto("/?unpaired=1");
+  await expect(page.getByRole("heading", { name: "Sign in to TerminalDB" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create account", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeVisible();
+
+  await page.goto("/?unpaired=1&account=create#account-bootstrap=approved-mac-token");
+  await expect(page.getByRole("heading", { name: "Create your TerminalDB account" })).toBeVisible();
+  await expect.poll(() => page.url()).not.toContain("approved-mac-token");
+  await page.getByLabel("Username").fill("qa-user");
+  await page.getByLabel("Password", { exact: true }).fill("Strong-Test-Password-42!");
+  await page.getByLabel("Confirm password").fill("Strong-Test-Password-42!");
+  await page.getByRole("button", { name: "Create account", exact: true }).click();
+  await expect.poll(() => signupBody).toBeTruthy();
+  expect(signupBody).toMatchObject({
+    ClientId: "web-client",
+    Username: "qa-user",
+    ClientMetadata: { bootstrapToken: "approved-mac-token" },
+  });
+  expect(signupBody).not.toHaveProperty("UserAttributes");
+
+  await page.waitForURL("https://login.example.invalid/**");
+  await page.goto("/");
+  await page.evaluate(() => sessionStorage.removeItem("terminaldb.account.bootstrap.v1"));
+  await page.reload();
+  await expect(page.locator(".terminal-stage")).toBeVisible();
+  await page.getByRole("button", { name: "Accounts", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Accounts", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sign in to TerminalDB" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create account with this Mac" })).toBeVisible();
+  await expect(page.getByText("Claude accounts & usage")).toBeVisible();
+  const sizes = await page.evaluate(() => ({
+    viewport: document.documentElement.clientWidth,
+    content: document.documentElement.scrollWidth,
+  }));
+  expect(sizes.content).toBeLessThanOrEqual(sizes.viewport);
+});
+
 test("discovers tenant sessions and creates a Mac enrollment from an account", async ({ page }) => {
   let controllerRegistration: Record<string, unknown> | undefined;
   await page.addInitScript(() => {
@@ -917,11 +987,12 @@ test("discovers tenant sessions and creates a Mac enrollment from an account", a
     });
   });
 
-  await page.goto("/?unpaired=1");
+  await page.goto("/?unpaired=1&account=connect&source=desktop");
   await expect(page.getByRole("heading", { name: "Terminal sessions" })).toBeVisible();
   await expect(page.getByText("Studio Mac")).toBeVisible();
-  await page.getByRole("button", { name: "Add a Mac" }).click();
   await expect(page.getByText("enroll-once")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Copy code" })).toBeVisible();
+  await expect.poll(() => new URL(page.url()).search).toBe("");
   await page.getByRole("button", { name: /Studio Mac.*Open/u }).click();
   await expect.poll(() => controllerRegistration).toBeTruthy();
   expect(controllerRegistration?.browserId).toBeTruthy();
@@ -949,4 +1020,170 @@ test("discovers tenant sessions and creates a Mac enrollment from an account", a
     });
   });
   expect(storedAccessMode).toBe("account");
+});
+
+test("returns to sign-in when native account management revokes browser access", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("terminaldb.account.tokens.v1", JSON.stringify({
+      accessToken: "revoked-account-access-token",
+      refreshToken: "revoked-account-refresh-token",
+      expiresAt: Date.now() + 3_600_000,
+    }));
+  });
+  await page.route("**/api/config", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        apiBaseUrl: "",
+        websocketUrl: "/socket",
+        protocolVersion: 1,
+        region: "us-west-2",
+        pairingEnabled: true,
+        accountAuth: {
+          clientId: "web-client",
+          domain: "https://login.example.invalid",
+          issuer: "https://issuer.example.invalid/pool",
+          callbackPath: "/auth/callback",
+        },
+      }),
+    });
+  });
+  await page.route("**/api/v1/account/sessions", async (route) => {
+    await route.fulfill({
+      status: 401,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Account credentials changed" }),
+    });
+  });
+
+  await page.goto("/?unpaired=1");
+
+  await expect(page.getByRole("heading", { name: "Sign in to TerminalDB" })).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveText("Account access changed. Sign in again.");
+  await expect.poll(() => page.evaluate(() =>
+    localStorage.getItem("terminaldb.account.tokens.v1"))).toBeNull();
+});
+
+test("completes Mac binding after Cognito login and discovers its account session", async ({ page }) => {
+  let completed = false;
+  await page.addInitScript(() => {
+    localStorage.setItem("terminaldb.account.tokens.v1", JSON.stringify({
+      accessToken: "bootstrap-access-token",
+      refreshToken: "bootstrap-refresh-token",
+      expiresAt: Date.now() + 3_600_000,
+    }));
+    sessionStorage.setItem("terminaldb.account.bootstrap.v1", "approved-bootstrap-token");
+  });
+  await page.route("**/api/config", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        apiBaseUrl: "",
+        websocketUrl: "/socket",
+        protocolVersion: 1,
+        region: "us-west-2",
+        pairingEnabled: true,
+        accountAuth: {
+          clientId: "web-client",
+          domain: "https://login.example.invalid",
+          issuer: "https://cognito-idp.us-west-2.amazonaws.com/us-west-2_pool",
+          callbackPath: "/auth/callback",
+        },
+      }),
+    });
+  });
+  await page.route("**/api/v1/account/bootstrap/complete", async (route) => {
+    expect(route.request().headers().authorization).toBe("Bearer bootstrap-access-token");
+    expect(route.request().postDataJSON()).toEqual({
+      bootstrapToken: "approved-bootstrap-token",
+    });
+    completed = true;
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ completed: true, deviceId: "new-mac" }),
+    });
+  });
+  await page.route("**/api/v1/account/sessions", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessions: completed ? [{
+          sessionId: "new-account-session",
+          deviceId: "new-mac",
+          deviceName: "Approved Mac",
+          generation: 1,
+          createdAt: 1_800_000_000,
+        }] : [],
+      }),
+    });
+  });
+
+  await page.goto("/?unpaired=1&account=finish");
+  await expect.poll(() => completed).toBe(true);
+  await expect(page.getByText("Mac connected. Its terminal sessions will appear here in a moment.")).toBeVisible();
+  await expect(page.getByText("Approved Mac")).toBeVisible({ timeout: 5_000 });
+  await expect.poll(() => page.evaluate(() =>
+    sessionStorage.getItem("terminaldb.account.bootstrap.v1"))).toBeNull();
+});
+
+test("logs out after explicitly confirmed account deletion", async ({ page }) => {
+  let deletedWithAuthorization: string | undefined;
+  await page.addInitScript(() => {
+    localStorage.setItem("terminaldb.account.tokens.v1", JSON.stringify({
+      accessToken: "delete-account-access-token",
+      refreshToken: "delete-account-refresh-token",
+      expiresAt: Date.now() + 3_600_000,
+    }));
+  });
+  await page.route("**/api/config", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        apiBaseUrl: "",
+        websocketUrl: "/socket",
+        protocolVersion: 1,
+        region: "us-west-2",
+        pairingEnabled: true,
+        accountAuth: {
+          clientId: "web-client",
+          domain: "https://login.example.invalid",
+          issuer: "https://issuer.example.invalid/pool",
+          callbackPath: "/auth/callback",
+        },
+      }),
+    });
+  });
+  await page.route("**/api/v1/account/sessions", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ sessions: [] }),
+    });
+  });
+  await page.route("**/api/v1/account", async (route) => {
+    expect(route.request().method()).toBe("DELETE");
+    deletedWithAuthorization = route.request().headers().authorization;
+    await route.fulfill({ status: 204, body: "" });
+  });
+  await page.route("https://login.example.invalid/oauth2/revoke", async (route) => {
+    expect(route.request().postData()).toContain("token=delete-account-refresh-token");
+    await route.fulfill({ status: 200, body: "" });
+  });
+  await page.route("https://login.example.invalid/logout?**", async (route) => {
+    await route.fulfill({ status: 200, contentType: "text/html", body: "Account logged out" });
+  });
+
+  await page.goto("/?unpaired=1");
+  await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
+  await page.getByRole("button", { name: "Delete account", exact: true }).click();
+  const finalDelete = page.getByRole("button", { name: "Permanently delete account" });
+  await expect(finalDelete).toBeDisabled();
+  await page.getByLabel("Type DELETE to confirm").fill("DELETE");
+  await expect(finalDelete).toBeEnabled();
+  const logoutRequest = page.waitForRequest((request) =>
+    request.url().startsWith("https://login.example.invalid/logout?"),
+  );
+  await finalDelete.click();
+  await logoutRequest;
+
+  expect(deletedWithAuthorization).toBe("Bearer delete-account-access-token");
 });

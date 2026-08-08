@@ -27,6 +27,7 @@ const region = argument("region", "us-west-2");
 const baseURL = argument("base-url", "https://dwi1gx38gzrsl.cloudfront.net");
 const functionName = argument("function-name", "terminaldb-remote-dev-control");
 const rotationSeconds = argument("rotation-seconds", "");
+const enrollmentCodeFile = argument("enrollment-code-file", "");
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const agentPath = resolve(
   scriptDirectory,
@@ -51,24 +52,33 @@ function aws(...args) {
   ).trim();
 }
 
-aws(
-  "lambda",
-  "invoke",
-  "--function-name",
-  functionName,
-  "--cli-binary-format",
-  "raw-in-base64-out",
-  "--payload",
-  '{"action":"createEnrollment"}',
-  responsePath,
-  "--query",
-  "StatusCode",
-  "--output",
-  "text",
-);
-const enrollment = JSON.parse(readFileSync(responsePath, "utf8"));
-if (typeof enrollment.enrollmentCode !== "string") {
-  throw new Error("The enrollment Lambda did not return a one-time code");
+let enrollmentCode;
+if (enrollmentCodeFile) {
+  enrollmentCode = readFileSync(resolve(enrollmentCodeFile), "utf8").trim();
+  if (!enrollmentCode || enrollmentCode.length > 128) {
+    throw new Error("The account enrollment-code file is empty or invalid");
+  }
+} else {
+  aws(
+    "lambda",
+    "invoke",
+    "--function-name",
+    functionName,
+    "--cli-binary-format",
+    "raw-in-base64-out",
+    "--payload",
+    '{"action":"createEnrollment"}',
+    responsePath,
+    "--query",
+    "StatusCode",
+    "--output",
+    "text",
+  );
+  const enrollment = JSON.parse(readFileSync(responsePath, "utf8"));
+  if (typeof enrollment.enrollmentCode !== "string") {
+    throw new Error("The enrollment Lambda did not return a one-time code");
+  }
+  enrollmentCode = enrollment.enrollmentCode;
 }
 
 const agent = spawn(agentPath, [], {
@@ -425,7 +435,7 @@ send({ type: "inventory", instance: inventory() });
 send({
   type: "enable",
   baseURL,
-  enrollmentCode: enrollment.enrollmentCode,
+  enrollmentCode,
 });
 process.stdout.write(
   `${JSON.stringify({ event: "starting", stateDirectory })}\n`,

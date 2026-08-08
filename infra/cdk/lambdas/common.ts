@@ -41,6 +41,26 @@ export function accountTenantMatches(input: {
   );
 }
 
+export function verifyP256Signature(
+  publicJwk: JsonWebKey,
+  message: string,
+  signature: string,
+): boolean {
+  const key = createPublicKey({
+    key: publicJwk as import("node:crypto").JsonWebKey,
+    format: "jwk",
+  });
+  const signatureBytes = Buffer.from(signature, "base64url");
+  return signatureBytes.length === 64
+    ? verify(
+        "sha256",
+        Buffer.from(message, "utf8"),
+        { key, dsaEncoding: "ieee-p1363" },
+        signatureBytes,
+      )
+    : verify("sha256", Buffer.from(message, "utf8"), key, signatureBytes);
+}
+
 export function json(
   statusCode: number,
   body: Record<string, unknown>,
@@ -111,20 +131,7 @@ export async function verifyAuthenticatedRequest(
   ].join("\n");
   const publicJwk = principal.signingPublicKey as JsonWebKey | undefined;
   if (!publicJwk) throw new Error("Principal has no signing key");
-  const key = createPublicKey({
-    key: publicJwk as import("node:crypto").JsonWebKey,
-    format: "jwk",
-  });
-  const signatureBytes = Buffer.from(signature, "base64url");
-  const valid =
-    signatureBytes.length === 64
-      ? verify(
-          "sha256",
-          Buffer.from(canonical, "utf8"),
-          { key, dsaEncoding: "ieee-p1363" },
-          signatureBytes,
-        )
-      : verify("sha256", Buffer.from(canonical, "utf8"), key, signatureBytes);
+  const valid = verifyP256Signature(publicJwk, canonical, signature);
   if (!valid) throw new Error("Invalid request signature");
 
   // Store a nonce only after authenticating it. This prevents unauthenticated

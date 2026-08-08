@@ -33,10 +33,6 @@ const remote = new TerminalDBRemoteStack(app, `TerminalDBRemote-${stage}`, {
   cloudfrontPlan: String(app.node.tryGetContext("cloudfrontPlan") ?? "FREE") === "PAYG" ? "PAYG" : "FREE",
   domainName: app.node.tryGetContext("domainName") as string | undefined,
   certificateArn: app.node.tryGetContext("certificateArn") as string | undefined,
-  cognitoFromEmail: app.node.tryGetContext("cognitoFromEmail") as string | undefined,
-  cognitoFromName: app.node.tryGetContext("cognitoFromName") as string | undefined,
-  cognitoReplyTo: app.node.tryGetContext("cognitoReplyTo") as string | undefined,
-  cognitoSesRegion: app.node.tryGetContext("cognitoSesRegion") as string | undefined,
 });
 remote.addStackDependency(edge);
 for (const stack of [edge, remote]) {

@@ -44,6 +44,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, copy, readonly, nullable) NSString *statusDetail;
 @property(nonatomic, copy, readonly) NSArray<NSDictionary *> *trustedControllers;
 @property(nonatomic, readonly, getter=isEnabled) BOOL enabled;
+@property(nonatomic, readonly) BOOL accountOwned;
 
 - (instancetype)initWithDelegate:(id<TerminalRemoteBridgeDelegate>)delegate;
 - (void)attachToRunningAgent;
@@ -52,6 +53,9 @@ NS_ASSUME_NONNULL_BEGIN
            enrollmentCode:(NSString *)enrollmentCode;
 - (void)disable;
 - (void)createPairing;
+- (void)createAccountWithBaseURL:(NSString *)baseURL;
+- (void)resetAccountPassword:(NSString *)password;
+- (void)deleteAccount;
 - (void)refreshControllers;
 - (void)revokeControllerWithIdentifier:(NSString *)controllerIdentifier;
 - (void)publishOutputData:(NSData *)data

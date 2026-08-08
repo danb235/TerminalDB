@@ -7,6 +7,8 @@
   JWTs before account routes reach the Lambda.
 - IAM can mint operator enrollment codes. A signed-in Cognito user can mint a
   short-lived enrollment code bound to that user's immutable `sub` claim.
+- New accounts require a short-lived proof signed by a Mac's non-exportable
+  P-256 key. Cognito's pre-signup trigger consumes that proof exactly once.
 - Registered Macs and paired controllers sign control requests with P-256.
 - Account controllers require both a current Cognito access token and their
   registered non-exportable P-256 key to mint WebSocket tickets.
@@ -28,9 +30,14 @@ AWS-held key.
   comes from the verified token and never from a request body or URL.
 - Account tenant equality is rechecked during controller registration, ticket
   issuance, WebSocket connect, Mac key lookup, and relay routing.
-- Cognito self-signup requires email verification, uses a 12-character strong
-  password policy, suppresses user-existence errors, requires TOTP MFA, and
-  enables Cognito threat protection in enforced mode.
+- Cognito stores no required email or phone attribute. Signup is auto-confirmed
+  only after a one-time Mac proof, uses a 12-character strong password policy,
+  suppresses user-existence errors, requires TOTP or a user-verified passkey,
+  disables self-service email/SMS recovery, and enables threat protection in
+  enforced mode.
+- Desktop password changes and account deletion require both the enrolled Mac
+  key and Touch ID or the Mac login password. Password changes revoke account
+  controllers and pre-change tokens but do not bypass or remove registered MFA.
 - At most five active account enrollment codes per user.
 - At most three active pairing links and five trusted controllers per Mac
   session.

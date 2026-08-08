@@ -3,7 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   accountAccessToken,
   beginAccountSignIn,
+  clearAccountCredentials,
   completeAccountSignIn,
+  signUpWithBootstrap,
   signOutAccount,
   type AccountAuthConfiguration,
 } from "./account-auth";
@@ -57,6 +59,7 @@ describe("Cognito account OAuth", () => {
     const url = navigate.mock.calls[0]?.[0] as URL;
     expect(url.pathname).toBe("/oauth2/authorize");
     expect(url.searchParams.get("response_type")).toBe("code");
+    expect(url.searchParams.get("scope")).toBe("openid profile");
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
     expect(url.searchParams.get("code_challenge")).toMatch(/^[\w-]{40,}$/u);
     expect(url.searchParams.get("state")).toBe(
@@ -65,6 +68,51 @@ describe("Cognito account OAuth", () => {
     expect(sessionStorage.getItem("terminaldb.account.pkce-verifier.v1"))
       .toMatch(/^[\w-]{40,}$/u);
     expect(url.searchParams.has("code_verifier")).toBe(false);
+  });
+
+  it("sends a Mac-approved signup directly to Cognito without email", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ UserConfirmed: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await signUpWithBootstrap({
+      configuration: {
+        ...configuration,
+        issuer: "https://cognito-idp.us-west-2.amazonaws.com/us-west-2_pool",
+      },
+      username: "qa-user",
+      password: "Strong-Test-Password-42!",
+      bootstrapToken: "mac-approved-token",
+    });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://cognito-idp.us-west-2.amazonaws.com");
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as Record<string, any>;
+    expect(body).toMatchObject({
+      ClientId: "web-client",
+      Username: "qa-user",
+      ClientMetadata: { bootstrapToken: "mac-approved-token" },
+    });
+    expect(body).not.toHaveProperty("UserAttributes");
+  });
+
+  it("never restores an external post-authentication URL", async () => {
+    sessionStorage.setItem("terminaldb.account.oauth-state.v1", "expected-state");
+    sessionStorage.setItem("terminaldb.account.pkce-verifier.v1", "pkce-verifier");
+    sessionStorage.setItem("terminaldb.account.return-to.v1", "https://attacker.example/steal");
+    history.replaceState({}, "", "/auth/callback?code=one-time-code&state=expected-state");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ access_token: "access-token", expires_in: 3_600 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await completeAccountSignIn(configuration);
+
+    expect(`${location.pathname}${location.search}`).toBe("/");
   });
 
   it("refreshes an expired access token without exposing the refresh token in the URL", async () => {
@@ -106,6 +154,18 @@ describe("Cognito account OAuth", () => {
     const logout = navigate.mock.calls[0]?.[0] as URL;
     expect(logout.pathname).toBe("/logout");
     expect(logout.searchParams.get("client_id")).toBe("web-client");
+  });
+
+  it("discards cached credentials after the account access policy changes", () => {
+    localStorage.setItem("terminaldb.account.tokens.v1", JSON.stringify({
+      accessToken: "revoked-access-token",
+      refreshToken: "revoked-refresh-token",
+      expiresAt: Date.now() + 3_600_000,
+    }));
+
+    clearAccountCredentials();
+
+    expect(localStorage.getItem("terminaldb.account.tokens.v1")).toBeNull();
   });
 
   it("rejects a callback whose state was not created by this browser", async () => {

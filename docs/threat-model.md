@@ -72,6 +72,25 @@ verify the checksum, bundle identifier, version, architectures, and code
 signature before replacement. The current project does not use Apple
 notarization.
 
+### Remote account takeover and recovery
+
+Anonymous one-time links remain possession capabilities scoped to one terminal
+session. Account signup additionally requires a short-lived grant signed by a
+Mac's non-exportable key; a Cognito pre-signup trigger consumes the grant once.
+The backend derives tenant identity only from a verified Cognito `sub` and
+never from client-supplied IDs. Terminal payloads remain end-to-end encrypted
+with separate Mac/browser keys.
+
+There is intentionally no email or SMS recovery channel. Password changes and
+desktop account deletion require an enrolled Mac request plus Touch ID or the
+Mac login password. A password change revokes account controllers and
+pre-change API tokens, but it does not remove a registered TOTP secret or
+passkey. A user who loses every MFA factor cannot self-recover; Cognito exposes
+no safe administrator operation for deleting a user's TOTP secret. A
+compromised macOS user account is already in the trust boundary and can manage
+the TerminalDB account, matching its ability to access the local terminal
+sessions.
+
 ## Privacy controls
 
 - no analytics or crash reporting in the current build
