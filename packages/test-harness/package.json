@@ -1,0 +1,23 @@
+{
+  "name": "@terminaldb/test-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:cost": "vitest run src/cost-guard.test.ts",
+    "live:mac": "node scripts/live-mac.mjs",
+    "live:browser": "node scripts/verify-live-browser.mjs",
+    "live:socket": "node scripts/probe-websocket.mjs",
+    "live:session": "node scripts/verify-live-session.mjs"
+  },
+  "dependencies": {
+    "@terminaldb/protocol": "0.1.0"
+  },
+  "devDependencies": {
+    "playwright": "1.62.0",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
+  }
+}

@@ -36,14 +36,16 @@ jobs:
         env:
           TERMINALDB_VERSION: 0.1.0
           TERMINALDB_BUILD: ci
-        run: ./Scripts/build-app.sh release
+        run: ./apps/macos/Scripts/build-app.sh release
 
       - name: Verify release bundle
         run: |
           set -euo pipefail
-          APP="build/TerminalDB.app"
+          APP="apps/macos/build/TerminalDB.app"
           BIN="${APP}/Contents/MacOS/TerminalDB"
+          AGENT="${APP}/Contents/MacOS/TerminalDBRemoteAgent"
           codesign --verify --deep --strict --verbose=2 "${APP}"
           lipo "${BIN}" -verify_arch arm64 x86_64
+          lipo "${AGENT}" -verify_arch arm64 x86_64
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${APP}/Contents/Info.plist")" = "0.1.0"
           test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "${APP}/Contents/Info.plist")" = "13.0"

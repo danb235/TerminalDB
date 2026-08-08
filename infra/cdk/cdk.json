@@ -1,0 +1,13 @@
+{
+  "app": "node --enable-source-maps dist/bin/terminaldb-remote.js",
+  "context": {
+    "stage": "dev",
+    "region": "us-west-2",
+    "cloudfrontPlan": "FREE",
+    "disableNewPairings": false,
+    "websocketMessagesPerSecond": 25,
+    "websocketBurst": 50,
+    "lambdaReservedConcurrency": 8,
+    "@aws-cdk/core:defaultCrossStackReferences": "strong"
+  }
+}
