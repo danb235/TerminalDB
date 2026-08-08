@@ -77,7 +77,7 @@ export const tabs: RemoteTab[] = [
 ];
 
 export const mockInventory: InventoryPayload = {
-  capabilities: ["sequenced-input-v1", "causal-input-output-v1"],
+  capabilities: ["sequenced-input-v1", "causal-input-output-v1", "account-bootstrap-v1"],
   instances: [
     {
       id: "instance_primary",

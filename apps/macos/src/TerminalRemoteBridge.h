@@ -38,15 +38,16 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface TerminalRemoteBridge : NSObject
 
-@property(nonatomic, weak) id<TerminalRemoteBridgeDelegate> delegate;
+@property(nonatomic, weak, nullable) id<TerminalRemoteBridgeDelegate> delegate;
 @property(nonatomic, copy, readonly) NSString *connectionState;
 @property(nonatomic, copy, readonly, nullable) NSString *pairingURL;
 @property(nonatomic, copy, readonly, nullable) NSString *statusDetail;
 @property(nonatomic, copy, readonly) NSArray<NSDictionary *> *trustedControllers;
 @property(nonatomic, readonly, getter=isEnabled) BOOL enabled;
 @property(nonatomic, readonly) BOOL accountOwned;
+@property(nonatomic, readonly) BOOL accountBootstrapSupported;
 
-- (instancetype)initWithDelegate:(id<TerminalRemoteBridgeDelegate>)delegate;
+- (instancetype)initWithDelegate:(nullable id<TerminalRemoteBridgeDelegate>)delegate;
 - (void)attachToRunningAgent;
 - (void)start;
 - (void)enableWithBaseURL:(NSString *)baseURL
@@ -74,6 +75,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (instancetype)initWithBridge:(TerminalRemoteBridge *)bridge;
 - (void)refresh;
++ (BOOL)runAccountControlsSelfTests;
 
 @end
 

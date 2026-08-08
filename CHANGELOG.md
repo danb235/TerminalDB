@@ -48,6 +48,9 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   protected account actions.
 - Browsers now discard revoked local account credentials and return to a clear
   sign-in state immediately after native account management changes access.
+- Web and native account creation now negotiate explicit Mac-agent support.
+  Older builds explain the required update instead of offering an action the
+  running agent cannot acknowledge.
 
 ### Security
 

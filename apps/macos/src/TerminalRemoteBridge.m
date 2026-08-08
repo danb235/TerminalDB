@@ -122,6 +122,8 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
 @property(nonatomic, copy, readwrite) NSArray<NSDictionary *> *trustedControllers;
 @property(nonatomic, readwrite, getter=isEnabled) BOOL enabled;
 @property(nonatomic, readwrite) BOOL accountOwned;
+@property(nonatomic, readwrite) BOOL accountBootstrapSupported;
+@property(nonatomic) BOOL remoteAgentCapabilitiesKnown;
 @property(nonatomic, copy) NSString *instanceIdentifier;
 @property(nonatomic) int socketDescriptor;
 @property(nonatomic) dispatch_source_t readSource;
@@ -156,7 +158,7 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
 
 @implementation TerminalRemoteBridge
 
-- (instancetype)initWithDelegate:(id<TerminalRemoteBridgeDelegate>)delegate {
+- (instancetype)initWithDelegate:(nullable id<TerminalRemoteBridgeDelegate>)delegate {
     self = [super init];
     if (self) {
         _delegate = delegate;
@@ -392,6 +394,11 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
             self.trustedControllers = message[@"controllers"];
         }
         self.accountOwned = [message[@"accountOwned"] boolValue];
+        NSArray *capabilities = [message[@"capabilities"] isKindOfClass:NSArray.class]
+            ? message[@"capabilities"] : @[];
+        self.remoteAgentCapabilitiesKnown = YES;
+        self.accountBootstrapSupported =
+            [capabilities containsObject:@"account-bootstrap-v1"];
         [self updateState:nextState
                   enabled:[message[@"enabled"] boolValue]
                pairingURL:nextPairingURL
@@ -663,6 +670,14 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
 }
 
 - (void)createAccountWithBaseURL:(NSString *)baseURL {
+    if (!self.accountBootstrapSupported) {
+        [self updateState:@"error"
+                  enabled:self.enabled
+               pairingURL:self.pairingURL
+                    detail:
+            @"The running Remote Control agent predates account creation. Quit older TerminalDB windows, wait a few seconds, then reopen TerminalDB v0.3.0 or newer."];
+        return;
+    }
     [self start];
     [self sendMessage:@{
         @"type" : @"createAccountBootstrap",
@@ -961,6 +976,8 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
         close(self.socketDescriptor);
     }
     self.socketDescriptor = -1;
+    self.remoteAgentCapabilitiesKnown = NO;
+    self.accountBootstrapSupported = NO;
     [self.readBuffer setLength:0];
 }
 
@@ -987,6 +1004,7 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
 @property(nonatomic, strong) NSButton *pairingCopyButton;
 @property(nonatomic, strong) NSButton *advancedButton;
 @property(nonatomic, strong) NSButton *disableButton;
+@property(nonatomic, strong) NSTextField *accountDetailLabel;
 @property(nonatomic, strong) NSButton *createAccountButton;
 @property(nonatomic, strong) NSButton *connectAccountButton;
 @property(nonatomic, strong) NSButton *resetAccountButton;
@@ -1005,6 +1023,27 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
 @end
 
 @implementation TerminalRemoteWindowController
+
++ (BOOL)runAccountControlsSelfTests {
+    TerminalRemoteBridge *bridge =
+        [[TerminalRemoteBridge alloc] initWithDelegate:nil];
+    [bridge setValue:@YES forKey:@"remoteAgentCapabilitiesKnown"];
+    TerminalRemoteWindowController *controller =
+        [[TerminalRemoteWindowController alloc] initWithBridge:bridge];
+    [controller.window.contentView layoutSubtreeIfNeeded];
+    NSButton *create = controller.createAccountButton;
+    NSRect visibleBounds = controller.window.contentView.bounds;
+    BOOL legacyAgentExplained = !create.enabled &&
+        [controller.accountDetailLabel.stringValue
+            containsString:@"older Remote Control agent"];
+    [bridge setValue:@YES forKey:@"accountBootstrapSupported"];
+    [controller refresh];
+    return legacyAgentExplained &&
+        [controller.window.title isEqualToString:@"TerminalDB Remote Control"] &&
+        [create.title isEqualToString:@"Create Account"] &&
+        create.enabled && !create.hidden &&
+        NSContainsRect(visibleBounds, create.frame);
+}
 
 - (instancetype)initWithBridge:(TerminalRemoteBridge *)bridge {
     NSWindow *window = [[NSWindow alloc]
@@ -1266,7 +1305,7 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
                         font:[NSFont monospacedSystemFontOfSize:10
                                                        weight:NSFontWeightBold]
                        color:[NSColor colorWithRed:0.255 green:0.839 blue:0.792 alpha:1]];
-    NSTextField *accountDetail =
+    self.accountDetailLabel =
         [self labelWithString:
             @"Create an account to open this Mac's sessions from any signed-in browser. "
              "Passwords stay in Cognito's secure browser flow."
@@ -1310,7 +1349,7 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
         eyebrow, title, privacy, self.statusLabel, self.detailLabel,
         self.pairingQRCode, self.primaryButton, self.pairPhoneButton,
         self.pairingCopyButton, self.advancedButton, self.disableButton,
-        accountTitle, accountDetail, self.createAccountButton,
+        accountTitle, self.accountDetailLabel, self.createAccountButton,
         self.connectAccountButton, self.resetAccountButton,
         self.deleteAccountButton,
         self.controllersLabel, self.controllersPopUp,
@@ -1353,10 +1392,10 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
         [self.disableButton.leadingAnchor constraintEqualToAnchor:self.advancedButton.trailingAnchor constant:14],
         [accountTitle.topAnchor constraintEqualToAnchor:self.advancedButton.bottomAnchor constant:22],
         [accountTitle.leadingAnchor constraintEqualToAnchor:eyebrow.leadingAnchor],
-        [accountDetail.topAnchor constraintEqualToAnchor:accountTitle.bottomAnchor constant:7],
-        [accountDetail.leadingAnchor constraintEqualToAnchor:eyebrow.leadingAnchor],
-        [accountDetail.trailingAnchor constraintEqualToAnchor:title.trailingAnchor],
-        [self.createAccountButton.topAnchor constraintEqualToAnchor:accountDetail.bottomAnchor constant:10],
+        [self.accountDetailLabel.topAnchor constraintEqualToAnchor:accountTitle.bottomAnchor constant:7],
+        [self.accountDetailLabel.leadingAnchor constraintEqualToAnchor:eyebrow.leadingAnchor],
+        [self.accountDetailLabel.trailingAnchor constraintEqualToAnchor:title.trailingAnchor],
+        [self.createAccountButton.topAnchor constraintEqualToAnchor:self.accountDetailLabel.bottomAnchor constant:10],
         [self.createAccountButton.leadingAnchor constraintEqualToAnchor:eyebrow.leadingAnchor],
         [self.createAccountButton.widthAnchor constraintEqualToConstant:145],
         [self.createAccountButton.heightAnchor constraintEqualToConstant:34],
@@ -1441,7 +1480,18 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
     self.primaryButton.title = self.automaticSetupInProgress
         ? @"Opening…" : @"Open Remote Web App";
     self.pairPhoneButton.enabled = !setupInProgress;
-    self.createAccountButton.enabled = !setupInProgress;
+    if (!bridge.remoteAgentCapabilitiesKnown) {
+        self.accountDetailLabel.stringValue =
+            @"Checking whether the running Remote Control agent supports account creation…";
+    } else if (!bridge.accountBootstrapSupported) {
+        self.accountDetailLabel.stringValue =
+            @"An older Remote Control agent is still running. Quit older TerminalDB windows, wait a few seconds, then reopen TerminalDB v0.3.0 or newer.";
+    } else {
+        self.accountDetailLabel.stringValue =
+            @"Create an account to open this Mac's sessions from any signed-in browser. Passwords stay in Cognito's secure browser flow.";
+    }
+    self.createAccountButton.enabled =
+        !setupInProgress && bridge.accountBootstrapSupported;
     self.connectAccountButton.enabled = !setupInProgress;
     self.resetAccountButton.enabled = !setupInProgress && bridge.accountOwned;
     self.deleteAccountButton.enabled = !setupInProgress && bridge.accountOwned;
