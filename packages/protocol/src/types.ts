@@ -34,6 +34,8 @@ export const routeSchema = z.enum([
   "claude.state",
   "account.inventory",
   "account.switch",
+  "account.bootstrap",
+  "account.bootstrap.ready",
   "usage.refresh",
   "session.end",
   "session.ended",

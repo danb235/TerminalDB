@@ -517,6 +517,7 @@ private struct AgentState: Codable {
     var deviceID: String?
     var sessionID: String?
     var generation: Int?
+    var accountOwned: Bool?
 }
 
 private final class StateStore {
@@ -894,6 +895,7 @@ private final class RemoteAgent: @unchecked Sendable {
     private var activePairingURL: String?
     private var activePairingExpiresAt: Int?
     private var trustedControllers: [[String: Any]] = []
+    private var accountBootstrapInProgress = false
 
     private var rotationDelaySeconds: Double {
         let environment = ProcessInfo.processInfo.environment
@@ -1073,6 +1075,20 @@ private final class RemoteAgent: @unchecked Sendable {
                 self.disableRemote(notifyServer: true)
             case "createPairing":
                 self.createPairing()
+            case "createAccountBootstrap":
+                guard let baseURL = message["baseURL"] as? String else {
+                    client.send(["type": "error", "message": "Remote web URL is required"])
+                    return
+                }
+                self.beginAccountBootstrap(baseURL: baseURL)
+            case "resetAccountPassword":
+                guard let password = message["password"] as? String else {
+                    client.send(["type": "error", "message": "A new password is required"])
+                    return
+                }
+                self.resetAccountPassword(password)
+            case "deleteAccount":
+                self.deleteAccountFromMac()
             case "refreshControllers":
                 self.refreshControllers()
             case "revokeController":
@@ -1328,6 +1344,7 @@ private final class RemoteAgent: @unchecked Sendable {
                 }
                 state.sessionID = sessionID
                 state.generation = generation
+                state.accountOwned = session["accountOwned"] as? Bool ?? accountEnrollment
                 state.enabled = true
                 try store.save(state)
                 try await openCloudSocket()
@@ -1349,6 +1366,259 @@ private final class RemoteAgent: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    private func resetAccountPassword(_ password: String) {
+        guard state.deviceID != nil else {
+            broadcastError("Connect this Mac to a TerminalDB account first.")
+            return
+        }
+        Task {
+            do {
+                _ = try await request(
+                    method: "POST",
+                    path: "/api/v1/device/account/recover",
+                    body: ["password": password],
+                    authenticated: true
+                )
+                queue.async {
+                    self.broadcastStatus(
+                        self.lastStatus,
+                        detail: "Password changed. Sign in again with your existing authenticator or passkey."
+                    )
+                }
+            } catch {
+                queue.async { self.broadcastError(error.localizedDescription) }
+            }
+        }
+    }
+
+    private func deleteAccountFromMac() {
+        guard state.deviceID != nil else {
+            broadcastError("Connect this Mac to a TerminalDB account first.")
+            return
+        }
+        Task {
+            do {
+                _ = try await request(
+                    method: "DELETE",
+                    path: "/api/v1/device/account",
+                    body: [:],
+                    authenticated: true
+                )
+                queue.async {
+                    self.finishDisablingRemote(notifyServer: false)
+                    self.state.deviceID = nil
+                    self.state.accountOwned = false
+                    try? self.store.save(self.state)
+                    self.broadcastStatus(
+                        "disabled",
+                        detail: "TerminalDB account deleted. One-time links are still available."
+                    )
+                }
+            } catch {
+                queue.async { self.broadcastError(error.localizedDescription) }
+            }
+        }
+    }
+
+    private func accountBootstrapProof() throws -> [String: Any] {
+        let signingPublicKey = try identity.publicJWK()
+        let agreementPublicKey = try identity.publicJWK()
+        let timestamp = Int(Date().timeIntervalSince1970 * 1_000)
+        let nonce = UUID().uuidString.lowercased()
+        let deviceName = Host.current().localizedName ?? "Mac"
+        guard let signingX = signingPublicKey["x"] as? String,
+              let signingY = signingPublicKey["y"] as? String,
+              let agreementX = agreementPublicKey["x"] as? String,
+              let agreementY = agreementPublicKey["y"] as? String else {
+            throw AgentError.invalidPublicKey
+        }
+        let canonical = [
+            String(timestamp), nonce, deviceName,
+            signingX, signingY, agreementX, agreementY,
+        ].joined(separator: "\n")
+        return [
+            "timestamp": timestamp,
+            "nonce": nonce,
+            "deviceName": deviceName,
+            "signingPublicKey": signingPublicKey,
+            "agreementPublicKey": agreementPublicKey,
+            "signature": base64URL(try identity.sign(Data(canonical.utf8))),
+        ]
+    }
+
+    private func accountBootstrapURL(baseURL: String, token: String) throws -> String {
+        guard var components = URLComponents(string: baseURL) else {
+            throw AgentError.server("Invalid TerminalDB Remote URL")
+        }
+        components.queryItems = [
+            URLQueryItem(name: "account", value: "create"),
+            URLQueryItem(name: "source", value: "desktop"),
+        ]
+        components.fragment = "account-bootstrap=\(token)"
+        guard let url = components.url else {
+            throw AgentError.server("Invalid TerminalDB account URL")
+        }
+        return url.absoluteString
+    }
+
+    private func beginAccountBootstrap(
+        baseURL: String,
+        controllerID: String? = nil,
+        requestID: String? = nil
+    ) {
+        guard !accountBootstrapInProgress else {
+            if let controllerID, let requestID {
+                sendEncrypted(
+                    route: "ack",
+                    payload: [
+                        "requestId": requestID,
+                        "accepted": false,
+                        "detail": "Account setup is already in progress on this Mac.",
+                    ],
+                    to: controllerID,
+                    ttlMilliseconds: 10_000
+                )
+            }
+            return
+        }
+        let normalized = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let permitsLocalQA = ProcessInfo.processInfo.environment[
+            "TERMINALDB_REMOTE_EPHEMERAL_IDENTITY"
+        ] == "1"
+        guard URL(string: normalized)?.scheme == "https" || permitsLocalQA else {
+            broadcastError("Account setup requires an HTTPS Remote web URL.")
+            return
+        }
+        accountBootstrapInProgress = true
+        state.baseURL = normalized
+        try? store.save(state)
+        Task {
+            var grantDelivered = false
+            do {
+                let authenticated = self.queue.sync { self.state.deviceID != nil }
+                let response = try await self.request(
+                    method: "POST",
+                    path: "/api/v1/account-bootstrap",
+                    body: authenticated ? [:] : try self.accountBootstrapProof(),
+                    authenticated: authenticated
+                )
+                guard let token = response["bootstrapToken"] as? String,
+                      let expiresAt = response["expiresAt"] as? Int else {
+                    throw AgentError.invalidResponse
+                }
+                self.queue.async {
+                    if let controllerID, let requestID {
+                        self.sendEncrypted(
+                            route: "account.bootstrap.ready",
+                            payload: ["bootstrapToken": token, "expiresAt": expiresAt],
+                            to: controllerID,
+                            ttlMilliseconds: 30_000
+                        )
+                        self.sendEncrypted(
+                            route: "ack",
+                            payload: ["requestId": requestID, "accepted": true],
+                            to: controllerID,
+                            ttlMilliseconds: 10_000
+                        )
+                    } else if let url = try? self.accountBootstrapURL(
+                        baseURL: normalized,
+                        token: token
+                    ) {
+                        for client in self.clients.values where client.authenticated {
+                            client.send(["type": "accountBootstrap", "url": url])
+                        }
+                    }
+                }
+                grantDelivered = true
+                try await self.pollAccountBootstrap(token: token, expiresAt: expiresAt)
+            } catch {
+                self.queue.async {
+                    self.accountBootstrapInProgress = false
+                    if !grantDelivered, let controllerID, let requestID {
+                        self.sendEncrypted(
+                            route: "ack",
+                            payload: [
+                                "requestId": requestID,
+                                "accepted": false,
+                                "detail": error.localizedDescription,
+                            ],
+                            to: controllerID,
+                            ttlMilliseconds: 10_000
+                        )
+                    } else {
+                        self.broadcastError(error.localizedDescription)
+                    }
+                }
+            }
+        }
+    }
+
+    private func pollAccountBootstrap(token: String, expiresAt: Int) async throws {
+        var attempt = 0
+        while Int(Date().timeIntervalSince1970) < expiresAt {
+            do {
+                let response = try await request(
+                    method: "POST",
+                    path: "/api/v1/account-bootstrap/status",
+                    body: ["bootstrapToken": token],
+                    authenticated: false
+                )
+                if response["status"] as? String == "complete",
+                   let deviceID = response["deviceId"] as? String {
+                    try await activateBootstrappedAccountDevice(deviceID)
+                    queue.async { self.accountBootstrapInProgress = false }
+                    return
+                }
+            } catch {
+                // Transient network failures are retried until the one-time
+                // approval expires. No account mutation is repeated.
+            }
+            attempt += 1
+            let delaySeconds: UInt64 = attempt < 40 ? 3 : 10
+            try await Task.sleep(nanoseconds: delaySeconds * 1_000_000_000)
+        }
+        throw AgentError.server("Account setup expired. Start again from TerminalDB.")
+    }
+
+    private func activateBootstrappedAccountDevice(_ deviceID: String) async throws {
+        let previous = queue.sync { (state.sessionID, state.deviceID) }
+        if let previousSession = previous.0, previous.1 == deviceID {
+            _ = try? await request(
+                method: "POST",
+                path: "/api/v1/sessions/\(previousSession)/end",
+                body: [:],
+                authenticated: true
+            )
+        }
+        queue.sync {
+            self.finishDisablingRemote(notifyServer: false)
+            self.state.deviceID = deviceID
+            self.state.accountOwned = true
+            try? self.store.save(self.state)
+        }
+        let session = try await request(
+            method: "POST",
+            path: "/api/v1/sessions",
+            body: ["protocolVersion": protocolVersion],
+            authenticated: true
+        )
+        guard let sessionID = session["sessionId"] as? String,
+              let generation = session["generation"] as? Int else {
+            throw AgentError.invalidResponse
+        }
+        queue.sync {
+            self.state.sessionID = sessionID
+            self.state.generation = generation
+            self.state.enabled = true
+            try? self.store.save(self.state)
+            self.broadcastStatus(
+                "connecting",
+                detail: "This Mac is available in your TerminalDB account."
+            )
+        }
+        try await openCloudSocket()
     }
 
     private func createPairing() {
@@ -1908,6 +2178,12 @@ private final class RemoteAgent: @unchecked Sendable {
                 "generation": state.generation ?? 0,
                 "expiresAt": expiresAt,
             ])
+        case "account.bootstrap":
+            beginAccountBootstrap(
+                baseURL: state.baseURL,
+                controllerID: sourceID,
+                requestID: requestID
+            )
         case "session.end":
             sendEncrypted(
                 route: "ack",
@@ -2271,6 +2547,7 @@ private final class RemoteAgent: @unchecked Sendable {
             "type": "remoteStatus",
             "state": status ?? lastStatus,
             "enabled": state.enabled,
+            "accountOwned": state.accountOwned == true,
             "controllers": trustedControllers,
         ]
         if let pairingURL { message["pairingURL"] = pairingURL }

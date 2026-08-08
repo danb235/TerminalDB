@@ -21,7 +21,12 @@ import { clearControllerSession, loadControllerSession } from "./identity";
 import {
   accountAccessToken,
   beginAccountSignIn,
+  clearAccountCredentials,
+  clearPendingAccountBootstrap,
   completeAccountSignIn,
+  pendingAccountBootstrap,
+  savePendingAccountBootstrap,
+  signUpWithBootstrap,
   signOutAccount,
 } from "./account-auth";
 import { accounts as mockAccounts, mockInventory, terminalFixture } from "./mock-data";
@@ -29,7 +34,9 @@ import { AcknowledgedInputQueue } from "./ordered-input";
 import type { SequencedInputBatch } from "./ordered-input";
 import {
   controllerDeviceName,
+  completeAccountBootstrap,
   createAccountEnrollment,
+  deleteTerminalDBAccount,
   listAccountSessions,
   loadPublicConfiguration,
   openAccountSession,
@@ -300,9 +307,19 @@ function Dashboard({
 function AccountAccess({
   configuration,
   onSessionReady,
+  context = "landing",
+  activeAccessMode,
+  bootstrapToken,
+  onRequestBootstrap,
+  onBootstrapConsumed,
 }: {
   readonly configuration: NonNullable<RemotePublicConfiguration["accountAuth"]>;
   readonly onSessionReady: () => Promise<void>;
+  readonly context?: "landing" | "session";
+  readonly activeAccessMode?: "pairing" | "account";
+  readonly bootstrapToken?: string | undefined;
+  readonly onRequestBootstrap?: () => Promise<void>;
+  readonly onBootstrapConsumed?: () => void;
 }) {
   const [accessToken, setAccessToken] = useState<string>();
   const [sessions, setSessions] = useState<readonly AccountSessionSummary[]>([]);
@@ -312,6 +329,18 @@ function AccountAccess({
     readonly enrollmentCode: string;
     readonly expiresAt: number;
   }>();
+  const [copiedEnrollment, setCopiedEnrollment] = useState(false);
+  const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
+  const [deleteConfirmation, setDeleteConfirmation] = useState("");
+  const [accountActionBusy, setAccountActionBusy] = useState(false);
+  const [bootstrapRequestBusy, setBootstrapRequestBusy] = useState(false);
+  const [signupBusy, setSignupBusy] = useState(false);
+  const [signupUsername, setSignupUsername] = useState("");
+  const [signupPassword, setSignupPassword] = useState("");
+  const [signupPasswordConfirmation, setSignupPasswordConfirmation] = useState("");
+  const [bootstrapComplete, setBootstrapComplete] = useState(false);
+  const enrollmentRequestedRef = useRef(false);
+  const bootstrapCompletionRequestedRef = useRef(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -321,7 +350,17 @@ function AccountAccess({
       setAccessToken(token);
       setSessions(token ? await listAccountSessions(token) : []);
     } catch (refreshError) {
-      setError(refreshError instanceof Error ? refreshError.message : "Account sessions could not be loaded.");
+      const message = refreshError instanceof Error
+        ? refreshError.message
+        : "Account sessions could not be loaded.";
+      if (/\(401\)$/u.test(message)) {
+        clearAccountCredentials();
+        setAccessToken(undefined);
+        setSessions([]);
+        setError("Account access changed. Sign in again.");
+      } else {
+        setError(message);
+      }
     } finally {
       setLoading(false);
     }
@@ -343,13 +382,73 @@ function AccountAccess({
           setAccessToken(token);
           setSessions(discovered);
         }
-      })().catch(() => undefined);
+      })().catch((refreshError: unknown) => {
+        const message = refreshError instanceof Error ? refreshError.message : "";
+        if (/\(401\)$/u.test(message)) {
+          clearAccountCredentials();
+          setAccessToken(undefined);
+          setSessions([]);
+          setError("Account access changed. Sign in again.");
+        }
+      });
     }, 5_000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
   }, [accessToken, configuration]);
+
+  useEffect(() => {
+    if (!accessToken || !bootstrapToken || bootstrapCompletionRequestedRef.current) return;
+    bootstrapCompletionRequestedRef.current = true;
+    void completeAccountBootstrap({ accessToken, bootstrapToken }).then(() => {
+      clearPendingAccountBootstrap();
+      setBootstrapComplete(true);
+      onBootstrapConsumed?.();
+      window.setTimeout(() => void refresh(), 1_500);
+    }).catch((completionError: unknown) => {
+      bootstrapCompletionRequestedRef.current = false;
+      setError(completionError instanceof Error
+        ? completionError.message
+        : "This Mac could not be connected to the account.");
+    });
+  }, [accessToken, bootstrapToken, onBootstrapConsumed, refresh]);
+
+  const createAccount = async () => {
+    const username = signupUsername.trim();
+    if (username.length < 3 || username.length > 64 || /\s/u.test(username)) {
+      setError("Choose a username between 3 and 64 characters with no spaces.");
+      return;
+    }
+    if (signupPassword !== signupPasswordConfirmation) {
+      setError("The passwords do not match.");
+      return;
+    }
+    if (!bootstrapToken) {
+      setError("Start account creation again from TerminalDB on your Mac.");
+      return;
+    }
+    setSignupBusy(true);
+    setError(undefined);
+    try {
+      await signUpWithBootstrap({
+        configuration,
+        username,
+        password: signupPassword,
+        bootstrapToken,
+      });
+      savePendingAccountBootstrap(bootstrapToken);
+      setSignupPassword("");
+      setSignupPasswordConfirmation("");
+      await beginAccountSignIn(configuration, undefined, {
+        returnTo: "/?account=finish",
+        loginHint: username,
+      });
+    } catch (signupError) {
+      setError(signupError instanceof Error ? signupError.message : "The account could not be created.");
+      setSignupBusy(false);
+    }
+  };
 
   const openSession = async (sessionId: string) => {
     if (!accessToken) return;
@@ -364,7 +463,41 @@ function AccountAccess({
     }
   };
 
-  const createEnrollment = async () => {
+  const clearAccountControllerIfNeeded = async () => {
+    if (context !== "session" || activeAccessMode === "account") {
+      await clearControllerSession();
+    }
+  };
+
+  const logOut = async () => {
+    setAccountActionBusy(true);
+    setError(undefined);
+    try {
+      await clearAccountControllerIfNeeded();
+      await signOutAccount(configuration);
+    } catch (logoutError) {
+      setError(logoutError instanceof Error ? logoutError.message : "The account could not be logged out.");
+      setAccountActionBusy(false);
+    }
+  };
+
+  const deleteAccount = async () => {
+    if (deleteConfirmation !== "DELETE") return;
+    setAccountActionBusy(true);
+    setError(undefined);
+    try {
+      const token = await accountAccessToken(configuration);
+      if (!token) throw new Error("Sign in again before deleting this account.");
+      await deleteTerminalDBAccount(token);
+      await clearAccountControllerIfNeeded();
+      await signOutAccount(configuration);
+    } catch (deletionError) {
+      setError(deletionError instanceof Error ? deletionError.message : "The account could not be deleted.");
+      setAccountActionBusy(false);
+    }
+  };
+
+  const createEnrollment = useCallback(async () => {
     if (!accessToken) return;
     setError(undefined);
     try {
@@ -372,17 +505,114 @@ function AccountAccess({
     } catch (enrollmentError) {
       setError(enrollmentError instanceof Error ? enrollmentError.message : "An enrollment code could not be created.");
     }
-  };
+  }, [accessToken]);
+
+  useEffect(() => {
+    if (!accessToken || enrollmentRequestedRef.current) return;
+    const query = new URLSearchParams(location.search);
+    if (query.get("account") !== "connect") return;
+    enrollmentRequestedRef.current = true;
+    void createEnrollment().finally(() => {
+      history.replaceState({}, "", "/");
+    });
+  }, [accessToken, createEnrollment]);
 
   if (!accessToken) {
+    if (bootstrapToken) {
+      return (
+        <section className="account-access account-signup">
+          <span>MAC APPROVED · NO EMAIL REQUIRED</span>
+          <h2>Create your TerminalDB account</h2>
+          <p>This one-time approval connects the Mac that opened this page. Your password goes directly to AWS Cognito and is never sent to TerminalDB.</p>
+          <form onSubmit={(event) => {
+            event.preventDefault();
+            void createAccount();
+          }}>
+            <label htmlFor="account-signup-username">Username</label>
+            <input
+              id="account-signup-username"
+              autoCapitalize="none"
+              autoComplete="username"
+              spellCheck={false}
+              value={signupUsername}
+              onChange={(event) => setSignupUsername(event.target.value)}
+              disabled={signupBusy}
+              required
+            />
+            <label htmlFor="account-signup-password">Password</label>
+            <input
+              id="account-signup-password"
+              type="password"
+              autoComplete="new-password"
+              value={signupPassword}
+              onChange={(event) => setSignupPassword(event.target.value)}
+              disabled={signupBusy}
+              minLength={12}
+              required
+            />
+            <small>At least 12 characters with upper and lowercase letters, a number, and a symbol.</small>
+            <label htmlFor="account-signup-confirmation">Confirm password</label>
+            <input
+              id="account-signup-confirmation"
+              type="password"
+              autoComplete="new-password"
+              value={signupPasswordConfirmation}
+              onChange={(event) => setSignupPasswordConfirmation(event.target.value)}
+              disabled={signupBusy}
+              minLength={12}
+              required
+            />
+            <button disabled={signupBusy} type="submit">
+              {signupBusy ? "Creating…" : "Create account"}
+            </button>
+          </form>
+          <button
+            className="text-button"
+            disabled={signupBusy}
+            onClick={() => void beginAccountSignIn(configuration)}
+          >
+            Already have an account? Sign in
+          </button>
+          {error ? <small role="alert">{error}</small> : null}
+        </section>
+      );
+    }
     return (
       <section className="account-access">
         <span>YOUR TERMINALS, ANYWHERE</span>
-        <h2>Use a TerminalDB account</h2>
-        <p>Sign in or create an account to see every Mac you have enrolled. No session link required.</p>
-        <button disabled={loading} onClick={() => void beginAccountSignIn(configuration)}>
-          Sign in or create account
-        </button>
+        <h2>Sign in to TerminalDB</h2>
+        <p>{context === "session"
+          ? "Sign in, or create an account with this Mac's one-time approval. Your current secure-link session stays active while you decide."
+          : "Sign in to see every Mac connected to your account. To create an account, start from TerminalDB on a Mac or from an open one-time session."}</p>
+        <div className="account-auth-actions">
+          <button
+            disabled={loading}
+            onClick={() => void beginAccountSignIn(
+              configuration,
+              undefined,
+              { returnTo: context === "session" ? "/?account=complete&source=session" : "/" },
+            )}
+          >
+            Sign in
+          </button>
+          {context === "session" && activeAccessMode === "pairing" && onRequestBootstrap ? (
+            <button
+              disabled={loading || bootstrapRequestBusy}
+              onClick={() => {
+                setBootstrapRequestBusy(true);
+                setError(undefined);
+                void onRequestBootstrap().catch((bootstrapError: unknown) => {
+                  setError(bootstrapError instanceof Error
+                    ? bootstrapError.message
+                    : "The Mac could not approve account creation.");
+                  setBootstrapRequestBusy(false);
+                });
+              }}
+            >
+              {bootstrapRequestBusy ? "Waiting for Mac…" : "Create account with this Mac"}
+            </button>
+          ) : null}
+        </div>
         {error ? <small role="alert">{error}</small> : null}
       </section>
     );
@@ -391,16 +621,18 @@ function AccountAccess({
   return (
     <section className="account-access account-access-signed-in">
       <header>
-        <div><span>YOUR ACCOUNT</span><h2>Terminal sessions</h2></div>
+        <div><span>YOUR TERMINALDB ACCOUNT</span><h2>Terminal sessions</h2></div>
         <button
           className="text-button"
-          onClick={() => {
-            void clearControllerSession().then(() => signOutAccount(configuration));
-          }}
+          disabled={accountActionBusy}
+          onClick={() => void logOut()}
         >
-          Sign out
+          Log out
         </button>
       </header>
+      {bootstrapComplete ? (
+        <p className="account-success">Mac connected. Its terminal sessions will appear here in a moment.</p>
+      ) : null}
       {sessions.length > 0 ? (
         <div className="account-session-list">
           {sessions.map((session) => (
@@ -421,9 +653,58 @@ function AccountAccess({
         <div className="enrollment-code">
           <span>15-MINUTE MAC ENROLLMENT CODE</span>
           <code>{enrollment.enrollmentCode}</code>
-          <small>In TerminalDB Remote Control, choose Advanced Setup and paste this code with {location.origin}.</small>
+          <button
+            onClick={() => {
+              void navigator.clipboard.writeText(enrollment.enrollmentCode).then(() => {
+                setCopiedEnrollment(true);
+                window.setTimeout(() => setCopiedEnrollment(false), 2_000);
+              }).catch(() => setError("The code could not be copied. Select it manually instead."));
+            }}
+          >
+            {copiedEnrollment ? "Copied" : "Copy code"}
+          </button>
+          <small>{context === "session" && activeAccessMode === "pairing"
+            ? "Return to TerminalDB Remote Control on your Mac, choose Connect Account…, and paste this code. The current one-time session ends only after you approve that change locally."
+            : "On the Mac you want to add, open TerminalDB Remote Control, choose Connect Account…, and paste this code."}</small>
         </div>
       ) : null}
+      <div className="account-danger-zone">
+        {!deleteAccountOpen ? (
+          <button disabled={accountActionBusy} onClick={() => setDeleteAccountOpen(true)}>
+            Delete account
+          </button>
+        ) : (
+          <>
+            <strong>Delete your TerminalDB account?</strong>
+            <p>This permanently removes your login, enrolled Macs, active account sessions, and trusted account browsers. One-time sessions that were never connected to this account are not affected.</p>
+            <label htmlFor="delete-account-confirmation">Type DELETE to confirm</label>
+            <input
+              id="delete-account-confirmation"
+              autoComplete="off"
+              spellCheck={false}
+              value={deleteConfirmation}
+              onChange={(event) => setDeleteConfirmation(event.target.value)}
+            />
+            <div>
+              <button
+                disabled={accountActionBusy || deleteConfirmation !== "DELETE"}
+                onClick={() => void deleteAccount()}
+              >
+                {accountActionBusy ? "Deleting…" : "Permanently delete account"}
+              </button>
+              <button
+                disabled={accountActionBusy}
+                onClick={() => {
+                  setDeleteAccountOpen(false);
+                  setDeleteConfirmation("");
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </>
+        )}
+      </div>
       {error ? <small role="alert">{error}</small> : null}
     </section>
   );
@@ -433,11 +714,16 @@ function UnpairedView({
   checking,
   configuration,
   onSessionReady,
+  bootstrapToken,
+  onBootstrapConsumed,
 }: {
   readonly checking: boolean;
   readonly configuration: RemotePublicConfiguration | undefined;
   readonly onSessionReady: () => Promise<void>;
+  readonly bootstrapToken?: string | undefined;
+  readonly onBootstrapConsumed: () => void;
 }) {
+  const accountRequested = new URLSearchParams(location.search).has("account");
   return (
     <main className="pairing-view">
       <AppMark />
@@ -452,7 +738,16 @@ function UnpairedView({
         <AccountAccess
           configuration={configuration.accountAuth}
           onSessionReady={onSessionReady}
+          bootstrapToken={bootstrapToken}
+          onBootstrapConsumed={onBootstrapConsumed}
         />
+      ) : null}
+      {!checking && configuration && !configuration.accountAuth && accountRequested ? (
+        <section className="account-access account-access-unavailable">
+          <span>TERMINALDB ACCOUNT</span>
+          <h2>Accounts are not configured</h2>
+          <p>This deployment has not enabled Cognito accounts. Ask its operator to configure accounts, or continue with a one-time link.</p>
+        </section>
       ) : null}
       <div className="pairing-proof">
         <div><span>TERMINAL DATA</span><strong>Remains on your Mac</strong></div>
@@ -557,9 +852,14 @@ function TerminalView({
           </div>
         </div>
         <ConnectionPill state={state} onClick={onDiagnostics} />
-        <button className="account-chip" onClick={onAccounts} aria-label="Claude account">
-          <span aria-hidden="true">●</span>
-          <span className="account-chip-label">{tab.accountLabel ?? "No account"}</span>
+        <button
+          className="account-chip"
+          onClick={onAccounts}
+          aria-label="Accounts"
+          title={`TerminalDB and Claude accounts · Active Claude account: ${tab.accountLabel ?? "None"}`}
+        >
+          <span aria-hidden="true">◎</span>
+          <span className="account-chip-label">Accounts</span>
         </button>
         <button className="terminal-more" onClick={onDevices} aria-label="Remote controls">•••</button>
       </div>
@@ -717,6 +1017,12 @@ function AccountsView({
   onRefresh,
   refreshing,
   canControl,
+  remoteAccountConfiguration,
+  onRemoteSessionReady,
+  activeAccessMode,
+  bootstrapToken,
+  onRequestBootstrap,
+  onBootstrapConsumed,
 }: {
   readonly accounts: readonly ClaudeAccount[];
   readonly selectedTab: RemoteTab | undefined;
@@ -724,14 +1030,44 @@ function AccountsView({
   readonly onRefresh: () => void;
   readonly refreshing: boolean;
   readonly canControl: boolean;
+  readonly remoteAccountConfiguration: NonNullable<RemotePublicConfiguration["accountAuth"]> | undefined;
+  readonly onRemoteSessionReady: () => Promise<void>;
+  readonly activeAccessMode: "pairing" | "account";
+  readonly bootstrapToken?: string | undefined;
+  readonly onRequestBootstrap: () => Promise<void>;
+  readonly onBootstrapConsumed: () => void;
 }) {
   return (
     <section className="view accounts-view" aria-labelledby="accounts-heading">
       <header className="page-heading">
-        <span className="eyebrow">CLAUDE CODE</span>
-        <h1 id="accounts-heading">Account & usage</h1>
-        <p>Switch an account already authenticated on your Mac. Credentials never leave it.</p>
+        <span className="eyebrow">TERMINALDB</span>
+        <h1 id="accounts-heading">Accounts</h1>
+        <p>{activeAccessMode === "pairing"
+          ? "Create or sign in to your TerminalDB account without giving up this one-time session."
+          : "Manage your TerminalDB sessions and the Claude accounts available on this Mac."}</p>
       </header>
+      {remoteAccountConfiguration ? (
+        <AccountAccess
+          configuration={remoteAccountConfiguration}
+          onSessionReady={onRemoteSessionReady}
+          context="session"
+          activeAccessMode={activeAccessMode}
+          bootstrapToken={bootstrapToken}
+          onRequestBootstrap={onRequestBootstrap}
+          onBootstrapConsumed={onBootstrapConsumed}
+        />
+      ) : (
+        <section className="account-access account-access-unavailable">
+          <span>TERMINALDB ACCOUNT</span>
+          <h2>Accounts are not configured</h2>
+          <p>This self-hosted deployment has not enabled Cognito accounts. One-time links continue to work normally.</p>
+        </section>
+      )}
+      <div className="account-section-heading">
+        <span className="eyebrow">CLAUDE CODE ON THIS MAC</span>
+        <h2>Claude accounts & usage</h2>
+        <p>Switch an account already authenticated on your Mac. Its credentials never leave the Mac.</p>
+      </div>
       <div className="account-list">
         {accounts.map((account) => {
           const active = account.id === selectedTab?.accountId;
@@ -1034,6 +1370,16 @@ export function App() {
   const [remoteRegion, setRemoteRegion] = useState("us-west-2");
   const [remoteConfiguration, setRemoteConfiguration] = useState<RemotePublicConfiguration>();
   const [activeAccessMode, setActiveAccessMode] = useState<"pairing" | "account">("pairing");
+  const [accountBootstrapToken, setAccountBootstrapToken] = useState<string | undefined>(() => {
+    const fragment = new URLSearchParams(location.hash.replace(/^#/u, ""));
+    const approved = fragment.get("account-bootstrap") ?? undefined;
+    if (approved) {
+      savePendingAccountBootstrap(approved);
+      history.replaceState({}, "", `${location.pathname}${location.search}`);
+      return approved;
+    }
+    return pendingAccountBootstrap();
+  });
   const clientRef = useRef<RemoteClient | null>(null);
   const connectionEpochRef = useRef(0);
   const selectedTabRef = useRef(selectedTabId);
@@ -1156,7 +1502,12 @@ export function App() {
       setRemoteConfiguration(configuration);
       setRemoteRegion(configuration.region);
       if (configuration.accountAuth) {
-        await completeAccountSignIn(configuration.accountAuth);
+        const completedAccountSignIn = await completeAccountSignIn(configuration.accountAuth);
+        if (completedAccountSignIn) setView("accounts");
+        const accountQuery = new URLSearchParams(location.search);
+        if (accountQuery.get("account") === "create" || accountQuery.get("account") === "finish") {
+          setView("accounts");
+        }
       }
       if (configuration.protocolVersion !== PROTOCOL_VERSION) {
         setAccessState((await loadControllerSession()) ? "paired" : "unpaired");
@@ -1274,6 +1625,12 @@ export function App() {
             type: "ended",
             revoked: reason === "controller-revoked",
           });
+        },
+        onAccountBootstrap: (bootstrapToken) => {
+          if (epoch !== connectionEpochRef.current) return;
+          savePendingAccountBootstrap(bootstrapToken);
+          setAccountBootstrapToken(bootstrapToken);
+          setView("accounts");
         },
         onAck: (_requestId, accepted, detail) => {
           if (epoch !== connectionEpochRef.current) return;
@@ -1764,6 +2121,17 @@ export function App() {
     }
   };
 
+  const requestAccountBootstrap = async () => {
+    const client = clientRef.current;
+    if (!client) throw new Error("The one-time session is not connected to the Mac.");
+    await client.send("account.bootstrap", {}, 30_000, true);
+  };
+
+  const consumeAccountBootstrap = () => {
+    clearPendingAccountBootstrap();
+    setAccountBootstrapToken(undefined);
+  };
+
   if (pairingId) {
     return (
       <PairingView
@@ -1781,6 +2149,8 @@ export function App() {
         checking={accessState === "checking"}
         configuration={remoteConfiguration}
         onSessionReady={connect}
+        bootstrapToken={accountBootstrapToken}
+        onBootstrapConsumed={consumeAccountBootstrap}
       />
     );
   }
@@ -1844,6 +2214,12 @@ export function App() {
               canControl={
                 connection.state === "live" || connection.state === "slow"
               }
+              remoteAccountConfiguration={remoteConfiguration?.accountAuth}
+              onRemoteSessionReady={connect}
+              activeAccessMode={activeAccessMode}
+              bootstrapToken={accountBootstrapToken}
+              onRequestBootstrap={requestAccountBootstrap}
+              onBootstrapConsumed={consumeAccountBootstrap}
             />
           ) : null}
           {view === "devices" ? (

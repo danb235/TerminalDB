@@ -3,9 +3,25 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
   process.env.PUBLIC_WEBSOCKET_URL = "wss://remote.example.invalid/socket";
+  process.env.COGNITO_USER_POOL_ID = "us-west-2_testpool";
+  process.env.COGNITO_CLIENT_ID = "web-client";
   return {
     send: vi.fn(),
+    cognitoSend: vi.fn(),
     verifyAuthenticatedRequest: vi.fn(),
+    verifyP256Signature: vi.fn(),
+  };
+});
+
+vi.mock("@aws-sdk/client-cognito-identity-provider", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@aws-sdk/client-cognito-identity-provider")>();
+  return {
+    ...actual,
+    CognitoIdentityProviderClient: class {
+      send(command: unknown) {
+        return mocks.cognitoSend(command);
+      }
+    },
   };
 });
 
@@ -15,6 +31,7 @@ vi.mock("../lambdas/common.js", async (importOriginal) => {
     ...actual,
     dynamo: { send: mocks.send },
     verifyAuthenticatedRequest: mocks.verifyAuthenticatedRequest,
+    verifyP256Signature: mocks.verifyP256Signature,
   };
 });
 
@@ -27,11 +44,12 @@ const activeUntil = Math.floor(Date.now() / 1_000) + 3_600;
 const publicKey = { kty: "EC", crv: "P-256", x: "public-x", y: "public-y" };
 
 function event(input: {
-  readonly method: "GET" | "POST";
+  readonly method: "DELETE" | "GET" | "POST";
   readonly path: string;
   readonly body?: Record<string, unknown>;
   readonly sub?: string;
   readonly tokenUse?: "access" | "id";
+  readonly issuedAt?: number;
 }): APIGatewayProxyEventV2 {
   return {
     version: "2.0",
@@ -60,7 +78,12 @@ function event(input: {
         ? {
             authorizer: {
               jwt: {
-                claims: { sub: input.sub, token_use: input.tokenUse ?? "access" },
+                claims: {
+                  sub: input.sub,
+                  token_use: input.tokenUse ?? "access",
+                  username: "qa-user",
+                  ...(input.issuedAt ? { iat: input.issuedAt } : {}),
+                },
                 scopes: ["openid"],
               },
             },
@@ -83,7 +106,136 @@ function commandInput(command: unknown): Record<string, any> {
 describe("account control-plane tenant isolation", () => {
   beforeEach(() => {
     mocks.send.mockReset();
+    mocks.cognitoSend.mockReset();
+    mocks.cognitoSend.mockResolvedValue({});
     mocks.verifyAuthenticatedRequest.mockReset();
+    mocks.verifyP256Signature.mockReset();
+    mocks.verifyP256Signature.mockReturnValue(true);
+  });
+
+  it("mints a rate-limited one-time signup grant only after a Mac key proof", async () => {
+    mocks.send.mockResolvedValue({});
+    const response = await invoke({
+      method: "POST",
+      path: "/api/v1/account-bootstrap",
+      body: {
+        timestamp: Date.now(),
+        nonce: "bootstrap-nonce",
+        deviceName: "QA Mac",
+        signingPublicKey: publicKey,
+        agreementPublicKey: publicKey,
+        signature: "mac-signature",
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(mocks.verifyP256Signature).toHaveBeenCalledTimes(1);
+    const responseBody = JSON.parse(response.body ?? "{}") as { bootstrapToken: string };
+    expect(responseBody.bootstrapToken).toMatch(/^[\w-]{40,}$/u);
+    const transaction = commandInput(mocks.send.mock.calls[0]?.[0]);
+    const records = transaction.TransactItems.map((item: any) => item.Put?.Item);
+    expect(records).toEqual(expect.arrayContaining([
+      expect.objectContaining({ PK: expect.stringMatching(/^ACCOUNT_BOOTSTRAP#/u), status: "pending" }),
+      expect.objectContaining({ PK: expect.stringMatching(/^BOOTSTRAP_RATE#/u) }),
+      expect.objectContaining({ PK: expect.stringMatching(/^BOOTSTRAP_NONCE#/u) }),
+    ]));
+    expect(JSON.stringify(transaction)).not.toContain(responseBody.bootstrapToken);
+  });
+
+  it("atomically binds the approved Cognito subject to the waiting Mac", async () => {
+    mocks.send.mockImplementation(async (command: unknown) => {
+      const input = commandInput(command);
+      if (input.Key?.SK === "ACCOUNT#DELETED") return {};
+      if (String(input.Key?.PK).startsWith("ACCOUNT_BOOTSTRAP#")) {
+        return {
+          Item: {
+            PK: input.Key.PK,
+            SK: "META",
+            status: "signup-confirmed",
+            cognitoUsername: "qa-user",
+            deviceName: "QA Mac",
+            signingPublicKey: publicKey,
+            agreementPublicKey: publicKey,
+            previousDeviceId: "existing-guest-mac",
+            ttl: activeUntil,
+          },
+        };
+      }
+      return {};
+    });
+
+    const response = await invoke({
+      method: "POST",
+      path: "/api/v1/account/bootstrap/complete",
+      sub: tenantA,
+      body: { bootstrapToken: "approved-bootstrap" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const transaction = mocks.send.mock.calls
+      .map(([command]) => commandInput(command))
+      .find((input) => input.TransactItems);
+    const serialized = JSON.stringify(transaction);
+    expect(serialized).toContain(`USER#${tenantA}`);
+    expect(serialized).toContain('"recovery":"trusted-mac"');
+    expect(serialized).toContain('":owner":"11111111-1111-4111-8111-111111111111"');
+    expect(serialized).toContain('"#temporary":"temporary"');
+    expect(serialized).toContain("REMOVE #ttl, #temporary");
+    expect(serialized).not.toContain("approved-bootstrap");
+  });
+
+  it("lets an enrolled Mac change the password and revoke account sessions without email", async () => {
+    mocks.verifyAuthenticatedRequest.mockResolvedValue({
+      principalId: "mac-a",
+      principal: { deviceId: "mac-a", ownerSub: tenantA },
+    });
+    mocks.send.mockImplementation(async (command: unknown) => {
+      const input = commandInput(command);
+      if (input.Key?.SK === "ACCOUNT#META") return { Item: { username: "qa-user" } };
+      return {};
+    });
+
+    const response = await invoke({
+      method: "POST",
+      path: "/api/v1/device/account/recover",
+      body: { password: "New-Strong-Password-42!" },
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(mocks.cognitoSend).toHaveBeenCalledTimes(2);
+    const commands = mocks.cognitoSend.mock.calls.map(([command]) => command.constructor.name);
+    expect(commands).toEqual([
+      "AdminSetUserPasswordCommand",
+      "AdminUserGlobalSignOutCommand",
+    ]);
+    const credentialUpdate = mocks.send.mock.calls
+      .map(([command]) => commandInput(command))
+      .find((input) => String(input.UpdateExpression).includes("credentialsChangedAt"));
+    expect(credentialUpdate).toMatchObject({
+      Key: { PK: `USER#${tenantA}`, SK: "ACCOUNT#META" },
+      ConditionExpression: "attribute_exists(PK) AND username = :username",
+    });
+  });
+
+  it("rejects account API tokens issued before a Mac password change", async () => {
+    mocks.send.mockImplementation(async (command: unknown) => {
+      const input = commandInput(command);
+      if (input.Key?.SK === "ACCOUNT#DELETED") return {};
+      if (input.Key?.SK === "ACCOUNT#META") {
+        return { Item: { username: "qa-user", credentialsChangedAt: 200 } };
+      }
+      return { Items: [] };
+    });
+
+    const response = await invoke({
+      method: "GET",
+      path: "/api/v1/account/sessions",
+      sub: tenantA,
+      issuedAt: 199,
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.body).toContain("Account credentials changed. Sign in again.");
   });
 
   it("queries sessions only under the verified JWT subject", async () => {
@@ -106,13 +258,16 @@ describe("account control-plane tenant isolation", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(commandInput(mocks.send.mock.calls[0]?.[0]).ExpressionAttributeValues[":pk"])
+    const query = mocks.send.mock.calls
+      .map(([command]) => commandInput(command))
+      .find((input) => input.KeyConditionExpression);
+    expect(query?.ExpressionAttributeValues[":pk"])
       .toBe(`USER#${tenantA}`);
     expect(response.body).toContain("session-a");
   });
 
   it("does not reveal a different tenant's session during controller registration", async () => {
-    mocks.send.mockResolvedValueOnce({
+    mocks.send.mockResolvedValueOnce({}).mockResolvedValueOnce({
       Item: {
         sessionId: "session-b",
         deviceId: "mac-b",
@@ -137,7 +292,7 @@ describe("account control-plane tenant isolation", () => {
 
     expect(response.statusCode).toBe(404);
     expect(response.body).toContain("Active session not found");
-    expect(mocks.send).toHaveBeenCalledTimes(1);
+    expect(mocks.send).toHaveBeenCalledTimes(2);
   });
 
   it("writes controller ownership from the token and ignores body tenant fields", async () => {
@@ -187,6 +342,10 @@ describe("account control-plane tenant isolation", () => {
     const capacityUpdate = transaction?.TransactItems[3].Update;
     expect(capacityUpdate.ExpressionAttributeValues[":observed"]).toBe(4);
     expect(capacityUpdate.ExpressionAttributeValues[":next"]).toBe(1);
+    expect(transaction?.TransactItems[4].ConditionCheck).toMatchObject({
+      Key: { PK: `USER#${tenantA}`, SK: "ACCOUNT#DELETED" },
+      ConditionExpression: "attribute_not_exists(PK)",
+    });
   });
 
   it("rejects an account ticket when token, controller, and session subjects differ", async () => {
@@ -200,14 +359,18 @@ describe("account control-plane tenant isolation", () => {
         ownerSub: tenantB,
       },
     });
-    mocks.send.mockResolvedValue({
-      Item: {
-        sessionId: "session-b",
-        deviceId: "mac-b",
-        ownerSub: tenantB,
-        status: "active",
-        ttl: activeUntil,
-      },
+    mocks.send.mockImplementation(async (command: unknown) => {
+      const input = commandInput(command);
+      if (input.Key?.PK === `USER#${tenantA}`) return {};
+      return {
+        Item: {
+          sessionId: "session-b",
+          deviceId: "mac-b",
+          ownerSub: tenantB,
+          status: "active",
+          ttl: activeUntil,
+        },
+      };
     });
 
     const response = await invoke({
@@ -219,7 +382,7 @@ describe("account control-plane tenant isolation", () => {
 
     expect(response.statusCode).toBe(403);
     expect(response.body).toContain("Cross-tenant ticket rejected");
-    expect(mocks.send).toHaveBeenCalledTimes(1);
+    expect(mocks.send).toHaveBeenCalledTimes(2);
   });
 
   it("keeps the guest ticket route available without a Cognito subject", async () => {
@@ -279,6 +442,7 @@ describe("account control-plane tenant isolation", () => {
 
   it("requires the registered controller signature in addition to the account JWT", async () => {
     mocks.verifyAuthenticatedRequest.mockRejectedValue(new Error("Invalid request signature"));
+    mocks.send.mockResolvedValue({});
 
     const response = await invoke({
       method: "POST",
@@ -288,7 +452,7 @@ describe("account control-plane tenant isolation", () => {
     });
 
     expect(response.statusCode).toBe(401);
-    expect(mocks.send).not.toHaveBeenCalled();
+    expect(mocks.send).toHaveBeenCalledTimes(1);
   });
 
   it("rejects an expired account enrollment before mutating the device", async () => {
@@ -365,5 +529,98 @@ describe("account control-plane tenant isolation", () => {
       .toBe(tenantA);
     expect(transaction!.TransactItems[2].Update.ConditionExpression)
       .toContain("attribute_not_exists(ownerSub) OR ownerSub = :owner");
+    expect(transaction!.TransactItems[4].ConditionCheck.Key)
+      .toEqual({ PK: `USER#${tenantA}`, SK: "ACCOUNT#DELETED" });
+  });
+
+  it("blocks an already-issued token after account deletion starts", async () => {
+    mocks.send.mockResolvedValue({ Item: { deletedAt: 1_700_000_000 } });
+
+    const response = await invoke({
+      method: "GET",
+      path: "/api/v1/account/sessions",
+      sub: tenantA,
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.body).toContain("Account has been deleted");
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("deletes only the authenticated tenant and its owned remote records", async () => {
+    mocks.send.mockImplementation(async (command: unknown) => {
+      const input = commandInput(command);
+      if (input.UpdateExpression?.includes("deletedAt")) return {};
+      if (input.ExpressionAttributeValues?.[":pk"] === `USER#${tenantA}`) {
+        return {
+          Items: [
+            { PK: `USER#${tenantA}`, SK: "ACCOUNT#DELETED", deletedAt: 1_700_000_000 },
+            { PK: `USER#${tenantA}`, SK: "SESSION#session-a", sessionId: "session-a" },
+            { PK: `USER#${tenantA}`, SK: "DEVICE#mac-a", deviceId: "mac-a" },
+            {
+              PK: `USER#${tenantA}`,
+              SK: "CONTROLLER#session-a#browser-a",
+              sessionId: "session-a",
+              controllerId: "controller-a",
+            },
+            {
+              PK: `USER#${tenantA}`,
+              SK: "ENROLLMENT#enrollment-a",
+              codeHash: "enrollment-hash-a",
+            },
+          ],
+        };
+      }
+      if (input.ExpressionAttributeValues?.[":pk"] === "SESSION#session-a") {
+        return {
+          Items: [
+            { PK: "SESSION#session-a", SK: "META", sessionId: "session-a" },
+            {
+              PK: "SESSION#session-a",
+              SK: "CONTROLLER#controller-a",
+              controllerId: "controller-a",
+            },
+            {
+              PK: "SESSION#session-a",
+              SK: "SOCKET#controller#controller-a",
+              connectionId: "connection-a",
+            },
+            { PK: "SESSION#session-a", SK: "PAIRING#pairing-a", pairingId: "pairing-a" },
+          ],
+        };
+      }
+      if (input.ExpressionAttributeValues?.[":pk"] === "DEVICE#mac-a") {
+        return {
+          Items: [
+            { PK: "DEVICE#mac-a", SK: "META", deviceId: "mac-a" },
+            { PK: "DEVICE#mac-a", SK: "SESSION#session-a", sessionId: "session-a" },
+          ],
+        };
+      }
+      return {};
+    });
+
+    const response = await invoke({
+      method: "DELETE",
+      path: "/api/v1/account",
+      sub: tenantA,
+    });
+
+    expect(response.statusCode).toBe(204);
+    const batches = mocks.send.mock.calls
+      .map(([command]) => commandInput(command))
+      .filter((input) => input.RequestItems);
+    const deleteRequests = batches.flatMap((batch) =>
+      Object.values(batch.RequestItems).flat(),
+    ) as Array<{ DeleteRequest: { Key: Record<string, string> } }>;
+    const deletedKeys = deleteRequests.map((item) => item.DeleteRequest.Key);
+    expect(deletedKeys).toContainEqual({ PK: "SESSION#session-a", SK: "META" });
+    expect(deletedKeys).toContainEqual({ PK: "DEVICE#mac-a", SK: "META" });
+    expect(deletedKeys).toContainEqual({ PK: "CONTROLLER#controller-a", SK: "META" });
+    expect(deletedKeys).toContainEqual({ PK: "PAIRING#pairing-a", SK: "META" });
+    expect(deletedKeys).toContainEqual({ PK: "ENROLLMENT#enrollment-hash-a", SK: "META" });
+    expect(deletedKeys).not.toContainEqual({ PK: `USER#${tenantA}`, SK: "ACCOUNT#DELETED" });
+    expect(JSON.stringify(deletedKeys)).not.toContain(tenantB);
+    expect(mocks.cognitoSend).toHaveBeenCalledTimes(2);
   });
 });

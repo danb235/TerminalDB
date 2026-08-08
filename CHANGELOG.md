@@ -7,6 +7,64 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-08
+
+### Added
+
+- Mac-approved, email-free TerminalDB account creation from the native Remote
+  view or an already-open one-time web terminal. Users choose a username and
+  password, complete required TOTP or a user-verified passkey, and the waiting
+  Mac connects automatically.
+- A signed-in web session hub that discovers and opens every active terminal
+  session owned by the account without exchanging secure links.
+- Account logout and exact-confirmation account deletion in the web app, plus
+  Touch ID or Mac-password protected password changes and account deletion in
+  the desktop app.
+- A reusable QA plan and automated coverage for Mac approval, Cognito signup,
+  tenant isolation, credential revocation, account cleanup, and the existing
+  anonymous-link workflow.
+
+### Changed
+
+- Cognito accounts are username-only and no longer require, collect, verify, or
+  send email or SMS. Account recovery is administrator-only; enrolled Macs can
+  change passwords or delete the account without becoming an MFA bypass.
+- Account signup uses a TerminalDB form that sends the password directly to
+  Cognito. TerminalDB's backend and Mac never receive the account password.
+- Account enrollment upgrades the Mac's existing non-exportable Keychain
+  identity, while account-owned Macs retain the same optional one-time guest
+  links for temporary access.
+- Required MFA supports TOTP and user-verified passkeys in Cognito's
+  multi-factor WebAuthn mode, with Plus threat protection enabled.
+
+### Fixed
+
+- Account approval messages now pass through the encrypted relay allowlist in
+  both directions, and the approved signup form no longer inherits the
+  preceding “Waiting for Mac” disabled state.
+- Existing guest-enrolled Macs can be atomically attached to an account without
+  a DynamoDB reserved-word failure.
+- The universal release build links LocalAuthentication for the new Touch ID
+  protected account actions.
+- Browsers now discard revoked local account credentials and return to a clear
+  sign-in state immediately after native account management changes access.
+
+### Security
+
+- Signup requires a random 20-minute Mac grant backed by a P-256 proof. Only a
+  hash is stored, the Cognito pre-signup trigger consumes it once, and direct
+  unapproved signup is rejected.
+- Account ownership comes exclusively from verified Cognito access-token
+  subjects and is rechecked across HTTP, ticket, WebSocket, key lookup, and
+  ciphertext relay boundaries. Live two-tenant QA confirmed isolated session
+  discovery and non-enumerating cross-tenant rejection.
+- Password changes reject pre-change API tokens, revoke account controllers,
+  disconnect their sockets, invalidate Cognito sessions, and preserve the
+  existing required MFA factors.
+- Account deletion tombstones the tenant first, disconnects remote sockets,
+  removes controllers, sessions, enrollments, and Mac ownership records, then
+  globally signs out and deletes the Cognito user.
+
 ## [0.2.0] - 2026-08-08
 
 ### Added

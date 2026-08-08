@@ -29,11 +29,12 @@ const activeUntil = Math.floor(Date.now() / 1_000) + 3_600;
 function envelope(input: {
   readonly sourceId: string;
   readonly destinationId?: string;
+  readonly route?: "health.ping" | "account.bootstrap" | "account.bootstrap.ready";
 }): string {
   const now = Date.now();
   return JSON.stringify({
     version: 1,
-    route: "health.ping",
+    route: input.route ?? "health.ping",
     sessionId,
     sourceId: input.sourceId,
     ...(input.destinationId ? { destinationId: input.destinationId } : {}),
@@ -210,9 +211,47 @@ describe("ciphertext relay tenant boundary", () => {
       })
       .mockResolvedValueOnce({ Item: { connectionId: "mac-connection" } });
 
-    const response = await handler(relayEvent(envelope({ sourceId: "guest-controller" }))) as {
+    const response = await handler(relayEvent(envelope({
+      sourceId: "guest-controller",
+      route: "account.bootstrap",
+    }))) as {
       statusCode: number;
     };
+
+    expect(response.statusCode).toBe(200);
+    expect(mocks.post).toHaveBeenCalledTimes(1);
+  });
+
+  it("relays the Mac's encrypted account approval back to the guest controller", async () => {
+    mocks.send
+      .mockResolvedValueOnce({
+        Item: { sessionId, role: "mac", clientId: "mac-a", generation: 1 },
+      })
+      .mockResolvedValueOnce({
+        Item: {
+          sessionId,
+          deviceId: "mac-a",
+          ownerSub: tenantA,
+          status: "active",
+          generation: 1,
+          ttl: activeUntil,
+        },
+      })
+      .mockResolvedValueOnce({
+        Item: {
+          controllerId: "guest-controller",
+          sessionId,
+          accessMode: "pairing",
+          ttl: activeUntil,
+        },
+      })
+      .mockResolvedValueOnce({ Item: { connectionId: "controller-connection" } });
+
+    const response = await handler(relayEvent(envelope({
+      sourceId: "mac-a",
+      destinationId: "guest-controller",
+      route: "account.bootstrap.ready",
+    }))) as { statusCode: number };
 
     expect(response.statusCode).toBe(200);
     expect(mocks.post).toHaveBeenCalledTimes(1);

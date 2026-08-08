@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run test/stack.test.ts test/local-config.test.ts test/tenant-boundary.test.ts test/control-account.test.ts test/connection-tenant.test.ts test/relay-tenant.test.ts",
+    "test": "vitest run test/stack.test.ts test/local-config.test.ts test/tenant-boundary.test.ts test/control-account.test.ts test/pre-signup.test.ts test/connection-tenant.test.ts test/relay-tenant.test.ts",
     "cdk": "cdk",
     "synth": "cdk synth --profile stelao -c stage=dev -c region=us-west-2",
     "diff": "cdk diff --profile stelao -c stage=dev -c region=us-west-2",
@@ -13,16 +13,17 @@
   },
   "dependencies": {
     "@aws-sdk/client-apigatewaymanagementapi": "3.1095.0",
+    "@aws-sdk/client-cognito-identity-provider": "3.1095.0",
     "@aws-sdk/client-dynamodb": "3.1095.0",
     "@aws-sdk/lib-dynamodb": "3.1095.0"
   },
   "devDependencies": {
     "@types/aws-lambda": "8.10.161",
     "@types/node": "24.10.13",
-    "aws-cdk": "2.1133.0",
-    "aws-cdk-lib": "2.262.1",
+    "aws-cdk": "2.1135.1",
+    "aws-cdk-lib": "2.263.0",
     "cdk-nag": "2.37.55",
-    "constructs": "10.7.1",
+    "constructs": "10.8.1",
     "esbuild": "0.28.1",
     "typescript": "7.0.2",
     "vitest": "4.1.10"

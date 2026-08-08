@@ -33,7 +33,7 @@ describe("TerminalDB Remote infrastructure", () => {
     expect(Object.keys(template.findResources("AWS::DynamoDB::Table"))).toHaveLength(1);
   });
 
-  it("caps all three application Lambdas and uses arm64", () => {
+  it("caps all four application Lambdas and uses arm64", () => {
     template.hasResourceProperties("AWS::Lambda::Function", {
       Architectures: ["arm64"],
       ReservedConcurrentExecutions: 8,
@@ -43,24 +43,36 @@ describe("TerminalDB Remote infrastructure", () => {
         Properties: { ReservedConcurrentExecutions: 8 },
       }),
     );
-    expect(applicationFunctions).toHaveLength(3);
+    expect(applicationFunctions).toHaveLength(4);
   });
 
-  it("provisions self-service Cognito accounts and JWT-protects every account route", () => {
+  it("provisions Mac-approved email-free Cognito accounts and JWT-protects account routes", () => {
     template.hasResourceProperties("AWS::Cognito::UserPool", {
-      AutoVerifiedAttributes: ["email"],
       UsernameConfiguration: { CaseSensitive: false },
       MfaConfiguration: "ON",
       UserPoolTier: "PLUS",
       UserPoolAddOns: { AdvancedSecurityMode: "ENFORCED" },
+      AccountRecoverySetting: {
+        RecoveryMechanisms: [{ Name: "admin_only", Priority: 1 }],
+      },
+      WebAuthnUserVerification: "required",
+      WebAuthnFactorConfiguration: "MULTI_FACTOR_WITH_USER_VERIFICATION",
       Policies: {
         PasswordPolicy: Match.objectLike({ MinimumLength: 12 }),
+        SignInPolicy: {
+          AllowedFirstAuthFactors: Match.arrayWith(["PASSWORD", "WEB_AUTHN"]),
+        },
       },
     });
     template.hasResourceProperties("AWS::Cognito::UserPoolClient", {
       AllowedOAuthFlows: ["code"],
       PreventUserExistenceErrors: "ENABLED",
       GenerateSecret: false,
+    });
+    template.hasResourceProperties("AWS::Cognito::ManagedLoginBranding", {
+      ClientId: Match.anyValue(),
+      UserPoolId: Match.anyValue(),
+      UseCognitoProvidedValues: true,
     });
     template.hasResourceProperties("AWS::ApiGatewayV2::Authorizer", {
       AuthorizerType: "JWT",
@@ -79,9 +91,33 @@ describe("TerminalDB Remote infrastructure", () => {
           COGNITO_CLIENT_ID: Match.anyValue(),
           COGNITO_DOMAIN: Match.anyValue(),
           COGNITO_ISSUER: Match.anyValue(),
+          COGNITO_USER_POOL_ID: Match.anyValue(),
         }),
       },
     });
+    template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
+      RouteKey: "DELETE /api/v1/account",
+      AuthorizationType: "JWT",
+      AuthorizationScopes: ["openid"],
+    });
+    const policies = Object.values(template.findResources("AWS::IAM::Policy"))
+      .map((resource) => JSON.stringify(resource));
+    const accountDeletionPolicy = policies.find((policy) =>
+      policy.includes("cognito-idp:AdminDeleteUser") &&
+      policy.includes("cognito-idp:AdminUserGlobalSignOut") &&
+      policy.includes("cognito-idp:AdminSetUserPassword"),
+    );
+    expect(accountDeletionPolicy).toBeDefined();
+    expect(accountDeletionPolicy).not.toContain('"Resource":"*"');
+    template.hasResourceProperties("AWS::Cognito::UserPool", {
+      LambdaConfig: { PreSignUp: Match.anyValue() },
+    });
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: "terminaldb-remote-dev-pre-signup",
+    });
+    const pools = Object.values(template.findResources("AWS::Cognito::UserPool"));
+    expect(pools.every((pool) => !JSON.stringify(pool).includes("AutoVerifiedAttributes"))).toBe(true);
+    expect(pools.every((pool) => !JSON.stringify(pool).includes("EmailConfiguration"))).toBe(true);
   });
 
   it("keeps the web bucket private and relays WebSockets through CloudFront", () => {
@@ -164,7 +200,7 @@ describe("TerminalDB Remote infrastructure", () => {
     });
   });
 
-  it("refuses production without a custom domain, certificate, and verified SES sender", () => {
+  it("refuses production without a custom domain and certificate but requires no email sender", () => {
     const prodApp = new App();
     const baseProps = {
       env: { account: "111111111111", region: "us-west-2" },
@@ -181,15 +217,12 @@ describe("TerminalDB Remote infrastructure", () => {
     expect(
       () => new TerminalDBRemoteStack(prodApp, "ProdMissingDomain", baseProps),
     ).toThrow("Production requires a custom domain");
-    expect(
-      () =>
-        new TerminalDBRemoteStack(prodApp, "ProdMissingSes", {
-          ...baseProps,
-          domainName: "remote.example.invalid",
-          certificateArn:
-            "arn:aws:acm:us-east-1:111111111111:certificate/00000000-0000-4000-8000-000000000000",
-        }),
-    ).toThrow("Production requires a verified SES cognitoFromEmail");
+    expect(() => new TerminalDBRemoteStack(prodApp, "ProdNoEmail", {
+      ...baseProps,
+      domainName: "remote.example.invalid",
+      certificateArn:
+        "arn:aws:acm:us-east-1:111111111111:certificate/00000000-0000-4000-8000-000000000000",
+    })).not.toThrow();
   });
 
   it("retains and deletion-protects production identity and tenant state", () => {
@@ -207,10 +240,6 @@ describe("TerminalDB Remote infrastructure", () => {
       domainName: "remote.example.invalid",
       certificateArn:
         "arn:aws:acm:us-east-1:111111111111:certificate/00000000-0000-4000-8000-000000000000",
-      cognitoFromEmail: "no-reply@example.invalid",
-      cognitoFromName: "TerminalDB QA",
-      cognitoReplyTo: "support@example.invalid",
-      cognitoSesRegion: "us-west-2",
     });
     const prodTemplate = Template.fromStack(prodStack);
 
@@ -224,14 +253,10 @@ describe("TerminalDB Remote infrastructure", () => {
       UpdateReplacePolicy: "Retain",
       Properties: Match.objectLike({
         DeletionProtection: "ACTIVE",
-        EmailConfiguration: Match.objectLike({
-          EmailSendingAccount: "DEVELOPER",
-          From: "TerminalDB QA <no-reply@example.invalid>",
-          ReplyToEmailAddress: "support@example.invalid",
-          SourceArn: Match.anyValue(),
-        }),
       }),
     });
+    const prodPools = Object.values(prodTemplate.findResources("AWS::Cognito::UserPool"));
+    expect(prodPools.every((pool) => !JSON.stringify(pool).includes("EmailConfiguration"))).toBe(true);
     prodTemplate.hasResource("AWS::S3::Bucket", {
       DeletionPolicy: "Retain",
       UpdateReplacePolicy: "Retain",

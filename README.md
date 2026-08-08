@@ -244,12 +244,22 @@ Use **Pair a Phone** when the controller should open on another device. It
 shows a QR code and copyable one-time link. **Advanced Setup…** is only for a
 custom deployment or a Mac where automatic AWS enrollment is unavailable.
 
-The same deployment also supports optional TerminalDB accounts. Open the web
-app directly, sign up or sign in through Cognito, and use **Add a Mac** once to
-bind TerminalDB to the account. Active sessions from every enrolled Mac then
-appear after login on a phone or browser without sending a pairing link. This
-is additive: account-enrolled Macs can still create the existing one-time guest
-links whenever temporary access is more convenient.
+The same deployment also supports optional TerminalDB accounts. Choose
+**Create Account** in the Mac's Remote Control window, or open **Accounts**
+from an active one-time web terminal. The Mac signs a short-lived signup
+approval with its non-exportable Keychain identity; the password then goes
+directly from the browser to Cognito. No email address or verification email is
+required. After username/password sign-in and TOTP or passkey setup, the
+waiting Mac connects to the new account automatically. Additional Macs can be
+added later with a one-time code from the signed-in web app.
+Active sessions from every enrolled Mac then appear after login on a phone or
+browser without sending a pairing link. This is additive: account-enrolled Macs
+can still create one-time guest links whenever temporary access is more
+convenient. **Change Password…** and **Delete Account…** in the Mac app require
+Touch ID or the Mac login password. Changing the password immediately revokes
+account browsers but deliberately keeps the existing TOTP authenticator and
+passkeys; Cognito does not provide an administrator API that safely removes a
+user's registered TOTP secret.
 
 The automatic reference path expects AWS CLI v2 and a working `stelao` profile
 in `us-west-2`. These defaults can be overridden with the documented macOS

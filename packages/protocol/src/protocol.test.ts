@@ -20,6 +20,8 @@ describe("TerminalDB remote protocol", () => {
     expect(routeSchema.parse("tab.create")).toBe("tab.create");
     expect(routeSchema.parse("tab.select")).toBe("tab.select");
     expect(routeSchema.parse("tab.close")).toBe("tab.close");
+    expect(routeSchema.parse("account.bootstrap")).toBe("account.bootstrap");
+    expect(routeSchema.parse("account.bootstrap.ready")).toBe("account.bootstrap.ready");
   });
 
   it("derives matching directional keys and decrypts compressed payloads", async () => {

@@ -1352,6 +1352,71 @@ p {
   color: var(--tdb-cyan);
 }
 
+.account-auth-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.account-auth-actions > button,
+.enrollment-code > button {
+  min-height: 42px;
+  border: 1px solid rgb(65 214 202 / 45%);
+  border-radius: 5px;
+  background: rgb(65 214 202 / 12%);
+  color: var(--tdb-cyan);
+  font-weight: 700;
+}
+
+.account-signup form {
+  display: grid;
+  gap: 8px;
+}
+
+.account-signup form label {
+  color: var(--tdb-muted);
+  font: 10px/1.3 var(--tdb-mono);
+}
+
+.account-signup form input {
+  min-height: 42px;
+  padding: 0 11px;
+  border: 1px solid var(--tdb-border-strong);
+  border-radius: 5px;
+  outline: none;
+  background: var(--tdb-black);
+  color: var(--tdb-text);
+  font: 13px/1 var(--tdb-mono);
+}
+
+.account-signup form input:focus {
+  border-color: var(--tdb-cyan);
+}
+
+.account-signup form small {
+  color: var(--tdb-muted);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.account-signup form button {
+  min-height: 44px;
+  margin-top: 4px;
+  border: 1px solid rgb(65 214 202 / 55%);
+  border-radius: 5px;
+  background: rgb(65 214 202 / 16%);
+  color: var(--tdb-cyan);
+  font-weight: 700;
+}
+
+.account-success {
+  padding: 10px;
+  border: 1px solid rgb(180 227 77 / 32%);
+  border-radius: 5px;
+  background: rgb(180 227 77 / 7%);
+  color: var(--tdb-lime) !important;
+}
+
 .account-access header {
   display: flex;
   align-items: start;
@@ -1429,6 +1494,90 @@ p {
 .account-access > small {
   color: var(--tdb-muted);
   font-size: 10px;
+  line-height: 1.45;
+}
+
+.account-danger-zone {
+  display: grid;
+  gap: 9px;
+  margin-top: 6px;
+  padding-top: 14px;
+  border-top: 1px solid rgb(239 101 87 / 22%);
+}
+
+.account-danger-zone > button,
+.account-danger-zone > div > button {
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid rgb(239 101 87 / 42%);
+  border-radius: 5px;
+  background: rgb(239 101 87 / 7%);
+  color: var(--tdb-coral);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.account-danger-zone > strong {
+  color: var(--tdb-coral);
+  font-size: 13px;
+}
+
+.account-danger-zone > label {
+  color: var(--tdb-muted);
+  font: 10px/1.3 var(--tdb-mono);
+}
+
+.account-danger-zone > input {
+  min-height: 40px;
+  border: 1px solid var(--tdb-border-strong);
+  border-radius: 5px;
+  outline: none;
+  padding: 0 10px;
+  background: var(--tdb-black);
+  color: var(--tdb-text);
+  font: 12px/1 var(--tdb-mono);
+}
+
+.account-danger-zone > input:focus {
+  border-color: var(--tdb-coral);
+}
+
+.account-danger-zone > div {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.account-danger-zone > div > button:last-child {
+  border-color: var(--tdb-border-strong);
+  background: transparent;
+  color: var(--tdb-muted);
+}
+
+.accounts-view > .account-access {
+  margin: 0 0 30px;
+}
+
+.account-section-heading {
+  margin-bottom: 16px;
+  padding-top: 4px;
+  border-top: 1px solid var(--tdb-border);
+}
+
+.account-section-heading .eyebrow {
+  display: block;
+  margin-top: 24px;
+}
+
+.account-section-heading h2 {
+  margin: 7px 0 5px;
+  font-size: 17px;
+}
+
+.account-section-heading p {
+  margin: 0;
+  color: var(--tdb-muted);
+  font-size: 11px;
   line-height: 1.45;
 }
 

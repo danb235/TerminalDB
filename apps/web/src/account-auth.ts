@@ -22,6 +22,13 @@ interface TokenResponse {
 const TOKEN_KEY = "terminaldb.account.tokens.v1";
 const STATE_KEY = "terminaldb.account.oauth-state.v1";
 const VERIFIER_KEY = "terminaldb.account.pkce-verifier.v1";
+const RETURN_TO_KEY = "terminaldb.account.return-to.v1";
+const BOOTSTRAP_KEY = "terminaldb.account.bootstrap.v1";
+
+export interface AccountAuthorizationOptions {
+  readonly returnTo?: string;
+  readonly loginHint?: string;
+}
 
 function trimSlash(value: string): string {
   return value.replace(/\/+$/u, "");
@@ -87,20 +94,105 @@ async function tokenRequest(
 export async function beginAccountSignIn(
   configuration: AccountAuthConfiguration,
   navigate: (url: URL) => void = (url) => location.assign(url),
+  options: AccountAuthorizationOptions = {},
+): Promise<void> {
+  await beginAccountAuthorization(configuration, "/oauth2/authorize", navigate, options);
+}
+
+async function beginAccountAuthorization(
+  configuration: AccountAuthConfiguration,
+  path: "/oauth2/authorize",
+  navigate: (url: URL) => void,
+  options: AccountAuthorizationOptions,
 ): Promise<void> {
   const state = randomValue();
   const verifier = randomValue(48);
   sessionStorage.setItem(STATE_KEY, state);
   sessionStorage.setItem(VERIFIER_KEY, verifier);
-  const url = new URL(`${trimSlash(configuration.domain)}/oauth2/authorize`);
+  if (options.returnTo) sessionStorage.setItem(RETURN_TO_KEY, options.returnTo);
+  else sessionStorage.removeItem(RETURN_TO_KEY);
+  const url = new URL(`${trimSlash(configuration.domain)}${path}`);
   url.searchParams.set("client_id", configuration.clientId);
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", "openid email profile");
+  url.searchParams.set("scope", "openid profile");
   url.searchParams.set("redirect_uri", callbackUrl(configuration));
   url.searchParams.set("state", state);
   url.searchParams.set("code_challenge_method", "S256");
   url.searchParams.set("code_challenge", await challenge(verifier));
+  if (options.loginHint) url.searchParams.set("login_hint", options.loginHint);
   navigate(url);
+}
+
+function cognitoApiEndpoint(configuration: AccountAuthConfiguration): string {
+  const issuer = new URL(configuration.issuer);
+  if (issuer.protocol !== "https:" || !issuer.hostname.startsWith("cognito-idp.")) {
+    throw new Error("Account signup is not configured correctly");
+  }
+  return issuer.origin;
+}
+
+export async function signUpWithBootstrap(input: {
+  readonly configuration: AccountAuthConfiguration;
+  readonly username: string;
+  readonly password: string;
+  readonly bootstrapToken: string;
+}): Promise<void> {
+  const response = await fetch(cognitoApiEndpoint(input.configuration), {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-amz-json-1.1",
+      "x-amz-target": "AWSCognitoIdentityProviderService.SignUp",
+    },
+    body: JSON.stringify({
+      ClientId: input.configuration.clientId,
+      Username: input.username,
+      Password: input.password,
+      ClientMetadata: { bootstrapToken: input.bootstrapToken },
+    }),
+  });
+  if (response.ok) return;
+  const failure = await response.json().catch(() => ({})) as {
+    readonly __type?: string;
+    readonly message?: string;
+  };
+  const kind = failure.__type?.split("#").at(-1);
+  if (kind === "UsernameExistsException") {
+    throw new Error("That username is already in use.");
+  }
+  if (kind === "InvalidPasswordException") {
+    throw new Error("Use at least 12 characters with upper and lowercase letters, a number, and a symbol.");
+  }
+  if (kind === "UserLambdaValidationException") {
+    throw new Error("This Mac approval expired. Start account creation again from TerminalDB.");
+  }
+  throw new Error(failure.message ?? `Account creation failed (${response.status})`);
+}
+
+export function savePendingAccountBootstrap(token: string): void {
+  sessionStorage.setItem(BOOTSTRAP_KEY, token);
+}
+
+export function pendingAccountBootstrap(): string | undefined {
+  return sessionStorage.getItem(BOOTSTRAP_KEY) ?? undefined;
+}
+
+export function clearPendingAccountBootstrap(): void {
+  sessionStorage.removeItem(BOOTSTRAP_KEY);
+}
+
+export function clearAccountCredentials(): void {
+  localStorage.removeItem(TOKEN_KEY);
+}
+
+function safeReturnPath(value: string | null): string {
+  if (!value) return "/";
+  try {
+    const target = new URL(value, location.origin);
+    if (target.origin !== location.origin) return "/";
+    return `${target.pathname}${target.search}`;
+  } catch {
+    return "/";
+  }
 }
 
 export async function completeAccountSignIn(
@@ -111,9 +203,11 @@ export async function completeAccountSignIn(
   const returnedState = query.get("state");
   const expectedState = sessionStorage.getItem(STATE_KEY);
   const verifier = sessionStorage.getItem(VERIFIER_KEY);
+  const returnTo = sessionStorage.getItem(RETURN_TO_KEY);
   const code = query.get("code");
   sessionStorage.removeItem(STATE_KEY);
   sessionStorage.removeItem(VERIFIER_KEY);
+  sessionStorage.removeItem(RETURN_TO_KEY);
   if (!code || !verifier || !expectedState || returnedState !== expectedState) {
     throw new Error("Account sign-in response could not be verified");
   }
@@ -128,7 +222,7 @@ export async function completeAccountSignIn(
     }),
   );
   saveTokens(response);
-  history.replaceState({}, "", "/");
+  history.replaceState({}, "", safeReturnPath(returnTo));
   return true;
 }
 
@@ -139,7 +233,7 @@ export async function accountAccessToken(
   if (!current) return undefined;
   if (current.expiresAt > Date.now() + 30_000) return current.accessToken;
   if (!current.refreshToken) {
-    localStorage.removeItem(TOKEN_KEY);
+    clearAccountCredentials();
     return undefined;
   }
   try {
@@ -153,7 +247,7 @@ export async function accountAccessToken(
     );
     return saveTokens(response, current).accessToken;
   } catch {
-    localStorage.removeItem(TOKEN_KEY);
+    clearAccountCredentials();
     return undefined;
   }
 }
@@ -163,7 +257,7 @@ export async function signOutAccount(
   navigate: (url: URL) => void = (url) => location.assign(url),
 ): Promise<void> {
   const tokens = loadTokens();
-  localStorage.removeItem(TOKEN_KEY);
+  clearAccountCredentials();
   if (tokens?.refreshToken) {
     try {
       await fetch(`${trimSlash(configuration.domain)}/oauth2/revoke`, {
