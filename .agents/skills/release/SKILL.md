@@ -4,7 +4,6 @@ description: >-
   Cut and publish a TerminalDB release. Curate the user facing changes since
   the previous tag, update CHANGELOG.md, and push the version tag that triggers
   the GitHub release workflow.
-argument-hint: "[<x.y.z> | patch | minor | major]"
 ---
 
 # Release TerminalDB
@@ -28,7 +27,7 @@ Stop with a clear explanation if any condition fails:
 - `gh auth status` succeeds.
 - `make test` passes locally.
 - `make test-ci` passes without requiring an interactive desktop session.
-- `./Scripts/build-app.sh release` produces a universal binary containing
+- `./apps/macos/Scripts/build-app.sh release` produces a universal binary containing
   `arm64` and `x86_64`.
 
 Never tag a broken, dirty, or divergent working tree.
