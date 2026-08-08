@@ -13,6 +13,7 @@ import {
   optimisticRenderForInput,
   reconcileOptimisticEcho,
 } from "./optimistic-input";
+import type { SequencedInputBatch } from "./ordered-input";
 
 export interface TerminalUpdate {
   readonly id: number;
@@ -21,6 +22,8 @@ export interface TerminalUpdate {
   readonly rows: number;
   readonly columns: number;
   readonly inputMode: RemoteInputMode;
+  readonly inputStreamId?: string;
+  readonly inputThrough?: number;
 }
 
 export interface TerminalSurfaceHandle {
@@ -28,6 +31,7 @@ export interface TerminalSurfaceHandle {
   readonly getSelection: () => string;
   readonly getViewportText: () => string;
   readonly scrollToBottom: () => void;
+  readonly markOptimisticInputSent: (batch: SequencedInputBatch) => void;
   readonly confirmOptimisticInput: (committed?: boolean) => void;
   readonly rollbackOptimisticInput: () => void;
 }
@@ -47,6 +51,11 @@ interface TerminalSurfaceProps {
 interface OptimisticState {
   readonly mode: Exclude<RemoteInputMode, "secure">;
   readonly expectedEcho: string;
+}
+
+interface ApplicationOverlayAnchor {
+  readonly column: number;
+  readonly row: number;
 }
 
 interface ViewportAnchor {
@@ -124,6 +133,7 @@ export const TerminalSurface = forwardRef<
   forwardedRef,
 ) {
   const host = useRef<HTMLDivElement>(null);
+  const optimisticOverlay = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | null>(null);
   const fitAddon = useRef<FitAddon | null>(null);
   const renderedUpdate = useRef(-1);
@@ -138,6 +148,11 @@ export const TerminalSurface = forwardRef<
   const inputModeRef = useRef(update.inputMode);
   const refreshHandler = useRef(onAuthoritativeRefreshNeeded);
   const optimistic = useRef<OptimisticState | undefined>(undefined);
+  const applicationDraft = useRef("");
+  const applicationAnchor = useRef<ApplicationOverlayAnchor | undefined>(undefined);
+  const applicationUnsequencedInput = useRef("");
+  const applicationInputStream = useRef<string | undefined>(undefined);
+  const applicationHighestSequence = useRef(0);
   const editableCells = useRef(0);
   const authoritativeViewport = useRef<TerminalUpdate | undefined>(undefined);
   const authoritativeIncremental = useRef<string[]>([]);
@@ -154,6 +169,68 @@ export const TerminalSurface = forwardRef<
   inputModeRef.current = update.inputMode;
   refreshHandler.current = onAuthoritativeRefreshNeeded;
 
+  const paintApplicationOverlay = () => {
+    const overlay = optimisticOverlay.current;
+    const instance = terminal.current;
+    const scrollplane = host.current?.parentElement;
+    if (!overlay || !instance || !scrollplane || !applicationDraft.current) {
+      if (overlay) {
+        overlay.hidden = true;
+        overlay.replaceChildren();
+      }
+      return;
+    }
+    const screen = host.current?.querySelector<HTMLElement>(".xterm-screen");
+    if (!screen) {
+      overlay.hidden = true;
+      return;
+    }
+    const anchor = applicationAnchor.current ?? {
+      column: instance.buffer.active.cursorX,
+      row: instance.buffer.active.cursorY,
+    };
+    applicationAnchor.current = anchor;
+    const screenBounds = screen.getBoundingClientRect();
+    const scrollplaneBounds = scrollplane.getBoundingClientRect();
+    const cellWidth = screenBounds.width / Math.max(1, instance.cols);
+    const cellHeight = screenBounds.height / Math.max(1, instance.rows);
+    overlay.style.left = `${screenBounds.left - scrollplaneBounds.left}px`;
+    overlay.style.top = `${screenBounds.top - scrollplaneBounds.top + anchor.row * cellHeight}px`;
+    overlay.style.width = `${screenBounds.width}px`;
+    overlay.style.maxHeight = `${Math.max(
+      cellHeight,
+      (instance.rows - anchor.row) * cellHeight,
+    )}px`;
+    const characters = Array.from(applicationDraft.current);
+    const rows: HTMLSpanElement[] = [];
+    let offset = 0;
+    let column = anchor.column;
+    while (offset < characters.length) {
+      const available = Math.max(1, instance.cols - column);
+      const row = document.createElement("span");
+      row.className = "optimistic-input-row";
+      row.style.marginLeft = `${column * cellWidth}px`;
+      row.style.height = `${cellHeight}px`;
+      row.style.lineHeight = `${cellHeight}px`;
+      row.textContent = characters.slice(offset, offset + available).join("");
+      rows.push(row);
+      offset += available;
+      column = 0;
+    }
+    rows.at(-1)?.classList.add("has-cursor");
+    overlay.replaceChildren(...rows);
+    overlay.hidden = false;
+  };
+
+  const resetApplicationPrediction = () => {
+    applicationDraft.current = "";
+    applicationAnchor.current = undefined;
+    applicationUnsequencedInput.current = "";
+    applicationInputStream.current = undefined;
+    applicationHighestSequence.current = 0;
+    paintApplicationOverlay();
+  };
+
   const updateOptimisticMetadata = (state = optimistic.current) => {
     if (!host.current) return;
     host.current.dataset.inputMode = inputModeRef.current;
@@ -165,6 +242,7 @@ export const TerminalSurface = forwardRef<
 
   const clearOptimisticInput = (resetEditableCells = false) => {
     optimistic.current = undefined;
+    resetApplicationPrediction();
     if (resetEditableCells) editableCells.current = 0;
     updateOptimisticMetadata(undefined);
   };
@@ -179,7 +257,7 @@ export const TerminalSurface = forwardRef<
       if (optimistic.current?.mode === "application") {
         refreshHandler.current();
       }
-    }, committed ? 40 : 360);
+    }, committed ? 300 : 600);
   };
 
   useImperativeHandle(forwardedRef, () => ({
@@ -197,6 +275,21 @@ export const TerminalSurface = forwardRef<
       return lines.join("\n");
     },
     scrollToBottom: () => terminal.current?.scrollToBottom(),
+    markOptimisticInputSent: (batch) => {
+      if (optimistic.current?.mode !== "application") return;
+      if (applicationUnsequencedInput.current.startsWith(batch.input)) {
+        applicationUnsequencedInput.current =
+          applicationUnsequencedInput.current.slice(batch.input.length);
+      } else if (batch.input.startsWith(applicationUnsequencedInput.current)) {
+        applicationUnsequencedInput.current = "";
+      }
+      applicationInputStream.current = batch.inputStreamId;
+      applicationHighestSequence.current = Math.max(
+        applicationHighestSequence.current,
+        batch.inputSequence,
+      );
+      updateOptimisticMetadata();
+    },
     confirmOptimisticInput: scheduleApplicationRefresh,
     rollbackOptimisticInput: () => {
       if (!optimistic.current) return;
@@ -218,6 +311,7 @@ export const TerminalSurface = forwardRef<
     authoritativeIncrementalLength.current = 0;
     authoritativeReplayAvailable.current = true;
     optimistic.current = undefined;
+    resetApplicationPrediction();
     editableCells.current = 0;
     const instance = new Terminal({
       allowProposedApi: false,
@@ -296,11 +390,54 @@ export const TerminalSurface = forwardRef<
         suppressNativeControlC.current = false;
         return;
       }
-      const speculative = optimisticRenderForInput(
-        data,
-        inputModeRef.current,
-        editableCells.current,
-      );
+      const applicationMode = inputModeRef.current === "application";
+      let applicationSafe = applicationMode && data.length > 0;
+      if (applicationSafe) {
+        if (!applicationAnchor.current) {
+          applicationAnchor.current = {
+            column: instance.buffer.active.cursorX,
+            row: instance.buffer.active.cursorY,
+          };
+        }
+        let nextDraft = applicationDraft.current;
+        for (const character of data) {
+          const codePoint = character.codePointAt(0);
+          if (codePoint !== undefined && codePoint >= 0x20 && codePoint !== 0x7f) {
+            nextDraft += character;
+          } else if (character === "\b" || character === "\x7f") {
+            nextDraft = Array.from(nextDraft).slice(0, -1).join("");
+          } else if (character === "\r") {
+            nextDraft = "";
+            applicationAnchor.current = undefined;
+          } else {
+            applicationSafe = false;
+            break;
+          }
+        }
+        if (applicationSafe) {
+          applicationDraft.current = nextDraft;
+          editableCells.current = Array.from(nextDraft).length;
+          applicationUnsequencedInput.current += data;
+          optimistic.current = {
+            mode: "application",
+            expectedEcho: "",
+          };
+          instance.scrollToBottom();
+          followHandler.current(true);
+          paintApplicationOverlay();
+          updateOptimisticMetadata();
+        } else if (optimistic.current?.mode === "application") {
+          clearOptimisticInput(true);
+          rebuildAuthoritativeRef.current();
+        }
+      }
+      const speculative = applicationMode
+        ? undefined
+        : optimisticRenderForInput(
+            data,
+            inputModeRef.current,
+            editableCells.current,
+          );
       if (speculative) {
         editableCells.current = speculative.editableCells;
         updateOptimisticMetadata();
@@ -309,6 +446,7 @@ export const TerminalSurface = forwardRef<
         updateOptimisticMetadata();
       }
       if (
+        !applicationMode &&
         speculative &&
         speculative.rendered &&
         authoritativeReplayAvailable.current &&
@@ -455,6 +593,12 @@ export const TerminalSurface = forwardRef<
       element.dataset.geometrySync = "ready";
     }
     const anchor = captureViewportAnchor(instance);
+    const confirmsApplicationPrediction =
+      optimistic.current?.mode === "application" &&
+      applicationUnsequencedInput.current.length === 0 &&
+      applicationHighestSequence.current > 0 &&
+      update.inputStreamId === applicationInputStream.current &&
+      (update.inputThrough ?? 0) >= applicationHighestSequence.current;
     const rebuildAuthoritative = () => {
       if (!authoritativeReplayAvailable.current) {
         refreshHandler.current();
@@ -502,7 +646,9 @@ export const TerminalSurface = forwardRef<
       authoritativeIncrementalLength.current = 0;
       authoritativeReplayAvailable.current = true;
       lastViewportText.current = update.text;
-      clearOptimisticInput();
+      if (optimistic.current?.mode !== "application") {
+        clearOptimisticInput();
+      }
       applyingUpdate.current = true;
       instance.reset();
     } else {
@@ -533,31 +679,30 @@ export const TerminalSurface = forwardRef<
         return;
       }
       if (pending.mode === "application") {
-        if (update.inputMode === "application") {
+        if (update.inputMode !== "application") {
+          clearOptimisticInput(true);
+          rebuildAuthoritative();
           renderedUpdate.current = update.id;
           return;
         }
-        clearOptimisticInput(true);
-        rebuildAuthoritative();
-        renderedUpdate.current = update.id;
-        return;
+      } else {
+        const reconciled = reconcileOptimisticEcho(
+          pending.expectedEcho,
+          update.text,
+        );
+        if (reconciled.mismatch) {
+          clearOptimisticInput(true);
+          rebuildAuthoritative();
+          refreshHandler.current();
+          renderedUpdate.current = update.id;
+          return;
+        }
+        optimistic.current = reconciled.expectedEcho
+          ? { ...pending, expectedEcho: reconciled.expectedEcho }
+          : undefined;
+        updateOptimisticMetadata();
+        renderedText = reconciled.output;
       }
-      const reconciled = reconcileOptimisticEcho(
-        pending.expectedEcho,
-        update.text,
-      );
-      if (reconciled.mismatch) {
-        clearOptimisticInput(true);
-        rebuildAuthoritative();
-        refreshHandler.current();
-        renderedUpdate.current = update.id;
-        return;
-      }
-      optimistic.current = reconciled.expectedEcho
-        ? { ...pending, expectedEcho: reconciled.expectedEcho }
-        : undefined;
-      updateOptimisticMetadata();
-      renderedText = reconciled.output;
     }
 
     applyingUpdate.current = true;
@@ -567,6 +712,11 @@ export const TerminalSurface = forwardRef<
         instance.scrollToBottom();
       } else if (update.viewport) {
         restoreViewportAnchor(instance, anchor);
+      }
+      if (confirmsApplicationPrediction) {
+        clearOptimisticInput(true);
+      } else if (optimistic.current?.mode === "application") {
+        paintApplicationOverlay();
       }
       applyingUpdate.current = false;
     });
@@ -586,6 +736,12 @@ export const TerminalSurface = forwardRef<
             ? "Remote terminal. Type commands here."
             : "Remote terminal output. Input unavailable."}
           aria-disabled={!inputEnabled}
+        />
+        <div
+          ref={optimisticOverlay}
+          className="optimistic-input-overlay"
+          aria-hidden="true"
+          hidden
         />
       </div>
     </div>

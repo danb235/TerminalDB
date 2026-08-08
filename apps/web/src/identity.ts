@@ -4,6 +4,7 @@ const DATABASE = "terminaldb-remote";
 const STORE = "keys";
 const IDENTITY_KEY = "controller-identity-v1";
 const SESSION_KEY = "controller-session-v1";
+const BROWSER_ID_KEY = "account-browser-id-v1";
 
 function arrayBuffer(bytes: Uint8Array): ArrayBuffer {
   const copy = new Uint8Array(bytes.byteLength);
@@ -24,6 +25,7 @@ export interface StoredControllerSession {
   readonly generation: number;
   readonly sendKey: CryptoKey;
   readonly receiveKey: CryptoKey;
+  readonly accessMode?: "pairing" | "account";
 }
 
 function openDatabase(): Promise<IDBDatabase> {
@@ -78,6 +80,14 @@ export async function loadOrCreateIdentity(): Promise<ControllerIdentity> {
   };
   await putRecord(IDENTITY_KEY, identity);
   return identity;
+}
+
+export async function loadOrCreateBrowserId(): Promise<string> {
+  const stored = await getRecord<string>(BROWSER_ID_KEY);
+  if (stored) return stored;
+  const browserId = crypto.randomUUID();
+  await putRecord(BROWSER_ID_KEY, browserId);
+  return browserId;
 }
 
 export async function saveControllerSession(

@@ -13,9 +13,14 @@ import {
 } from "@terminaldb/protocol";
 
 import {
+  accountAccessToken,
+  type AccountAuthConfiguration,
+} from "./account-auth";
+import {
   authenticatedHeaders,
   clearControllerSession,
   loadControllerSession,
+  loadOrCreateBrowserId,
   loadOrCreateIdentity,
   saveControllerSession,
   type StoredControllerSession,
@@ -28,6 +33,18 @@ interface PairingResponse {
   readonly generation: number;
   readonly protocolVersion: number;
   readonly macAgreementPublicKey: JsonWebKey;
+}
+
+interface AccountControllerResponse extends PairingResponse {
+  readonly keySalt: string;
+}
+
+export interface AccountSessionSummary {
+  readonly sessionId: string;
+  readonly deviceId: string;
+  readonly deviceName: string;
+  readonly generation: number;
+  readonly createdAt: number;
 }
 
 interface TicketResponse {
@@ -188,9 +205,92 @@ export async function redeemPairing(input: {
     generation: paired.generation,
     sendKey: keys.send,
     receiveKey: keys.receive,
+    accessMode: "pairing",
   };
   await saveControllerSession(session);
   history.replaceState({}, "", "/remote");
+  return session;
+}
+
+function bearerHeaders(accessToken: string): Record<string, string> {
+  return {
+    accept: "application/json",
+    authorization: `Bearer ${accessToken}`,
+  };
+}
+
+export async function listAccountSessions(
+  accessToken: string,
+): Promise<readonly AccountSessionSummary[]> {
+  const response = await fetch("/api/v1/account/sessions", {
+    headers: bearerHeaders(accessToken),
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error(`Session discovery failed (${response.status})`);
+  const body = (await response.json()) as { sessions?: AccountSessionSummary[] };
+  return body.sessions ?? [];
+}
+
+export async function createAccountEnrollment(
+  accessToken: string,
+): Promise<{ readonly enrollmentCode: string; readonly expiresAt: number }> {
+  const response = await fetch("/api/v1/account/enrollments", {
+    method: "POST",
+    headers: {
+      ...bearerHeaders(accessToken),
+      "content-type": "application/json",
+    },
+    body: "{}",
+  });
+  if (!response.ok) throw new Error(`Mac enrollment failed (${response.status})`);
+  return (await response.json()) as {
+    enrollmentCode: string;
+    expiresAt: number;
+  };
+}
+
+export async function openAccountSession(input: {
+  readonly sessionId: string;
+  readonly accessToken: string;
+}): Promise<StoredControllerSession> {
+  const identity = await loadOrCreateIdentity();
+  const browserId = await loadOrCreateBrowserId();
+  const path = `/api/v1/account/sessions/${encodeURIComponent(input.sessionId)}/controllers`;
+  const response = await fetch(path, {
+    method: "POST",
+    headers: {
+      ...bearerHeaders(input.accessToken),
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      browserId,
+      protocolVersion: PROTOCOL_VERSION,
+      signingPublicKey: identity.signingPublicKey,
+      agreementPublicKey: identity.agreementPublicKey,
+      deviceName: controllerDeviceName(),
+    }),
+  });
+  if (!response.ok) {
+    const failure = await response.json().catch(() => ({})) as { error?: string };
+    throw new Error(failure.error ?? `Session access failed (${response.status})`);
+  }
+  const registered = (await response.json()) as AccountControllerResponse;
+  const keys = await deriveSessionKeys({
+    privateKey: identity.agreementPrivateKey,
+    peerPublicKey: registered.macAgreementPublicKey,
+    pairingSecret: registered.keySalt,
+    sessionId: registered.sessionId,
+    role: "controller",
+  });
+  const session: StoredControllerSession = {
+    controllerId: registered.controllerId,
+    sessionId: registered.sessionId,
+    generation: registered.generation,
+    sendKey: keys.send,
+    receiveKey: keys.receive,
+    accessMode: "account",
+  };
+  await saveControllerSession(session);
   return session;
 }
 
@@ -280,21 +380,34 @@ export class RemoteClient {
   async #ticket(): Promise<TicketResponse> {
     if (!this.#session) throw new Error("No paired controller session");
     const identity = await loadOrCreateIdentity();
-    const path = "/api/v1/tickets";
+    const accountMode = this.#session.accessMode === "account";
+    const path = accountMode ? "/api/v1/account/tickets" : "/api/v1/tickets";
     const body = JSON.stringify({
       sessionId: this.#session.sessionId,
       role: "controller",
       clientId: this.#session.controllerId,
     });
+    const signedHeaders = await authenticatedHeaders({
+      method: "POST",
+      path,
+      body,
+      principalId: this.#session.controllerId,
+      privateKey: identity.signingPrivateKey,
+    });
+    if (accountMode) {
+      const configuration = await loadPublicConfiguration();
+      const accountConfiguration = configuration.accountAuth as
+        | AccountAuthConfiguration
+        | undefined;
+      const accessToken = accountConfiguration
+        ? await accountAccessToken(accountConfiguration)
+        : undefined;
+      if (!accessToken) throw new Error("Account sign-in has expired");
+      signedHeaders.authorization = `Bearer ${accessToken}`;
+    }
     const response = await fetch(path, {
       method: "POST",
-      headers: await authenticatedHeaders({
-        method: "POST",
-        path,
-        body,
-        principalId: this.#session.controllerId,
-        privateKey: identity.signingPrivateKey,
-      }),
+      headers: signedHeaders,
       body,
     });
     if (!response.ok) {
@@ -458,6 +571,13 @@ export class RemoteClient {
           candidate.inputMode === "application" ||
           candidate.inputMode === "secure"
             ? { inputMode: candidate.inputMode }
+            : {}),
+          ...(typeof candidate.inputStreamId === "string"
+            ? { inputStreamId: candidate.inputStreamId }
+            : {}),
+          ...(Number.isSafeInteger(candidate.inputThrough) &&
+          Number(candidate.inputThrough) > 0
+            ? { inputThrough: Number(candidate.inputThrough) }
             : {}),
         };
         this.#events.onOutput(output);

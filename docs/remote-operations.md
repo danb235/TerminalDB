@@ -32,6 +32,12 @@ pricing and the deployment does not yet meet the personal sub-$1 monthly target.
 The stack always creates the encrypted SNS alert topic and both budgets. Without
 `budgetEmail`, no human subscriber receives those notifications.
 
+Development uses Cognito's built-in email sender. Production requires
+`cognitoFromEmail` to be a verified SES identity and uses SES for signup
+verification and password recovery; optionally set `cognitoFromName`,
+`cognitoReplyTo`, and `cognitoSesRegion`. Move the SES account out of its
+sandbox and configure the identity before opening public signup.
+
 ## Open the remote app
 
 With the reference stack deployed and the `stelao` AWS CLI profile available,
@@ -53,9 +59,30 @@ The reference defaults are configurable through macOS preferences:
 - `TerminalDBRemoteAWSRegion`
 - `TerminalDBRemoteEnrollmentFunction`
 
+## Use an account across devices
+
+Open the deployed web app directly and choose **Sign in or create account**.
+TerminalDB redirects to Cognito managed login, which handles username/password
+signup, email verification, recovery, and required TOTP setup. The web client
+uses the OAuth authorization-code flow with PKCE; it never receives the user's
+password.
+
+After signing in, choose **Add a Mac**. In TerminalDB's Remote Control window,
+disable an existing remote session if one is active, then open **Advanced
+Setup…** and enter the deployed web URL plus the displayed
+15-minute enrollment code. That code can be used once and binds the Mac to the
+verified Cognito subject. From then on, every active remote session from that
+Mac appears under **Terminal sessions** after login on a phone or another
+browser. Selecting a session registers that browser's own non-exportable
+controller keys and opens the encrypted terminal.
+
+Creating an account does not remove the link workflow. **Open Remote Web App**
+and **Pair a Phone** continue to create a session-scoped, single-use guest link,
+including for an account-enrolled Mac.
+
 ## Manual Mac enrollment
 
-Create the first one-time enrollment code through the IAM-protected Lambda
+For a non-account or operator-managed installation, create a one-time enrollment code through the IAM-protected Lambda
 invoke path:
 
 ```sh
@@ -99,15 +126,23 @@ checks status and expiry rather than relying on physical deletion.
 
 ## Cost checks
 
+Account-enabled deployments use the Cognito Plus feature plan so threat
+protection can run in enforced mode. Cognito charges for account activity
+separately from the relay path; review the current Cognito MAU pricing and raise
+the reference budgets before offering a public hosted service. The original
+low-traffic relay estimates apply to the guest-link data path, not to an
+unbounded public account population.
+
 `packages/test-harness` computes API Gateway billing units from captured wire
-sizes and fails if a foreground session sustains more than five batches per
-second. Run it with:
+sizes. Idle foreground output remains capped at five batches per second; for
+1.25 seconds after active-tab input, an interactive lane may burst to twenty
+frames per second before falling back automatically. Run it with:
 
 ```sh
 npm run test:cost
 ```
 
-The default personal caps are 25 WebSocket messages/second, burst 50, and eight
+The default personal caps are 50 WebSocket messages/second, burst 100, and eight
 concurrent invocations per Lambda. Lower these for an especially strict
 personal installation; raise them only after load and cost capture.
 

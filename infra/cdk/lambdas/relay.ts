@@ -9,7 +9,7 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyResultV2 } from "aws-lambda";
 
-import { dynamo, tableName } from "./common.js";
+import { accountTenantMatches, dynamo, tableName } from "./common.js";
 
 const MAX_WIRE_BYTES = 30_000;
 const ROUTES = new Set([
@@ -151,6 +151,7 @@ export async function handler(event: RelayEvent): Promise<APIGatewayProxyResultV
   if (
     !session.Item ||
     session.Item.status !== "active" ||
+    Number(session.Item.ttl) <= Math.floor(Date.now() / 1_000) ||
     Number(session.Item.generation) !== Number(source.generation)
   ) {
     return { statusCode: 410 };
@@ -169,8 +170,20 @@ export async function handler(event: RelayEvent): Promise<APIGatewayProxyResultV
     if (
       !controller.Item ||
       controller.Item.sessionId !== sessionId ||
-      controller.Item.revokedAt
+      controller.Item.revokedAt ||
+      Number(controller.Item.ttl) <= Math.floor(Date.now() / 1_000)
     ) {
+      return { statusCode: 403 };
+    }
+    if (controller.Item.accessMode === "account") {
+      if (!accountTenantMatches({
+        controllerOwnerSub: controller.Item.ownerSub,
+        sessionOwnerSub: session.Item.ownerSub,
+        assertedOwnerSub: source.ownerSub,
+      })) {
+        return { statusCode: 403 };
+      }
+    } else if (source.ownerSub) {
       return { statusCode: 403 };
     }
     destinationRole = "mac";
@@ -190,7 +203,18 @@ export async function handler(event: RelayEvent): Promise<APIGatewayProxyResultV
     if (
       !controller.Item ||
       controller.Item.sessionId !== sessionId ||
-      controller.Item.revokedAt
+      controller.Item.revokedAt ||
+      Number(controller.Item.ttl) <= Math.floor(Date.now() / 1_000)
+    ) {
+      return { statusCode: 403 };
+    }
+    if (
+      controller.Item.accessMode === "account" &&
+      !accountTenantMatches({
+        controllerOwnerSub: controller.Item.ownerSub,
+        sessionOwnerSub: session.Item.ownerSub,
+        assertedOwnerSub: session.Item.ownerSub,
+      })
     ) {
       return { statusCode: 403 };
     }

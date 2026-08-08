@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run test/stack.test.ts test/local-config.test.ts",
+    "test": "vitest run test/stack.test.ts test/local-config.test.ts test/tenant-boundary.test.ts test/control-account.test.ts test/connection-tenant.test.ts test/relay-tenant.test.ts",
     "cdk": "cdk",
     "synth": "cdk synth --profile stelao -c stage=dev -c region=us-west-2",
     "diff": "cdk diff --profile stelao -c stage=dev -c region=us-west-2",

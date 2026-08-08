@@ -28,6 +28,19 @@ export function constantEqual(left: string, right: string): boolean {
   return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
 }
 
+export function accountTenantMatches(input: {
+  readonly controllerOwnerSub: unknown;
+  readonly sessionOwnerSub: unknown;
+  readonly assertedOwnerSub: unknown;
+}): boolean {
+  return (
+    typeof input.controllerOwnerSub === "string" &&
+    input.controllerOwnerSub.length > 0 &&
+    input.controllerOwnerSub === input.sessionOwnerSub &&
+    input.controllerOwnerSub === input.assertedOwnerSub
+  );
+}
+
 export function json(
   statusCode: number,
   body: Record<string, unknown>,
@@ -80,7 +93,13 @@ export async function verifyAuthenticatedRequest(
         new GetCommand({ TableName: tableName, Key: { PK: `DEVICE#${principalId}`, SK: "META" } }),
       );
   const principal = (controller.Item ?? device?.Item) as Record<string, unknown> | undefined;
-  if (!principal || principal.revokedAt) throw new Error("Unknown or revoked principal");
+  if (
+    !principal ||
+    principal.revokedAt ||
+    (principal.ttl !== undefined && Number(principal.ttl) <= nowSeconds())
+  ) {
+    throw new Error("Unknown or revoked principal");
+  }
 
   const body = event.body ?? "";
   const canonical = [

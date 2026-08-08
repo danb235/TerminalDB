@@ -1,4 +1,6 @@
 interface InputLane {
+  readonly streamId: string;
+  nextSequence: number;
   tail: Promise<void>;
   blocked: boolean;
   cancelled: boolean;
@@ -6,23 +8,33 @@ interface InputLane {
 
 export type InputDeliveryResult = "delivered" | "discarded";
 
+export interface SequencedInputBatch {
+  readonly input: string;
+  readonly inputStreamId: string;
+  readonly inputSequence: number;
+}
+
 /**
  * API Gateway invokes the relay Lambda independently for every WebSocket
- * message, so two messages sent in order are not enough to guarantee that
- * two PTY writes reach the Mac in order. Each tab therefore has an
- * acknowledgement barrier: the next batch is not put on the wire until the
- * Mac has accepted the previous one.
+ * message, so wire order is not sufficient. Batches carry a per-tab stream
+ * sequence that the Mac reorders before writing to the PTY. This lets the
+ * browser pipeline input instead of limiting typing throughput to one batch
+ * per network round trip.
  */
 export class AcknowledgedInputQueue {
   readonly #lanes = new Map<string, InputLane>();
 
   enqueue(
     tabId: string,
-    deliver: () => Promise<unknown>,
+    input: string,
+    deliver: (batch: SequencedInputBatch) => Promise<unknown>,
+    pipelined = false,
   ): Promise<InputDeliveryResult> {
     let lane = this.#lanes.get(tabId);
     if (!lane) {
       lane = {
+        streamId: crypto.randomUUID(),
+        nextSequence: 1,
         tail: Promise.resolve(),
         blocked: false,
         cancelled: false,
@@ -30,18 +42,28 @@ export class AcknowledgedInputQueue {
       this.#lanes.set(tabId, lane);
     }
     const activeLane = lane;
-    const operation = activeLane.tail.then(async () => {
-      if (activeLane.blocked || activeLane.cancelled) return "discarded" as const;
-      try {
-        await deliver();
-        return "delivered" as const;
-      } catch (error) {
+    if (activeLane.blocked || activeLane.cancelled) {
+      return Promise.resolve("discarded");
+    }
+    const batch: SequencedInputBatch = {
+      input,
+      inputStreamId: activeLane.streamId,
+      inputSequence: activeLane.nextSequence,
+    };
+    activeLane.nextSequence += 1;
+    const execute = () => deliver(batch).then(
+      () => "delivered" as const,
+      (error: unknown) => {
         activeLane.blocked = true;
         throw error;
-      }
-    });
-    // Always settle the barrier so already-queued work can observe the
-    // blocked flag and be discarded instead of becoming an unhandled promise.
+      },
+    );
+    const operation = pipelined
+      ? execute()
+      : activeLane.tail.then(() => {
+          if (activeLane.blocked || activeLane.cancelled) return "discarded" as const;
+          return execute();
+        });
     activeLane.tail = operation.then(
       () => undefined,
       () => undefined,

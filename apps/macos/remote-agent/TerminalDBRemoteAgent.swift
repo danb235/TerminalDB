@@ -477,6 +477,20 @@ private struct DirectionalKeys {
     let receive: SymmetricKey
 }
 
+private func controllerKeyMaterial(
+    response: [String: Any],
+    pairingSecrets: [String: String]
+) throws -> String {
+    if let accountKeySalt = response["keySalt"] as? String, !accountKeySalt.isEmpty {
+        return accountKeySalt
+    }
+    if let pairingID = response["pairingId"] as? String,
+       let pairingSecret = pairingSecrets[pairingID] {
+        return pairingSecret
+    }
+    throw AgentError.cryptography("The controller key material is no longer available")
+}
+
 private func deriveKeys(
     identity: DeviceIdentity,
     peerJWK: [String: Any],
@@ -805,6 +819,47 @@ private final class CloudSession: NSObject, URLSessionWebSocketDelegate, @unchec
     }
 }
 
+private struct SequencedInputCommand {
+    let tabID: String
+    let input: String
+    let requestID: String
+    let sourceID: String
+    let expiresAt: Int
+    let streamID: String
+    let sequence: Int
+}
+
+private struct InputStreamLane {
+    var nextSequence = 1
+    var pending: [Int: SequencedInputCommand] = [:]
+
+    mutating func accept(
+        _ command: SequencedInputCommand,
+        maximumPending: Int = 256
+    ) -> (ready: [SequencedInputCommand], duplicate: Bool, overflow: Bool) {
+        if command.sequence < nextSequence {
+            return ([], true, false)
+        }
+        if command.sequence > nextSequence {
+            guard pending[command.sequence] == nil else {
+                return ([], true, false)
+            }
+            guard pending.count < maximumPending else {
+                return ([], false, true)
+            }
+            pending[command.sequence] = command
+            return ([], false, false)
+        }
+        var ready = [command]
+        nextSequence += 1
+        while let next = pending.removeValue(forKey: nextSequence) {
+            ready.append(next)
+            nextSequence += 1
+        }
+        return (ready, false, false)
+    }
+}
+
 private final class RemoteAgent: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.terminaldb.remote-agent")
     private let store: StateStore
@@ -826,6 +881,7 @@ private final class RemoteAgent: @unchecked Sendable {
     private var sequences: [String: Int] = [:]
     private var receivedSequenceWindows: [String: Set<Int>] = [:]
     private var receivedSequenceHighWater: [String: Int] = [:]
+    private var inputStreamLanes: [String: InputStreamLane] = [:]
     private var reconnectAttempt = 0
     private var reconnectWork: DispatchWorkItem?
     private var rotationWork: DispatchWorkItem?
@@ -1069,6 +1125,10 @@ private final class RemoteAgent: @unchecked Sendable {
         var payload: [String: Any] = [
             "instances": cleanedInstances,
             "accounts": Array(accountsByID.values),
+            "capabilities": [
+                "sequenced-input-v1",
+                "causal-input-output-v1",
+            ],
         ]
         if let selectedTabID = viewedTabs.values.first {
             payload["selectedTabId"] = selectedTabID
@@ -1137,16 +1197,22 @@ private final class RemoteAgent: @unchecked Sendable {
             return
         }
         for (controllerID, viewedTab) in viewedTabs where viewedTab == tabID {
+            var payload: [String: Any] = [
+                "tabId": tabID,
+                "text": text,
+                "rows": message["rows"] as? Int ?? 24,
+                "columns": message["columns"] as? Int ?? 80,
+                "viewport": false,
+                "inputMode": message["inputMode"] as? String ?? "secure",
+            ]
+            if let inputStreamID = message["inputStreamId"] as? String,
+               let inputThrough = message["inputThrough"] as? Int {
+                payload["inputStreamId"] = inputStreamID
+                payload["inputThrough"] = inputThrough
+            }
             sendEncrypted(
                 route: "pty.output",
-                payload: [
-                    "tabId": tabID,
-                    "text": text,
-                    "rows": message["rows"] as? Int ?? 24,
-                    "columns": message["columns"] as? Int ?? 80,
-                    "viewport": false,
-                    "inputMode": message["inputMode"] as? String ?? "secure",
-                ],
+                payload: payload,
                 to: controllerID,
                 ttlMilliseconds: 10_000
             )
@@ -1180,6 +1246,11 @@ private final class RemoteAgent: @unchecked Sendable {
                 payload["chunkIndex"] = chunkIndex
                 payload["chunkCount"] = chunkCount
             }
+            if let inputStreamID = message["inputStreamId"] as? String,
+               let inputThrough = message["inputThrough"] as? Int {
+                payload["inputStreamId"] = inputStreamID
+                payload["inputThrough"] = inputThrough
+            }
             sendEncrypted(
                 route: "viewport.snapshot",
                 payload: payload,
@@ -1197,6 +1268,11 @@ private final class RemoteAgent: @unchecked Sendable {
             "accepted": message["accepted"] as? Bool ?? false,
         ]
         if let detail = message["detail"] as? String { payload["detail"] = detail }
+        if let inputStreamID = message["inputStreamId"] as? String,
+           let inputThrough = message["inputThrough"] as? Int {
+            payload["inputStreamId"] = inputStreamID
+            payload["inputThrough"] = inputThrough
+        }
         sendEncrypted(route: "ack", payload: payload, to: controllerID, ttlMilliseconds: 15_000)
     }
 
@@ -1206,6 +1282,7 @@ private final class RemoteAgent: @unchecked Sendable {
             do {
                 let normalized = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
                 state.baseURL = normalized
+                var accountEnrollment = false
                 if state.deviceID == nil {
                     let environment = ProcessInfo.processInfo.environment
                     let ephemeralName = environment["TERMINALDB_REMOTE_EPHEMERAL_IDENTITY"] == "1"
@@ -1225,6 +1302,18 @@ private final class RemoteAgent: @unchecked Sendable {
                         authenticated: false
                     )
                     state.deviceID = response["deviceId"] as? String
+                    accountEnrollment = response["accountOwned"] as? Bool ?? false
+                } else {
+                    // A Cognito-bound enrollment code upgrades an existing
+                    // link-only Mac without rotating its Keychain identity.
+                    // Operator enrollment codes are accepted as a no-op.
+                    let response = try await request(
+                        method: "POST",
+                        path: "/api/v1/devices/claim",
+                        body: ["code": enrollmentCode],
+                        authenticated: true
+                    )
+                    accountEnrollment = response["claimed"] as? Bool ?? false
                 }
                 guard state.deviceID != nil else { throw AgentError.notEnrolled }
                 let session = try await request(
@@ -1242,7 +1331,16 @@ private final class RemoteAgent: @unchecked Sendable {
                 state.enabled = true
                 try store.save(state)
                 try await openCloudSocket()
-                try await requestPairing(sessionID: sessionID, baseURL: normalized)
+                if accountEnrollment {
+                    queue.async {
+                        self.broadcastStatus(
+                            "connecting",
+                            detail: "This Mac is available in your TerminalDB account."
+                        )
+                    }
+                } else {
+                    try await requestPairing(sessionID: sessionID, baseURL: normalized)
+                }
             } catch {
                 queue.async {
                     let detail = error.localizedDescription
@@ -1348,6 +1446,7 @@ private final class RemoteAgent: @unchecked Sendable {
         sequences.removeAll()
         receivedSequenceWindows.removeAll()
         receivedSequenceHighWater.removeAll()
+        inputStreamLanes.removeAll()
         activePairingURL = nil
         activePairingExpiresAt = nil
         cloudReady = false
@@ -1406,7 +1505,7 @@ private final class RemoteAgent: @unchecked Sendable {
             self.cloudReady = true
             self.reconnectAttempt = 0
             self.broadcastStatus(
-                self.activePairingURL == nil ? "resynchronizing" : "live",
+                "live",
                 pairingURL: self.activePairingURL,
                 expiresAt: self.activePairingExpiresAt
             )
@@ -1749,7 +1848,42 @@ private final class RemoteAgent: @unchecked Sendable {
                     active: true
                 )
             }
-        case "pty.input", "tab.create", "tab.select", "tab.close", "account.switch", "usage.refresh":
+        case "pty.input":
+            guard let tabID = payload["tabId"] as? String else {
+                sendEncrypted(
+                    route: "ack",
+                    payload: ["requestId": requestID, "accepted": false, "detail": "Tab is no longer open"],
+                    to: sourceID,
+                    ttlMilliseconds: 10_000
+                )
+                return
+            }
+            if let streamID = payload["inputStreamId"] as? String,
+               !streamID.isEmpty,
+               streamID.count <= 128,
+               let sequence = payload["inputSequence"] as? Int,
+               sequence > 0 {
+                enqueueSequencedInput(SequencedInputCommand(
+                    tabID: tabID,
+                    input: payload["input"] as? String ?? "",
+                    requestID: requestID,
+                    sourceID: sourceID,
+                    expiresAt: expiresAt,
+                    streamID: streamID,
+                    sequence: sequence
+                ))
+                return
+            }
+            forwardInput(SequencedInputCommand(
+                tabID: tabID,
+                input: payload["input"] as? String ?? "",
+                requestID: requestID,
+                sourceID: sourceID,
+                expiresAt: expiresAt,
+                streamID: "",
+                sequence: 0
+            ))
+        case "tab.create", "tab.select", "tab.close", "account.switch", "usage.refresh":
             let tabID = payload["tabId"] as? String
             let owner = tabID.flatMap { tabOwners[$0] } ??
                 clients.values.first(where: { $0.authenticated })
@@ -1789,6 +1923,89 @@ private final class RemoteAgent: @unchecked Sendable {
         }
     }
 
+    private func inputStreamKey(_ command: SequencedInputCommand) -> String {
+        "\(command.sourceID)\u{0}\(command.tabID)\u{0}\(command.streamID)"
+    }
+
+    private func enqueueSequencedInput(_ command: SequencedInputCommand) {
+        let key = inputStreamKey(command)
+        if inputStreamLanes[key] == nil && inputStreamLanes.count >= 512,
+           let evictionCandidate = inputStreamLanes.keys.first {
+            inputStreamLanes.removeValue(forKey: evictionCandidate)
+        }
+        var lane = inputStreamLanes[key] ?? InputStreamLane()
+        let accepted = lane.accept(command)
+        inputStreamLanes[key] = lane
+        if accepted.duplicate {
+            let alreadyAccepted = command.sequence < lane.nextSequence
+            var acknowledgement: [String: Any] = [
+                "requestId": command.requestID,
+                "accepted": alreadyAccepted,
+                "inputStreamId": command.streamID,
+                "inputThrough": lane.nextSequence - 1,
+            ]
+            if !alreadyAccepted {
+                acknowledgement["detail"] = "Duplicate pending input sequence"
+            }
+            sendEncrypted(
+                route: "ack",
+                payload: acknowledgement,
+                to: command.sourceID,
+                ttlMilliseconds: 10_000
+            )
+            return
+        }
+        if accepted.overflow {
+            sendEncrypted(
+                route: "ack",
+                payload: [
+                    "requestId": command.requestID,
+                    "accepted": false,
+                    "detail": "Input reorder buffer is full",
+                    "inputStreamId": command.streamID,
+                    "inputThrough": lane.nextSequence - 1,
+                ],
+                to: command.sourceID,
+                ttlMilliseconds: 10_000
+            )
+            return
+        }
+        for ready in accepted.ready { forwardInput(ready) }
+    }
+
+    private func forwardInput(_ command: SequencedInputCommand) {
+        guard let owner = tabOwners[command.tabID] else {
+            var failure: [String: Any] = [
+                "requestId": command.requestID,
+                "accepted": false,
+                "detail": "Tab is no longer open",
+            ]
+            if !command.streamID.isEmpty {
+                failure["inputStreamId"] = command.streamID
+                failure["inputThrough"] = max(0, command.sequence - 1)
+            }
+            sendEncrypted(
+                route: "ack",
+                payload: failure,
+                to: command.sourceID,
+                ttlMilliseconds: 10_000
+            )
+            return
+        }
+        owner.send([
+            "type": "remoteCommand",
+            "route": "pty.input",
+            "tabId": command.tabID,
+            "input": command.input,
+            "requestId": command.requestID,
+            "controllerId": command.sourceID,
+            "generation": state.generation ?? 0,
+            "expiresAt": command.expiresAt,
+            "inputStreamId": command.streamID,
+            "inputSequence": command.sequence,
+        ])
+    }
+
     private func controllerKeys(for controllerID: String) async throws -> DirectionalKeys {
         if let keys = queue.sync(execute: { controllerKeys[controllerID] }) { return keys }
         guard let sessionID = state.sessionID else { throw AgentError.sessionUnavailable }
@@ -1800,15 +2017,18 @@ private final class RemoteAgent: @unchecked Sendable {
             body: nil,
             authenticated: true
         )
-        guard let publicKey = response["agreementPublicKey"] as? [String: Any],
-              let pairingID = response["pairingId"] as? String,
-              let secret = queue.sync(execute: { pairingSecrets[pairingID] }) else {
-            throw AgentError.cryptography("The controller pairing secret is no longer available")
+        guard let publicKey = response["agreementPublicKey"] as? [String: Any] else {
+            throw AgentError.cryptography("The controller public key is unavailable")
         }
+        let secrets = queue.sync(execute: { pairingSecrets })
+        let keyMaterial = try controllerKeyMaterial(
+            response: response,
+            pairingSecrets: secrets
+        )
         let keys = try deriveKeys(
             identity: identity,
             peerJWK: publicKey,
-            pairingSecret: secret,
+            pairingSecret: keyMaterial,
             sessionID: sessionID
         )
         queue.sync {
@@ -2167,6 +2387,44 @@ private struct TerminalDBRemoteAgentMain {
                       try inflateBounded(native.data) == expected else {
                     throw AgentError.cryptography(
                         "Native DEFLATE round trip failed"
+                    )
+                }
+                guard try controllerKeyMaterial(
+                    response: [
+                        "keySalt": "account-controller-salt",
+                        "pairingId": "guest-pairing",
+                    ],
+                    pairingSecrets: ["guest-pairing": "guest-secret"]
+                ) == "account-controller-salt",
+                try controllerKeyMaterial(
+                    response: ["pairingId": "guest-pairing"],
+                    pairingSecrets: ["guest-pairing": "guest-secret"]
+                ) == "guest-secret" else {
+                    throw AgentError.cryptography(
+                        "Account and guest controller key selection failed"
+                    )
+                }
+                let command = { (sequence: Int) in
+                    SequencedInputCommand(
+                        tabID: "tab",
+                        input: String(sequence),
+                        requestID: "request-\(sequence)",
+                        sourceID: "controller",
+                        expiresAt: Int.max,
+                        streamID: "stream",
+                        sequence: sequence
+                    )
+                }
+                var lane = InputStreamLane()
+                let buffered = lane.accept(command(2))
+                let drained = lane.accept(command(1))
+                guard buffered.ready.isEmpty,
+                      !buffered.duplicate,
+                      !buffered.overflow,
+                      drained.ready.map(\.sequence) == [1, 2],
+                      lane.nextSequence == 3 else {
+                    throw AgentError.server(
+                        "Sequenced input reorder compatibility failed"
                     )
                 }
                 print("TerminalDB remote agent self-test: passed")

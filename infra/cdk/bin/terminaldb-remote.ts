@@ -26,13 +26,17 @@ const remote = new TerminalDBRemoteStack(app, `TerminalDBRemote-${stage}`, {
   stage: stage as "dev" | "prod",
   webAclArn: edge.webAclArn,
   disableNewPairings: String(app.node.tryGetContext("disableNewPairings")) === "true",
-  websocketMessagesPerSecond: Number(app.node.tryGetContext("websocketMessagesPerSecond") ?? 25),
-  websocketBurst: Number(app.node.tryGetContext("websocketBurst") ?? 50),
+  websocketMessagesPerSecond: Number(app.node.tryGetContext("websocketMessagesPerSecond") ?? 50),
+  websocketBurst: Number(app.node.tryGetContext("websocketBurst") ?? 100),
   lambdaReservedConcurrency: Number(app.node.tryGetContext("lambdaReservedConcurrency") ?? 8),
   budgetEmail: (app.node.tryGetContext("budgetEmail") as string | undefined) ?? localConfig.budgetEmail,
   cloudfrontPlan: String(app.node.tryGetContext("cloudfrontPlan") ?? "FREE") === "PAYG" ? "PAYG" : "FREE",
   domainName: app.node.tryGetContext("domainName") as string | undefined,
   certificateArn: app.node.tryGetContext("certificateArn") as string | undefined,
+  cognitoFromEmail: app.node.tryGetContext("cognitoFromEmail") as string | undefined,
+  cognitoFromName: app.node.tryGetContext("cognitoFromName") as string | undefined,
+  cognitoReplyTo: app.node.tryGetContext("cognitoReplyTo") as string | undefined,
+  cognitoSesRegion: app.node.tryGetContext("cognitoSesRegion") as string | undefined,
 });
 remote.addStackDependency(edge);
 for (const stack of [edge, remote]) {

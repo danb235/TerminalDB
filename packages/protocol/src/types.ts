@@ -114,6 +114,7 @@ export interface InventoryPayload {
   readonly instances: readonly RemoteInstance[];
   readonly accounts: readonly ClaudeAccount[];
   readonly selectedTabId?: string;
+  readonly capabilities?: readonly string[];
 }
 
 export interface PTYOutputPayload {
@@ -123,6 +124,10 @@ export interface PTYOutputPayload {
   readonly columns: number;
   readonly viewport: boolean;
   readonly inputMode?: RemoteInputMode;
+  /** Identifies the browser input stream reflected by this output frame. */
+  readonly inputStreamId?: string;
+  /** Highest contiguous input sequence accepted before this frame was read. */
+  readonly inputThrough?: number;
   readonly snapshotId?: string;
   readonly chunkIndex?: number;
   readonly chunkCount?: number;
@@ -131,6 +136,8 @@ export interface PTYOutputPayload {
 export interface PTYInputPayload {
   readonly tabId: string;
   readonly input: string;
+  readonly inputStreamId?: string;
+  readonly inputSequence?: number;
 }
 
 export interface PTYResizePayload {
@@ -154,6 +161,8 @@ export interface AckPayload {
   readonly accepted: boolean;
   readonly code?: string;
   readonly detail?: string;
+  readonly inputStreamId?: string;
+  readonly inputThrough?: number;
 }
 
 export type RemotePayload =
@@ -176,5 +185,11 @@ export interface RemotePublicConfiguration {
   readonly protocolVersion: number;
   readonly region: string;
   readonly pairingEnabled: boolean;
+  readonly accountAuth?: {
+    readonly clientId: string;
+    readonly domain: string;
+    readonly issuer: string;
+    readonly callbackPath: string;
+  };
   readonly mockMode?: boolean;
 }

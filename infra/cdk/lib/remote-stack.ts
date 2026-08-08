@@ -17,6 +17,7 @@ import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
 import * as cloudfrontOrigins from "aws-cdk-lib/aws-cloudfront-origins";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cloudwatchActions from "aws-cdk-lib/aws-cloudwatch-actions";
+import * as cognito from "aws-cdk-lib/aws-cognito";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
@@ -40,6 +41,10 @@ export interface TerminalDBRemoteStackProps extends StackProps {
   readonly cloudfrontPlan: "FREE" | "PAYG";
   readonly domainName?: string;
   readonly certificateArn?: string;
+  readonly cognitoFromEmail?: string;
+  readonly cognitoFromName?: string;
+  readonly cognitoReplyTo?: string;
+  readonly cognitoSesRegion?: string;
 }
 
 export class TerminalDBRemoteStack extends Stack {
@@ -53,6 +58,9 @@ export class TerminalDBRemoteStack extends Stack {
     if (isProduction && (!props.domainName || !props.certificateArn)) {
       throw new Error("Production requires a custom domain and us-east-1 ACM certificate");
     }
+    if (isProduction && !props.cognitoFromEmail) {
+      throw new Error("Production requires a verified SES cognitoFromEmail for account verification and recovery");
+    }
     const removalPolicy = isProduction ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY;
     const table = new dynamodb.Table(this, "RemoteState", {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -64,6 +72,47 @@ export class TerminalDBRemoteStack extends Stack {
       deletionProtection: isProduction,
       removalPolicy,
     });
+    const userPool = new cognito.UserPool(this, "UserPool", {
+      userPoolName: `terminaldb-remote-${props.stage}`,
+      selfSignUpEnabled: true,
+      signInAliases: { username: true, email: true },
+      signInCaseSensitive: false,
+      autoVerify: { email: true },
+      standardAttributes: {
+        email: { required: true, mutable: true },
+      },
+      passwordPolicy: {
+        minLength: 12,
+        requireLowercase: true,
+        requireUppercase: true,
+        requireDigits: true,
+        requireSymbols: true,
+        tempPasswordValidity: Duration.days(3),
+      },
+      mfa: cognito.Mfa.REQUIRED,
+      mfaSecondFactor: { sms: false, otp: true },
+      featurePlan: cognito.FeaturePlan.PLUS,
+      standardThreatProtectionMode:
+        cognito.StandardThreatProtectionMode.FULL_FUNCTION,
+      accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
+      email: props.cognitoFromEmail
+        ? cognito.UserPoolEmail.withSES({
+            fromEmail: props.cognitoFromEmail,
+            fromName: props.cognitoFromName ?? "TerminalDB",
+            replyTo: props.cognitoReplyTo,
+            sesRegion: props.cognitoSesRegion ?? this.region,
+          })
+        : cognito.UserPoolEmail.withCognito(),
+      deletionProtection: isProduction,
+      removalPolicy,
+    });
+    const userPoolDomain = userPool.addDomain("UserPoolDomain", {
+      managedLoginVersion: cognito.ManagedLoginVersion.NEWER_MANAGED_LOGIN,
+      cognitoDomain: {
+        domainPrefix: `terminaldb-${props.stage}-${this.account}-${this.region}`,
+      },
+    });
+    const cognitoDomainUrl = userPoolDomain.baseUrl();
 
     const lambdaEnvironment = {
       TABLE_NAME: table.tableName,
@@ -291,7 +340,7 @@ export class TerminalDBRemoteStack extends Stack {
         contentSecurityPolicy: {
           override: true,
           contentSecurityPolicy:
-            "default-src 'self'; connect-src 'self' wss:; font-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+            `default-src 'self'; connect-src 'self' ${cognitoDomainUrl} wss:; font-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
         },
         contentTypeOptions: { override: true },
         frameOptions: { frameOption: cloudfront.HeadersFrameOption.DENY, override: true },
@@ -388,6 +437,48 @@ export class TerminalDBRemoteStack extends Stack {
       "PUBLIC_WEBSOCKET_URL",
       `wss://${props.domainName ?? distribution.distributionDomainName}/socket`,
     );
+    const applicationOrigin = `https://${props.domainName ?? distribution.distributionDomainName}`;
+    const userPoolClient = userPool.addClient("WebClient", {
+      userPoolClientName: `terminaldb-remote-${props.stage}-web`,
+      generateSecret: false,
+      preventUserExistenceErrors: true,
+      enableTokenRevocation: true,
+      accessTokenValidity: Duration.hours(1),
+      idTokenValidity: Duration.hours(1),
+      refreshTokenValidity: Duration.days(30),
+      supportedIdentityProviders: [
+        cognito.UserPoolClientIdentityProvider.COGNITO,
+      ],
+      oAuth: {
+        flows: {
+          authorizationCodeGrant: true,
+          implicitCodeGrant: false,
+        },
+        scopes: [
+          cognito.OAuthScope.OPENID,
+          cognito.OAuthScope.EMAIL,
+          cognito.OAuthScope.PROFILE,
+        ],
+        callbackUrls: [`${applicationOrigin}/auth/callback`],
+        logoutUrls: [applicationOrigin],
+      },
+    });
+    const accountAuthorizer = new apigatewayv2Authorizers.HttpJwtAuthorizer(
+      "AccountAuthorizer",
+      userPool.userPoolProviderUrl,
+      { jwtAudience: [userPoolClient.userPoolClientId] },
+    );
+    httpApi.addRoutes({
+      path: "/api/v1/account/{proxy+}",
+      methods: [apigatewayv2.HttpMethod.ANY],
+      integration: httpIntegration,
+      authorizer: accountAuthorizer,
+      authorizationScopes: ["openid"],
+    });
+    controlFunction.addEnvironment("COGNITO_AUTH_ENABLED", "true");
+    controlFunction.addEnvironment("COGNITO_CLIENT_ID", userPoolClient.userPoolClientId);
+    controlFunction.addEnvironment("COGNITO_DOMAIN", cognitoDomainUrl);
+    controlFunction.addEnvironment("COGNITO_ISSUER", userPool.userPoolProviderUrl);
     NagSuppressions.addResourceSuppressions(
       distribution,
       [
@@ -545,6 +636,8 @@ export class TerminalDBRemoteStack extends Stack {
       value: `npm run remote:enrollment -- --profile stelao --function-name ${controlFunction.functionName}`,
     });
     new CfnOutput(this, "WebSocketApiId", { value: webSocketApi.apiId });
+    new CfnOutput(this, "UserPoolId", { value: userPool.userPoolId });
+    new CfnOutput(this, "UserPoolClientId", { value: userPoolClient.userPoolClientId });
     new CfnOutput(this, "CloudFrontPlan", {
       value:
         props.cloudfrontPlan === "FREE"

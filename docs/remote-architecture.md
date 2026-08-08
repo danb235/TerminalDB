@@ -18,8 +18,10 @@ Phone browser ── HTTPS/WSS ── CloudFront + WAF ──┬── private S
                                               TerminalDBRemoteAgent on the Mac
 ```
 
-One DynamoDB on-demand table stores devices, controller public keys, sessions,
-single-use pairings and tickets, connection mappings, and replay nonces. TTL
+One DynamoDB on-demand table stores tenant-scoped device/session indexes,
+controller public keys, single-use pairings and tickets, connection mappings,
+and replay nonces. A Cognito user pool provides optional self-service accounts.
+TTL
 removes ephemeral records and point-in-time recovery protects the trust graph.
 There is no VPC, NAT gateway, queue, IoT Core resource, KMS customer key,
 Secrets Manager secret, transcript bucket, or always-on compute.
@@ -33,6 +35,30 @@ components.
 
 ## Protocol and encryption
 
+Remote supports two independent access grants:
+
+- **One-time link:** the existing possession-based pairing flow works without
+  an account and grants access only to the session named by the opaque link.
+- **Account:** Cognito managed login uses authorization code with PKCE. API
+  Gateway validates the access token, and the control Lambda derives the tenant
+  exclusively from Cognito's immutable `sub` claim. A signed-in browser can
+  discover and register a controller only for sessions indexed under that
+  subject.
+
+Cognito is a control-plane identity, not a terminal encryption key. An account
+browser still creates non-extractable P-256 signing and ECDH keys. The Mac and
+browser derive their directional content keys from ECDH plus a random
+per-controller account salt. AWS sees the public keys and salt but cannot
+derive the shared secret. Account controllers require both a current Cognito
+access token and the registered browser signing key when minting a connection
+ticket. Guest controllers continue to use the original signed ticket path.
+
+Tenant equality is checked again when a ticket is created, when its WebSocket
+connects, and before either relay direction is routed. Session IDs supplied by
+clients are never treated as tenant authority. Guest pairings remain a
+deliberate, separately authorized exception: possession of the single-use link
+can register a guest controller for exactly one session.
+
 Pairing links have the form `/pair/{opaqueId}#{secret}`. The fragment is removed
 with `history.replaceState` after use and never reaches AWS. Pairing secrets are
 random, single-use, valid for ten minutes, and stored only as salted hashes.
@@ -40,7 +66,8 @@ Connection tickets are random, single-use, valid for sixty seconds, and stored
 only as SHA-256 hashes.
 
 The browser holds non-extractable P-256 signing and key-agreement keys in
-IndexedDB. The Mac holds its P-256 identity in Keychain. Pairing authenticates a
+IndexedDB. OAuth tokens are stored separately and never written to DynamoDB or
+application logs. The Mac holds its P-256 identity in Keychain. Pairing authenticates a
 P-256 ECDH exchange; HKDF-SHA256 creates separate AES-256-GCM keys for each
 direction. Text is optionally level-1 DEFLATE-compressed before encryption.
 Every authenticated metadata field is AES-GCM additional data.
@@ -58,10 +85,16 @@ decrypts or logs the payload.
 ## Delivery and reconnection
 
 PTY output is at-most-once. Sequence gaps request a fresh current viewport
-instead of replaying a transcript. Side effects use a short-lived request ID and
-are successful only after an application acknowledgement from the Mac. A lost
-acknowledgement becomes `DELIVERY UNCERTAIN`; terminal input and account changes
-are never automatically sent again.
+instead of replaying a transcript. Terminal input carries a per-tab stream
+sequence, so the browser may pipeline small batches while the Mac reorders them
+before PTY writes. Output frames report the highest input sequence they reflect,
+allowing local prediction to reconcile without freezing the authoritative
+terminal. The agent advertises this capability in inventory; during a rolling
+upgrade, browsers retain the acknowledgement barrier until the Mac reports
+sequence-reordering support. Side effects use short-lived request IDs and are successful only after
+an application acknowledgement from the Mac. A lost acknowledgement becomes
+`DELIVERY UNCERTAIN`; terminal input and account changes are never automatically
+sent again.
 
 The browser reconnects with full jitter around 0.5, 1, 2, 4, 8, 15, and 30
 seconds and retries immediately on focus, visibility return, `pageshow`, and the
@@ -89,12 +122,16 @@ stage=dev|prod
 region=us-west-2
 cloudfrontPlan=FREE|PAYG
 disableNewPairings=true|false
-websocketMessagesPerSecond=25
-websocketBurst=50
+websocketMessagesPerSecond=50
+websocketBurst=100
 lambdaReservedConcurrency=8
 budgetEmail=you@example.com
 domainName=remote.example.com
 certificateArn=arn:aws:acm:us-east-1:...
+cognitoFromEmail=verified-sender@example.com
+cognitoFromName=TerminalDB
+cognitoReplyTo=support@example.com
+cognitoSesRegion=us-west-2
 ```
 
 The CloudFront Free flat-rate plan is selected operationally after deployment

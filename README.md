@@ -244,6 +244,13 @@ Use **Pair a Phone** when the controller should open on another device. It
 shows a QR code and copyable one-time link. **Advanced Setup…** is only for a
 custom deployment or a Mac where automatic AWS enrollment is unavailable.
 
+The same deployment also supports optional TerminalDB accounts. Open the web
+app directly, sign up or sign in through Cognito, and use **Add a Mac** once to
+bind TerminalDB to the account. Active sessions from every enrolled Mac then
+appear after login on a phone or browser without sending a pairing link. This
+is additive: account-enrolled Macs can still create the existing one-time guest
+links whenever temporary access is more convenient.
+
 The automatic reference path expects AWS CLI v2 and a working `stelao` profile
 in `us-west-2`. These defaults can be overridden with the documented macOS
 preferences for a self-hosted deployment.

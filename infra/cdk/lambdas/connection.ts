@@ -9,7 +9,7 @@ import type {
   APIGatewayProxyResultV2,
 } from "aws-lambda";
 
-import { dynamo, nowSeconds, sha256, tableName } from "./common.js";
+import { accountTenantMatches, dynamo, nowSeconds, sha256, tableName } from "./common.js";
 
 interface WebSocketRequestContext {
   readonly connectionId: string;
@@ -61,6 +61,7 @@ async function authorize(event: WebSocketEvent): Promise<APIGatewayAuthorizerRes
     role: String(item.role),
     clientId: String(item.clientId),
     generation: Number(item.generation),
+    ownerSub: typeof item.ownerSub === "string" ? item.ownerSub : "",
   });
 }
 
@@ -71,6 +72,7 @@ async function connect(event: WebSocketEvent): Promise<APIGatewayProxyResultV2> 
   const role = String(context.role ?? "");
   const clientId = String(context.clientId ?? "");
   const generation = Number(context.generation);
+  const ticketOwnerSub = String(context.ownerSub ?? "");
   if (!connectionId || !sessionId || !clientId || !["mac", "controller"].includes(role)) {
     return { statusCode: 401 };
   }
@@ -80,6 +82,7 @@ async function connect(event: WebSocketEvent): Promise<APIGatewayProxyResultV2> 
   if (
     !session.Item ||
     session.Item.status !== "active" ||
+    Number(session.Item.ttl) <= nowSeconds() ||
     Number(session.Item.generation) !== generation
   ) {
     return { statusCode: 410 };
@@ -97,8 +100,27 @@ async function connect(event: WebSocketEvent): Promise<APIGatewayProxyResultV2> 
   if (
     !principal.Item ||
     principal.Item.revokedAt ||
+    (principal.Item.ttl !== undefined && Number(principal.Item.ttl) <= nowSeconds()) ||
     (role === "mac" && principal.Item.deviceId !== clientId) ||
     (role === "controller" && principal.Item.sessionId !== sessionId)
+  ) {
+    return { statusCode: 403 };
+  }
+  if (role === "controller" && principal.Item.accessMode === "account") {
+    if (!accountTenantMatches({
+      controllerOwnerSub: principal.Item.ownerSub,
+      sessionOwnerSub: session.Item.ownerSub,
+      assertedOwnerSub: ticketOwnerSub,
+    })) {
+      return { statusCode: 403 };
+    }
+  } else if (ticketOwnerSub) {
+    return { statusCode: 403 };
+  }
+  if (
+    role === "mac" &&
+    typeof session.Item.ownerSub === "string" &&
+    principal.Item.ownerSub !== session.Item.ownerSub
   ) {
     return { statusCode: 403 };
   }
@@ -117,6 +139,7 @@ async function connect(event: WebSocketEvent): Promise<APIGatewayProxyResultV2> 
               role,
               clientId,
               generation,
+              ...(ticketOwnerSub ? { ownerSub: ticketOwnerSub } : {}),
               connectedAt: nowSeconds(),
               ttl,
             },
@@ -132,6 +155,7 @@ async function connect(event: WebSocketEvent): Promise<APIGatewayProxyResultV2> 
               role,
               clientId,
               generation,
+              ...(ticketOwnerSub ? { ownerSub: ticketOwnerSub } : {}),
               connectedAt: nowSeconds(),
               ttl,
             },

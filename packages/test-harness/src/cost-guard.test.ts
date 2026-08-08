@@ -2,7 +2,7 @@ import { estimateWebSocketCost } from "@terminaldb/protocol";
 import { describe, expect, it } from "vitest";
 
 describe("remote streaming cost guard", () => {
-  it("keeps a foreground stream at or below five batches per second", () => {
+  it("keeps an idle foreground stream at or below five batches per second", () => {
     const capturedMinute = {
       outputBatches: 300,
       controllers: 1,
@@ -16,6 +16,22 @@ describe("remote streaming cost guard", () => {
       averageWireBytes: capturedMinute.averageWireBytes,
     });
     expect(month.messageCostUsd).toBeLessThanOrEqual(0.36);
+  });
+
+  it("bounds short post-input interactive bursts at twenty frames per second", () => {
+    const interactiveBurst = {
+      outputBatches: 20 * 60,
+      controllers: 1,
+      averageWireBytes: 14_000,
+    };
+    expect(interactiveBurst.outputBatches).toBeLessThanOrEqual(20 * 60);
+    const sustainedWorstCaseMonth = estimateWebSocketCost({
+      activeHours: 10,
+      batchesPerSecond: interactiveBurst.outputBatches / 60,
+      controllers: interactiveBurst.controllers,
+      averageWireBytes: interactiveBurst.averageWireBytes,
+    });
+    expect(sustainedWorstCaseMonth.messageCostUsd).toBeLessThanOrEqual(1.44);
   });
 
   it("makes the additional-controller cost explicit", () => {

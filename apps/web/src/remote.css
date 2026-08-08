@@ -1313,6 +1313,125 @@ p {
   font-size: 11px;
 }
 
+.account-access {
+  display: grid;
+  gap: 12px;
+  margin-top: 24px;
+  padding: 18px;
+  border: 1px solid rgb(65 214 202 / 28%);
+  border-radius: 8px;
+  background: linear-gradient(145deg, rgb(65 214 202 / 8%), rgb(65 214 202 / 2%));
+}
+
+.account-access > span,
+.account-access header span,
+.enrollment-code > span {
+  color: var(--tdb-cyan);
+  font: 700 9px/1.2 var(--tdb-mono);
+  letter-spacing: 0.08em;
+}
+
+.account-access h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.account-access p {
+  margin: 0;
+  color: var(--tdb-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.account-access > button,
+.account-actions > button {
+  min-height: 42px;
+  border: 1px solid rgb(65 214 202 / 45%);
+  border-radius: 5px;
+  background: rgb(65 214 202 / 10%);
+  color: var(--tdb-cyan);
+}
+
+.account-access header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+}
+
+.account-access header h2 {
+  margin-top: 5px;
+}
+
+.account-access .text-button {
+  padding: 4px;
+  color: var(--tdb-muted);
+  font-size: 11px;
+}
+
+.account-session-list {
+  display: grid;
+  gap: 7px;
+}
+
+.account-session-list > button {
+  display: flex;
+  min-height: 55px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border: 1px solid var(--tdb-border);
+  border-radius: 5px;
+  background: var(--tdb-surface);
+  text-align: left;
+}
+
+.account-session-list span {
+  display: grid;
+  gap: 5px;
+}
+
+.account-session-list b {
+  font-size: 12px;
+}
+
+.account-session-list small {
+  color: var(--tdb-muted);
+  font-size: 9px;
+}
+
+.account-session-list strong {
+  color: var(--tdb-cyan);
+  font-size: 11px;
+}
+
+.account-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.enrollment-code {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--tdb-border);
+  border-radius: 5px;
+  background: var(--tdb-black);
+}
+
+.enrollment-code code {
+  overflow-wrap: anywhere;
+  color: var(--tdb-cyan);
+  font: 11px/1.5 var(--tdb-mono);
+}
+
+.enrollment-code small,
+.account-access > small {
+  color: var(--tdb-muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
 .bottom-nav {
   position: fixed;
   z-index: 20;
@@ -1662,6 +1781,7 @@ body:has(.remote-shell.terminal-active) #root {
 }
 
 .terminal-scrollplane {
+  position: relative;
   width: 100%;
   height: 100%;
   overflow-x: auto;
@@ -1670,6 +1790,34 @@ body:has(.remote-shell.terminal-active) #root {
   cursor: text;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+}
+
+.optimistic-input-overlay {
+  position: absolute;
+  z-index: 4;
+  overflow: hidden;
+  padding: 0;
+  color: var(--tdb-text);
+  font: 13.5px/1.24 "JetBrains Mono", "SFMono-Regular", monospace;
+  letter-spacing: 0;
+  pointer-events: none;
+  white-space: normal;
+}
+
+.optimistic-input-row {
+  display: block;
+  width: max-content;
+  min-width: 1px;
+  background: var(--tdb-terminal);
+  white-space: pre;
+}
+
+.optimistic-input-row.has-cursor {
+  border-right: 1px solid var(--tdb-text);
+}
+
+.optimistic-input-overlay[hidden] {
+  display: none;
 }
 
 .remote-shell.terminal-active .xterm-host {

@@ -195,7 +195,7 @@ test("keeps slowly typed characters ordered when Return outruns relay acknowledg
   await expect.poll(() => page.evaluate(() => (
     (window as Window & { __terminaldbMockInputs?: string[] })
       .__terminaldbMockInputs?.join("") ?? ""
-  )), { timeout: 3_000 }).toBe("pwd\r");
+  )), { timeout: 150 }).toBe("pwd\r");
 
   const batches = await page.evaluate(() => (
     (window as Window & { __terminaldbMockInputs?: string[] })
@@ -300,6 +300,35 @@ test("keeps application-mode input visible until an authoritative redraw", async
   await terminalInput.focus();
   await page.keyboard.type("optimistic claude draft");
   await expect(host).not.toHaveAttribute("data-optimistic-pending", "0");
+  await expect(page.locator(".terminal-pane.active .optimistic-input-overlay"))
+    .toContainText("optimistic claude draft");
+
+  // Application frames must keep flowing underneath local prediction. The
+  // previous renderer froze every incremental frame until typing settled.
+  await page.evaluate(() => {
+    (window as Window & {
+      __terminaldbMockOutput?: (output: {
+        tabId: string;
+        text: string;
+        viewport: boolean;
+        rows: number;
+        columns: number;
+        inputMode: "application";
+      }) => void;
+    }).__terminaldbMockOutput?.({
+      tabId: "tab_meridian",
+      text: "\r\nAUTHORITATIVE-FRAME-STAYED-LIVE\r\n",
+      viewport: false,
+      rows: 24,
+      columns: 100,
+      inputMode: "application",
+    });
+  });
+  await expect.poll(() => page.evaluate(() => (
+    (window as Window & {
+      __terminaldbMockTerminalText?: (tabId: string) => string;
+    }).__terminaldbMockTerminalText?.("tab_meridian") ?? ""
+  ))).toContain("AUTHORITATIVE-FRAME-STAYED-LIVE");
   // Printable input is intentionally coalesced before it is sent. Wait past
   // both the batching window and the simulated PTY echo so this assertion
   // exercises the application-mode reconciliation rather than a timer race.
@@ -804,10 +833,120 @@ test("captures and removes pairing secrets before redemption completes", async (
 
 test("keeps the unpaired gate within every target viewport", async ({ page }) => {
   await page.goto("/?unpaired=1");
-  await expect(page.getByRole("heading", { name: "Pair from your Mac" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Open your terminals" })).toBeVisible();
   const sizes = await page.evaluate(() => ({
     viewport: document.documentElement.clientWidth,
     content: document.documentElement.scrollWidth,
   }));
   expect(sizes.content).toBeLessThanOrEqual(sizes.viewport);
+});
+
+test("discovers tenant sessions and creates a Mac enrollment from an account", async ({ page }) => {
+  let controllerRegistration: Record<string, unknown> | undefined;
+  await page.addInitScript(() => {
+    localStorage.setItem("terminaldb.account.tokens.v1", JSON.stringify({
+      accessToken: "account-access-token",
+      refreshToken: "account-refresh-token",
+      expiresAt: Date.now() + 3_600_000,
+    }));
+  });
+  await page.route("**/api/config", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        apiBaseUrl: "",
+        websocketUrl: "/socket",
+        protocolVersion: 1,
+        region: "us-west-2",
+        pairingEnabled: true,
+        accountAuth: {
+          clientId: "web-client",
+          domain: "https://login.example.invalid",
+          issuer: "https://issuer.example.invalid/pool",
+          callbackPath: "/auth/callback",
+        },
+      }),
+    });
+  });
+  await page.route("**/api/v1/account/sessions", async (route) => {
+    expect(route.request().headers().authorization).toBe("Bearer account-access-token");
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessions: [{
+          sessionId: "account-session-1234567890",
+          deviceId: "mac-one",
+          deviceName: "Studio Mac",
+          generation: 1,
+          createdAt: 1_700_000_000,
+        }],
+      }),
+    });
+  });
+  await page.route("**/api/v1/account/enrollments", async (route) => {
+    expect(route.request().headers().authorization).toBe("Bearer account-access-token");
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({ enrollmentCode: "enroll-once", expiresAt: 1_800_000_000 }),
+    });
+  });
+  await page.route("**/api/v1/account/sessions/account-session-1234567890/controllers", async (route) => {
+    expect(route.request().headers().authorization).toBe("Bearer account-access-token");
+    controllerRegistration = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        controllerId: "account-controller",
+        sessionId: "account-session-1234567890",
+        generation: 1,
+        protocolVersion: 1,
+        keySalt: "account-controller-key-salt",
+        macAgreementPublicKey: controllerRegistration.agreementPublicKey,
+      }),
+    });
+  });
+  await page.route("**/api/v1/account/tickets", async (route) => {
+    expect(route.request().headers().authorization).toBe("Bearer account-access-token");
+    expect(route.request().headers()["x-terminaldb-signature"]).toBeTruthy();
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "QA stops before a deployed WebSocket" }),
+    });
+  });
+
+  await page.goto("/?unpaired=1");
+  await expect(page.getByRole("heading", { name: "Terminal sessions" })).toBeVisible();
+  await expect(page.getByText("Studio Mac")).toBeVisible();
+  await page.getByRole("button", { name: "Add a Mac" }).click();
+  await expect(page.getByText("enroll-once")).toBeVisible();
+  await page.getByRole("button", { name: /Studio Mac.*Open/u }).click();
+  await expect.poll(() => controllerRegistration).toBeTruthy();
+  expect(controllerRegistration?.browserId).toBeTruthy();
+  expect(controllerRegistration?.signingPublicKey).toMatchObject({
+    kty: "EC",
+    crv: "P-256",
+  });
+  expect(controllerRegistration?.agreementPublicKey).toMatchObject({
+    kty: "EC",
+    crv: "P-256",
+  });
+  expect(JSON.stringify(controllerRegistration)).not.toContain('"d"');
+  const storedAccessMode = await page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("terminaldb-remote", 1);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    return await new Promise<string | undefined>((resolve, reject) => {
+      const transaction = database.transaction("keys", "readonly");
+      const request = transaction.objectStore("keys").get("controller-session-v1");
+      request.onsuccess = () => resolve((request.result as { accessMode?: string } | undefined)?.accessMode);
+      request.onerror = () => reject(request.error);
+      transaction.oncomplete = () => database.close();
+    });
+  });
+  expect(storedAccessMode).toBe("account");
 });

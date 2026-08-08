@@ -4,6 +4,7 @@ import {
   type ConnectionState,
   type InventoryPayload,
   type PTYOutputPayload,
+  type RemotePublicConfiguration,
   type RemoteTab,
 } from "@terminaldb/protocol";
 import {
@@ -17,13 +18,24 @@ import {
 } from "react";
 
 import { clearControllerSession, loadControllerSession } from "./identity";
+import {
+  accountAccessToken,
+  beginAccountSignIn,
+  completeAccountSignIn,
+  signOutAccount,
+} from "./account-auth";
 import { accounts as mockAccounts, mockInventory, terminalFixture } from "./mock-data";
 import { AcknowledgedInputQueue } from "./ordered-input";
+import type { SequencedInputBatch } from "./ordered-input";
 import {
   controllerDeviceName,
+  createAccountEnrollment,
+  listAccountSessions,
   loadPublicConfiguration,
+  openAccountSession,
   redeemPairing,
   RemoteClient,
+  type AccountSessionSummary,
 } from "./remote-client";
 import {
   canAcceptTerminalInput,
@@ -44,7 +56,7 @@ const TerminalSurface = lazy(async () => {
 
 type View = "dashboard" | "terminal" | "accounts" | "devices" | "diagnostics" | "lab";
 
-const TERMINAL_INPUT_BATCH_DELAY_MS = 180;
+const TERMINAL_INPUT_BATCH_DELAY_MS = 40;
 
 interface TerminalTabSession {
   readonly update: TerminalUpdate;
@@ -285,23 +297,169 @@ function Dashboard({
   );
 }
 
-function UnpairedView({ checking }: { readonly checking: boolean }) {
+function AccountAccess({
+  configuration,
+  onSessionReady,
+}: {
+  readonly configuration: NonNullable<RemotePublicConfiguration["accountAuth"]>;
+  readonly onSessionReady: () => Promise<void>;
+}) {
+  const [accessToken, setAccessToken] = useState<string>();
+  const [sessions, setSessions] = useState<readonly AccountSessionSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>();
+  const [enrollment, setEnrollment] = useState<{
+    readonly enrollmentCode: string;
+    readonly expiresAt: number;
+  }>();
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError(undefined);
+    try {
+      const token = await accountAccessToken(configuration);
+      setAccessToken(token);
+      setSessions(token ? await listAccountSessions(token) : []);
+    } catch (refreshError) {
+      setError(refreshError instanceof Error ? refreshError.message : "Account sessions could not be loaded.");
+    } finally {
+      setLoading(false);
+    }
+  }, [configuration]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!accessToken) return;
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void (async () => {
+        const token = await accountAccessToken(configuration);
+        if (!token) return;
+        const discovered = await listAccountSessions(token);
+        if (!cancelled) {
+          setAccessToken(token);
+          setSessions(discovered);
+        }
+      })().catch(() => undefined);
+    }, 5_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [accessToken, configuration]);
+
+  const openSession = async (sessionId: string) => {
+    if (!accessToken) return;
+    setLoading(true);
+    setError(undefined);
+    try {
+      await openAccountSession({ sessionId, accessToken });
+      await onSessionReady();
+    } catch (openError) {
+      setError(openError instanceof Error ? openError.message : "The terminal session could not be opened.");
+      setLoading(false);
+    }
+  };
+
+  const createEnrollment = async () => {
+    if (!accessToken) return;
+    setError(undefined);
+    try {
+      setEnrollment(await createAccountEnrollment(accessToken));
+    } catch (enrollmentError) {
+      setError(enrollmentError instanceof Error ? enrollmentError.message : "An enrollment code could not be created.");
+    }
+  };
+
+  if (!accessToken) {
+    return (
+      <section className="account-access">
+        <span>YOUR TERMINALS, ANYWHERE</span>
+        <h2>Use a TerminalDB account</h2>
+        <p>Sign in or create an account to see every Mac you have enrolled. No session link required.</p>
+        <button disabled={loading} onClick={() => void beginAccountSignIn(configuration)}>
+          Sign in or create account
+        </button>
+        {error ? <small role="alert">{error}</small> : null}
+      </section>
+    );
+  }
+
+  return (
+    <section className="account-access account-access-signed-in">
+      <header>
+        <div><span>YOUR ACCOUNT</span><h2>Terminal sessions</h2></div>
+        <button
+          className="text-button"
+          onClick={() => {
+            void clearControllerSession().then(() => signOutAccount(configuration));
+          }}
+        >
+          Sign out
+        </button>
+      </header>
+      {sessions.length > 0 ? (
+        <div className="account-session-list">
+          {sessions.map((session) => (
+            <button key={session.sessionId} disabled={loading} onClick={() => void openSession(session.sessionId)}>
+              <span><b>{session.deviceName}</b><small>Started {new Date(session.createdAt * 1_000).toLocaleString()}</small></span>
+              <strong>Open</strong>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <p>No active Macs yet. Enroll TerminalDB once, then its sessions appear here automatically.</p>
+      )}
+      <div className="account-actions">
+        <button disabled={loading} onClick={() => void refresh()}>Refresh sessions</button>
+        <button disabled={loading} onClick={() => void createEnrollment()}>Add a Mac</button>
+      </div>
+      {enrollment ? (
+        <div className="enrollment-code">
+          <span>15-MINUTE MAC ENROLLMENT CODE</span>
+          <code>{enrollment.enrollmentCode}</code>
+          <small>In TerminalDB Remote Control, choose Advanced Setup and paste this code with {location.origin}.</small>
+        </div>
+      ) : null}
+      {error ? <small role="alert">{error}</small> : null}
+    </section>
+  );
+}
+
+function UnpairedView({
+  checking,
+  configuration,
+  onSessionReady,
+}: {
+  readonly checking: boolean;
+  readonly configuration: RemotePublicConfiguration | undefined;
+  readonly onSessionReady: () => Promise<void>;
+}) {
   return (
     <main className="pairing-view">
       <AppMark />
       <span className="eyebrow">TERMINALDB REMOTE</span>
-      <h1>{checking ? "Checking this browser…" : "Pair from your Mac"}</h1>
+      <h1>{checking ? "Checking this browser…" : "Open your terminals"}</h1>
       <p>
         {checking
           ? "Looking for a trusted controller identity on this device."
-          : "Enable Remote Control in TerminalDB, then open its one-time link or scan its QR code."}
+          : "Sign in to your account, or keep using a one-time secure link from TerminalDB."}
       </p>
+      {!checking && configuration?.accountAuth ? (
+        <AccountAccess
+          configuration={configuration.accountAuth}
+          onSessionReady={onSessionReady}
+        />
+      ) : null}
       <div className="pairing-proof">
         <div><span>TERMINAL DATA</span><strong>Remains on your Mac</strong></div>
         <div><span>PAIRING</span><strong>Single-use · 10 minutes</strong></div>
         <div><span>SECURITY</span><strong>End-to-end encrypted</strong></div>
       </div>
-      <small>No account password or Claude credential is accepted here.</small>
+      <small>One-time links still work without an account. Terminal content remains end-to-end encrypted in both modes.</small>
     </main>
   );
 }
@@ -634,10 +792,12 @@ function DevicesView({
   state,
   onRevoke,
   onEndSession,
+  onSwitchSession,
 }: {
   readonly state: ReturnType<typeof useConnectionModel>[0];
   readonly onRevoke: () => void;
   readonly onEndSession: () => void;
+  readonly onSwitchSession?: (() => void) | undefined;
 }) {
   const sessionEnded = ["remote-ended", "revoked", "update-required"].includes(
     state.state,
@@ -666,6 +826,11 @@ function DevicesView({
       <button className="wide-secondary" onClick={onRevoke} disabled={sessionEnded}>
         {sessionEnded ? "Controller access ended" : "Revoke this browser"}
       </button>
+      {onSwitchSession ? (
+        <button className="wide-secondary" onClick={onSwitchSession}>
+          Open another account session
+        </button>
+      ) : null}
       <p className="privacy-note">Manage and revoke other trusted controllers from TerminalDB on your Mac.</p>
       <section className="risk-panel">
         <strong>End remote session</strong>
@@ -867,6 +1032,8 @@ export function App() {
   const [pairError, setPairError] = useState<string>();
   const [pairing, setPairing] = useState(false);
   const [remoteRegion, setRemoteRegion] = useState("us-west-2");
+  const [remoteConfiguration, setRemoteConfiguration] = useState<RemotePublicConfiguration>();
+  const [activeAccessMode, setActiveAccessMode] = useState<"pairing" | "account">("pairing");
   const clientRef = useRef<RemoteClient | null>(null);
   const connectionEpochRef = useRef(0);
   const selectedTabRef = useRef(selectedTabId);
@@ -909,6 +1076,12 @@ export function App() {
             rows: nextOutput.rows,
             columns: nextOutput.columns,
             inputMode: nextOutput.inputMode ?? previous.update.inputMode,
+            ...(nextOutput.inputStreamId
+              ? { inputStreamId: nextOutput.inputStreamId }
+              : {}),
+            ...(nextOutput.inputThrough !== undefined
+              ? { inputThrough: nextOutput.inputThrough }
+              : {}),
           },
         },
       };
@@ -980,7 +1153,11 @@ export function App() {
     try {
       const configuration = await loadPublicConfiguration();
       if (epoch !== connectionEpochRef.current) return;
+      setRemoteConfiguration(configuration);
       setRemoteRegion(configuration.region);
+      if (configuration.accountAuth) {
+        await completeAccountSignIn(configuration.accountAuth);
+      }
       if (configuration.protocolVersion !== PROTOCOL_VERSION) {
         setAccessState((await loadControllerSession()) ? "paired" : "unpaired");
         dispatch({ type: "version-mismatch" });
@@ -1123,6 +1300,10 @@ export function App() {
       if (epoch !== connectionEpochRef.current) {
         client.close();
         return;
+      }
+      if (paired) {
+        const session = await loadControllerSession();
+        setActiveAccessMode(session?.accessMode === "account" ? "account" : "pairing");
       }
       setAccessState(paired ? "paired" : "unpaired");
     } catch (error) {
@@ -1374,9 +1555,15 @@ export function App() {
     const acceptsInput = canAcceptTerminalInput(connection);
     if (!input || !acceptsInput) return;
     const client = clientRef.current;
-    const deliver = async () => {
+    const deliver = async (batch: SequencedInputBatch) => {
+      terminalSurfacesRef.current.get(tabId)?.markOptimisticInputSent(batch);
       if (client) {
-        await client.send("pty.input", { tabId, input });
+        await client.send("pty.input", {
+          tabId,
+          input: batch.input,
+          inputStreamId: batch.inputStreamId,
+          inputSequence: batch.inputSequence,
+        });
         return;
       }
       const mockWindow = window as Window & {
@@ -1386,9 +1573,9 @@ export function App() {
       };
       if (import.meta.env.DEV) {
         mockWindow.__terminaldbMockInputs ??= [];
-        mockWindow.__terminaldbMockInputs.push(input);
+        mockWindow.__terminaldbMockInputs.push(batch.input);
       }
-      const mockEcho = input.replaceAll("\r", "\r\n");
+      const mockEcho = batch.input.replaceAll("\r", "\r\n");
       const applyMockEcho = () => {
         terminalUpdateIdRef.current += 1;
         setTerminalSessions((current) => {
@@ -1403,6 +1590,8 @@ export function App() {
                 text: mockEcho,
                 viewport: false,
                 inputMode: previous.update.inputMode,
+                inputStreamId: batch.inputStreamId,
+                inputThrough: batch.inputSequence,
               },
             },
           };
@@ -1422,7 +1611,14 @@ export function App() {
         });
       }
     };
-    void inputDeliveryQueueRef.current?.enqueue(tabId, deliver).then((result) => {
+    const supportsSequencedInput =
+      inventory.capabilities?.includes("sequenced-input-v1") === true;
+    void inputDeliveryQueueRef.current?.enqueue(
+      tabId,
+      input,
+      deliver,
+      supportsSequencedInput,
+    ).then((result) => {
       if (result === "delivered") {
         terminalSurfacesRef.current.get(tabId)?.confirmOptimisticInput(
           /[\r\n]/u.test(input),
@@ -1463,13 +1659,12 @@ export function App() {
       flushTerminalInput();
       return;
     }
-    if (terminalInputTimerRef.current) {
-      window.clearTimeout(terminalInputTimerRef.current);
+    if (terminalInputTimerRef.current === undefined) {
+      terminalInputTimerRef.current = window.setTimeout(
+        flushTerminalInput,
+        TERMINAL_INPUT_BATCH_DELAY_MS,
+      );
     }
-    terminalInputTimerRef.current = window.setTimeout(
-      flushTerminalInput,
-      TERMINAL_INPUT_BATCH_DELAY_MS,
-    );
   };
 
   const setTabFollowOutput = (tabId: string, followOutput: boolean) => {
@@ -1581,7 +1776,13 @@ export function App() {
   }
 
   if (accessState !== "paired") {
-    return <UnpairedView checking={accessState === "checking"} />;
+    return (
+      <UnpairedView
+        checking={accessState === "checking"}
+        configuration={remoteConfiguration}
+        onSessionReady={connect}
+      />
+    );
   }
 
   const terminalWorkspace = Boolean(
@@ -1678,6 +1879,19 @@ export function App() {
                     });
                   });
               }}
+              onSwitchSession={activeAccessMode === "account"
+                ? () => {
+                    void (async () => {
+                      clientRef.current?.close();
+                      clientRef.current = null;
+                      await clearControllerSession();
+                      setInventory({ instances: [], accounts: [] });
+                      setSelectedTabId(undefined);
+                      setAccessState("unpaired");
+                      setView("dashboard");
+                    })();
+                  }
+                : undefined}
             />
           ) : null}
           {view === "diagnostics" ? (

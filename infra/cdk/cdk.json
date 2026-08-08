@@ -5,8 +5,8 @@
     "region": "us-west-2",
     "cloudfrontPlan": "FREE",
     "disableNewPairings": false,
-    "websocketMessagesPerSecond": 25,
-    "websocketBurst": 50,
+    "websocketMessagesPerSecond": 50,
+    "websocketBurst": 100,
     "lambdaReservedConcurrency": 8,
     "@aws-cdk/core:defaultCrossStackReferences": "strong"
   }

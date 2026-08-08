@@ -14,6 +14,15 @@ static NSString *const TerminalRemoteDefaultAWSRegion = @"us-west-2";
 static NSString *const TerminalRemoteDefaultEnrollmentFunction =
     @"terminaldb-remote-dev-control";
 
+static NSTimeInterval TerminalRemoteOutputDelay(
+    BOOL interactive, NSTimeInterval sinceLast) {
+    NSTimeInterval interval = interactive ? 0.05 : 0.2;
+    NSTimeInterval leadingDelay = interactive ? 0.012 : 0.04;
+    return sinceLast >= interval
+        ? leadingDelay
+        : MAX(leadingDelay, interval - sinceLast);
+}
+
 static NSUInteger TerminalRemoteIncompleteUTF8SuffixLength(NSData *data) {
     const uint8_t *bytes = data.bytes;
     NSUInteger length = data.length;
@@ -97,10 +106,18 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
 @property(nonatomic, strong)
     NSMutableDictionary<NSString *, NSDictionary *> *pendingOutputDimensions;
 @property(nonatomic, strong) NSMutableSet<NSString *> *scheduledOutput;
+@property(nonatomic, strong) NSMutableSet<NSString *> *scheduledInteractiveOutput;
+@property(nonatomic, strong)
+    NSMutableDictionary<NSString *, NSNumber *> *outputScheduleGenerations;
 @property(nonatomic, strong)
     NSMutableDictionary<NSString *, NSNumber *> *lastOutputFlushTimes;
 @property(nonatomic, strong)
     NSMutableDictionary<NSString *, NSString *> *lastPublishedInputModes;
+@property(nonatomic, strong)
+    NSMutableDictionary<NSString *, NSDictionary *> *lastAcceptedInputState;
+@property(nonatomic, strong)
+    NSMutableDictionary<NSString *, NSNumber *> *lastRemoteInputTimes;
+@property(nonatomic, strong) NSMutableSet<NSString *> *activeRemoteTabs;
 @property(nonatomic, strong)
     NSMutableSet<NSString *> *scheduledViewportSnapshots;
 @property(nonatomic) BOOL stopping;
@@ -124,8 +141,13 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
         _pendingOutputData = [NSMutableDictionary dictionary];
         _pendingOutputDimensions = [NSMutableDictionary dictionary];
         _scheduledOutput = [NSMutableSet set];
+        _scheduledInteractiveOutput = [NSMutableSet set];
+        _outputScheduleGenerations = [NSMutableDictionary dictionary];
         _lastOutputFlushTimes = [NSMutableDictionary dictionary];
         _lastPublishedInputModes = [NSMutableDictionary dictionary];
+        _lastAcceptedInputState = [NSMutableDictionary dictionary];
+        _lastRemoteInputTimes = [NSMutableDictionary dictionary];
+        _activeRemoteTabs = [NSMutableSet set];
         _scheduledViewportSnapshots = [NSMutableSet set];
     }
     return self;
@@ -385,6 +407,11 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
                                             rows:rows
                                           active:active
                                            error:&error];
+        if (accepted && active) {
+            [self.activeRemoteTabs addObject:tabIdentifier];
+        } else {
+            [self.activeRemoteTabs removeObject:tabIdentifier];
+        }
         if (!accepted || !active || controllerIdentifier.length == 0) return;
 
         // TUI processes redraw after SIGWINCH. Let their coalesced PTY output
@@ -419,7 +446,9 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
                                      controller:controllerIdentifier
                                        accepted:NO
                                          detail:
-                @"The Mac has no record of accepting this request."];
+                @"The Mac has no record of accepting this request."
+                                    inputStream:nil
+                                   inputThrough:nil];
         }
         return;
     }
@@ -445,7 +474,9 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
         [self sendAcknowledgementForRequest:requestIdentifier
                                 controller:controllerIdentifier
                                   accepted:NO
-                                    detail:@"The command expired before the Mac accepted it."];
+                                    detail:@"The command expired before the Mac accepted it."
+                               inputStream:nil
+                              inputThrough:nil];
         return;
     }
 
@@ -458,6 +489,19 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
                                             writeInput:message[@"input"] ?: @""
                                        toTabIdentifier:tabIdentifier
                                                  error:&error];
+        NSNumber *inputSequence = [message[@"inputSequence"]
+            isKindOfClass:NSNumber.class] ? message[@"inputSequence"] : nil;
+        NSString *inputStream = [message[@"inputStreamId"]
+            isKindOfClass:NSString.class] ? message[@"inputStreamId"] : nil;
+        if (accepted && inputSequence.unsignedIntegerValue > 0 &&
+            inputStream.length > 0) {
+            self.lastAcceptedInputState[tabIdentifier] = @{
+                @"inputStreamId" : inputStream,
+                @"inputThrough" : inputSequence,
+            };
+            self.lastRemoteInputTimes[tabIdentifier] =
+                @(NSDate.date.timeIntervalSince1970);
+        }
     } else if ([route isEqualToString:@"tab.create"]) {
         accepted = [self.delegate terminalRemoteBridge:self
                                createTabFromIdentifier:tabIdentifier
@@ -470,6 +514,20 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
         accepted = [self.delegate terminalRemoteBridge:self
                                     closeTabIdentifier:tabIdentifier
                                                  error:&error];
+        if (accepted) {
+            [self.activeRemoteTabs removeObject:tabIdentifier];
+            [self.lastAcceptedInputState removeObjectForKey:tabIdentifier];
+            [self.lastRemoteInputTimes removeObjectForKey:tabIdentifier];
+            dispatch_async(self.transportQueue, ^{
+                [self.pendingOutputData removeObjectForKey:tabIdentifier];
+                [self.pendingOutputDimensions removeObjectForKey:tabIdentifier];
+                [self.scheduledOutput removeObject:tabIdentifier];
+                [self.scheduledInteractiveOutput removeObject:tabIdentifier];
+                self.outputScheduleGenerations[tabIdentifier] = @(
+                    [self.outputScheduleGenerations[tabIdentifier]
+                        unsignedIntegerValue] + 1);
+            });
+        }
     } else if ([route isEqualToString:@"account.switch"]) {
         accepted = [self.delegate terminalRemoteBridge:self
                                          switchAccount:message[@"accountId"] ?: @""
@@ -492,13 +550,21 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
     [self sendAcknowledgementForRequest:requestIdentifier
                             controller:controllerIdentifier
                               accepted:accepted
-                                detail:error.localizedDescription];
+                                detail:error.localizedDescription
+                           inputStream:[message[@"inputStreamId"]
+                               isKindOfClass:NSString.class]
+                               ? message[@"inputStreamId"] : nil
+                          inputThrough:[message[@"inputSequence"]
+                               isKindOfClass:NSNumber.class]
+                               ? message[@"inputSequence"] : nil];
 }
 
 - (void)sendAcknowledgementForRequest:(NSString *)requestIdentifier
                            controller:(NSString *)controllerIdentifier
                              accepted:(BOOL)accepted
-                               detail:(NSString *)detail {
+                               detail:(NSString *)detail
+                          inputStream:(NSString *)inputStream
+                         inputThrough:(NSNumber *)inputThrough {
     NSMutableDictionary *ack = [@{
         @"type" : @"ack",
         @"requestId" : requestIdentifier,
@@ -506,6 +572,10 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
         @"accepted" : @(accepted),
     } mutableCopy];
     if (detail.length > 0) ack[@"detail"] = detail;
+    if (inputStream.length > 0 && inputThrough.unsignedIntegerValue > 0) {
+        ack[@"inputStreamId"] = inputStream;
+        ack[@"inputThrough"] = inputThrough;
+    }
     self.acceptedRequests[requestIdentifier] = ack;
     if (self.acceptedRequests.count > 512) {
         NSString *oldest = self.acceptedRequests.allKeys.firstObject;
@@ -562,6 +632,13 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
                 inputMode:(NSString *)inputMode {
     if (!self.enabled || data.length == 0 || tabIdentifier.length == 0) return;
     NSString *resolvedInputMode = inputMode.length > 0 ? inputMode : @"secure";
+    NSDictionary *acceptedInput = self.lastAcceptedInputState[tabIdentifier];
+    NSTimeInterval now = NSDate.date.timeIntervalSince1970;
+    NSTimeInterval lastRemoteInput =
+        [self.lastRemoteInputTimes[tabIdentifier] doubleValue];
+    BOOL interactive =
+        [self.activeRemoteTabs containsObject:tabIdentifier] &&
+        lastRemoteInput > 0 && now - lastRemoteInput <= 1.25;
     NSString *previousInputMode = self.lastPublishedInputModes[tabIdentifier];
     if (![previousInputMode isEqualToString:resolvedInputMode]) {
         self.lastPublishedInputModes[tabIdentifier] = resolvedInputMode;
@@ -577,24 +654,44 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
             self.pendingOutputData[tabIdentifier] = pending;
         }
         [pending appendData:data];
-        self.pendingOutputDimensions[tabIdentifier] = @{
+        NSMutableDictionary *dimensions = [@{
             @"rows" : @(rows),
             @"columns" : @(columns),
             @"inputMode" : resolvedInputMode,
-        };
-        if ([self.scheduledOutput containsObject:tabIdentifier]) return;
+            @"interactive" : @(interactive),
+        } mutableCopy];
+        if (acceptedInput[@"inputStreamId"] != nil &&
+            acceptedInput[@"inputThrough"] != nil) {
+            dimensions[@"inputStreamId"] = acceptedInput[@"inputStreamId"];
+            dimensions[@"inputThrough"] = acceptedInput[@"inputThrough"];
+        }
+        self.pendingOutputDimensions[tabIdentifier] = dimensions;
+        BOOL alreadyScheduled =
+            [self.scheduledOutput containsObject:tabIdentifier];
+        BOOL alreadyInteractive =
+            [self.scheduledInteractiveOutput containsObject:tabIdentifier];
+        if (alreadyScheduled && (!interactive || alreadyInteractive)) return;
         [self.scheduledOutput addObject:tabIdentifier];
+        if (interactive) {
+            [self.scheduledInteractiveOutput addObject:tabIdentifier];
+        }
+        NSUInteger generation =
+            [self.outputScheduleGenerations[tabIdentifier] unsignedIntegerValue] + 1;
+        self.outputScheduleGenerations[tabIdentifier] = @(generation);
         NSTimeInterval now = NSDate.date.timeIntervalSince1970;
         NSTimeInterval last =
             [self.lastOutputFlushTimes[tabIdentifier] doubleValue];
         NSTimeInterval sinceLast = last > 0 ? now - last : DBL_MAX;
-        NSTimeInterval delay = sinceLast >= 0.2
-            ? 0.04
-            : MAX(0.04, 0.2 - sinceLast);
+        NSTimeInterval delay =
+            TerminalRemoteOutputDelay(interactive, sinceLast);
         dispatch_after(
             dispatch_time(DISPATCH_TIME_NOW,
                 (int64_t)(delay * NSEC_PER_SEC)),
             self.transportQueue, ^{
+                if ([self.outputScheduleGenerations[tabIdentifier]
+                        unsignedIntegerValue] != generation) {
+                    return;
+                }
                 [self flushOutputForTabIdentifier:tabIdentifier];
             });
     });
@@ -605,6 +702,7 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
     NSDictionary *dimensions = self.pendingOutputDimensions[tabIdentifier];
     [self.pendingOutputDimensions removeObjectForKey:tabIdentifier];
     [self.scheduledOutput removeObject:tabIdentifier];
+    [self.scheduledInteractiveOutput removeObject:tabIdentifier];
     self.lastOutputFlushTimes[tabIdentifier] =
         @(NSDate.date.timeIntervalSince1970);
     NSString *chunk = TerminalRemoteTakeDecodedOutput(pending);
@@ -619,7 +717,7 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
         chunk = [chunk substringWithRange:suffix];
     }
     if (chunk.length == 0) return;
-    [self sendMessage:@{
+    NSMutableDictionary *message = [@{
         @"type" : @"output",
         @"tabId" : tabIdentifier,
         @"text" : chunk,
@@ -627,7 +725,13 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
         @"columns" : dimensions[@"columns"] ?: @80,
         @"inputMode" : dimensions[@"inputMode"] ?: @"secure",
         @"overflow" : @(decodedLength > 12000),
-    }];
+    } mutableCopy];
+    if (dimensions[@"inputStreamId"] != nil &&
+        dimensions[@"inputThrough"] != nil) {
+        message[@"inputStreamId"] = dimensions[@"inputStreamId"];
+        message[@"inputThrough"] = dimensions[@"inputThrough"];
+    }
+    [self sendMessage:message];
 }
 
 + (BOOL)runUTF8OutputDecodingSelfTests {
@@ -646,7 +750,11 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
     return first.length == 0 &&
         [second isEqualToString:@"┌"] &&
         [fallback isEqualToString:@"ÿ"] &&
-        split.length == 0 && invalid.length == 0;
+        split.length == 0 && invalid.length == 0 &&
+        fabs(TerminalRemoteOutputDelay(YES, 1.0) - 0.012) < 0.0001 &&
+        fabs(TerminalRemoteOutputDelay(YES, 0.02) - 0.03) < 0.0001 &&
+        fabs(TerminalRemoteOutputDelay(NO, 1.0) - 0.04) < 0.0001 &&
+        fabs(TerminalRemoteOutputDelay(NO, 0.1) - 0.1) < 0.0001;
 }
 
 - (void)publishViewportForTabIdentifier:(NSString *)tabIdentifier {
@@ -695,6 +803,7 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
     }
 
     NSString *snapshotIdentifier = NSUUID.UUID.UUIDString;
+    NSDictionary *acceptedInput = self.lastAcceptedInputState[tabIdentifier];
     for (NSUInteger index = 0; index < chunks.count; index++) {
         NSMutableDictionary *message = [@{
             @"type" : @"snapshot",
@@ -709,6 +818,11 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
         } mutableCopy];
         if (controllerIdentifier.length > 0) {
             message[@"controllerId"] = controllerIdentifier;
+        }
+        if (acceptedInput[@"inputStreamId"] != nil &&
+            acceptedInput[@"inputThrough"] != nil) {
+            message[@"inputStreamId"] = acceptedInput[@"inputStreamId"];
+            message[@"inputThrough"] = acceptedInput[@"inputThrough"];
         }
         [self sendMessage:message];
     }
@@ -1277,10 +1391,19 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
 
 - (void)showAdvancedSetup:(id)sender {
     (void)sender;
+    if (self.bridge.enabled) {
+        NSAlert *activeAlert = [[NSAlert alloc] init];
+        activeAlert.messageText = @"Disable Remote Control First";
+        activeAlert.informativeText =
+            @"End the current remote session before changing this Mac's deployment or account enrollment.";
+        [activeAlert addButtonWithTitle:@"OK"];
+        [activeAlert beginSheetModalForWindow:self.window completionHandler:nil];
+        return;
+    }
     NSAlert *alert = [[NSAlert alloc] init];
     alert.messageText = @"Advanced Remote Setup";
     alert.informativeText =
-        @"Use this only for a custom deployment or when automatic AWS enrollment is unavailable.";
+        @"Use an enrollment code from your TerminalDB web account, a custom deployment, or the AWS operator workflow.";
     [alert addButtonWithTitle:@"Enable and Open"];
     [alert addButtonWithTitle:@"Cancel"];
 
