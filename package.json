@@ -1,0 +1,37 @@
+{
+  "name": "terminaldb",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TerminalDB native terminal and cost-optimized remote web controller",
+  "workspaces": [
+    "apps/macos",
+    "apps/web",
+    "infra/cdk",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build:protocol && npm run build:design-system && npm run build:test-harness && npm run build:web && npm run build:infra",
+    "build:protocol": "npm run build -w @terminaldb/protocol",
+    "build:design-system": "npm run build -w @terminaldb/design-system",
+    "build:test-harness": "npm run build -w @terminaldb/test-harness",
+    "build:web": "npm run build -w @terminaldb/web",
+    "build:infra": "npm run build -w @terminaldb/cdk",
+    "dev:web": "npm run dev -w @terminaldb/web",
+    "test": "npm run test:protocol && npm run test:infra && npm run test:web && npm run test:harness",
+    "test:protocol": "npm run test -w @terminaldb/protocol",
+    "test:infra": "npm run test -w @terminaldb/cdk",
+    "test:web": "npm run test -w @terminaldb/web",
+    "test:harness": "npm run test -w @terminaldb/test-harness",
+    "test:web:e2e": "npm run test:e2e -w @terminaldb/web",
+    "test:mac": "make -C apps/macos test",
+    "test:cost": "npm run test:cost -w @terminaldb/test-harness",
+    "cdk": "npm run cdk -w @terminaldb/cdk --",
+    "cdk:synth": "npm run synth -w @terminaldb/cdk",
+    "cdk:diff": "npm run diff -w @terminaldb/cdk --",
+    "cdk:deploy": "npm run deploy -w @terminaldb/cdk --",
+    "remote:enrollment": "node scripts/create-enrollment-code.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "@terminaldb/macos",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "make all",
+    "test": "make test",
+    "clean": "make clean"
+  }
+}

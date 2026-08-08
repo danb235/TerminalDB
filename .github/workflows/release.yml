@@ -70,12 +70,14 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           TERMINALDB_VERSION="${VERSION}" \
             TERMINALDB_BUILD="${GITHUB_RUN_NUMBER}" \
-            ./Scripts/build-app.sh release
+            ./apps/macos/Scripts/build-app.sh release
 
-          APP="build/TerminalDB.app"
+          APP="apps/macos/build/TerminalDB.app"
           BIN="${APP}/Contents/MacOS/TerminalDB"
+          AGENT="${APP}/Contents/MacOS/TerminalDBRemoteAgent"
           codesign --verify --deep --strict --verbose=2 "${APP}"
           lipo "${BIN}" -verify_arch arm64 x86_64
+          lipo "${AGENT}" -verify_arch arm64 x86_64
 
           VERSIONED_ZIP="TerminalDB-${GITHUB_REF_NAME}-macOS-universal.zip"
           STABLE_ZIP="TerminalDB-macOS.zip"

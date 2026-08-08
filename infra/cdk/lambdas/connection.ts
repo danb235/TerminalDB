@@ -1,0 +1,187 @@
+import {
+  DeleteCommand,
+  GetCommand,
+  PutCommand,
+  TransactWriteCommand,
+} from "@aws-sdk/lib-dynamodb";
+import type {
+  APIGatewayAuthorizerResult,
+  APIGatewayProxyResultV2,
+} from "aws-lambda";
+
+import { dynamo, nowSeconds, sha256, tableName } from "./common.js";
+
+interface WebSocketRequestContext {
+  readonly connectionId: string;
+  readonly eventType?: "CONNECT" | "DISCONNECT" | "MESSAGE";
+  readonly routeKey?: string;
+  readonly domainName?: string;
+  readonly stage?: string;
+  readonly authorizer?: Record<string, unknown>;
+}
+
+interface WebSocketEvent {
+  readonly type?: string;
+  readonly methodArn?: string;
+  readonly queryStringParameters?: Record<string, string | undefined> | null;
+  readonly requestContext: WebSocketRequestContext;
+}
+
+function policy(
+  principalId: string,
+  effect: "Allow" | "Deny",
+  resource: string,
+  context: Record<string, string | number> = {},
+): APIGatewayAuthorizerResult {
+  return {
+    principalId,
+    policyDocument: {
+      Version: "2012-10-17",
+      Statement: [{ Action: "execute-api:Invoke", Effect: effect, Resource: resource }],
+    },
+    context,
+  };
+}
+
+async function authorize(event: WebSocketEvent): Promise<APIGatewayAuthorizerResult> {
+  const ticket = event.queryStringParameters?.ticket;
+  const resource = event.methodArn ?? "*";
+  if (!ticket || ticket.length > 256) return policy("rejected", "Deny", resource);
+  const consumed = await dynamo.send(
+    new DeleteCommand({
+      TableName: tableName,
+      Key: { PK: `TICKET#${sha256(ticket)}`, SK: "META" },
+      ReturnValues: "ALL_OLD",
+    }),
+  );
+  const item = consumed.Attributes;
+  if (!item || Number(item.expiresAt) <= nowSeconds()) return policy("rejected", "Deny", resource);
+  return policy(String(item.clientId), "Allow", resource, {
+    sessionId: String(item.sessionId),
+    role: String(item.role),
+    clientId: String(item.clientId),
+    generation: Number(item.generation),
+  });
+}
+
+async function connect(event: WebSocketEvent): Promise<APIGatewayProxyResultV2> {
+  const context = event.requestContext.authorizer ?? {};
+  const connectionId = event.requestContext.connectionId;
+  const sessionId = String(context.sessionId ?? "");
+  const role = String(context.role ?? "");
+  const clientId = String(context.clientId ?? "");
+  const generation = Number(context.generation);
+  if (!connectionId || !sessionId || !clientId || !["mac", "controller"].includes(role)) {
+    return { statusCode: 401 };
+  }
+  const session = await dynamo.send(
+    new GetCommand({ TableName: tableName, Key: { PK: `SESSION#${sessionId}`, SK: "META" }, ConsistentRead: true }),
+  );
+  if (
+    !session.Item ||
+    session.Item.status !== "active" ||
+    Number(session.Item.generation) !== generation
+  ) {
+    return { statusCode: 410 };
+  }
+  const principal = await dynamo.send(
+    new GetCommand({
+      TableName: tableName,
+      Key: {
+        PK: `${role === "mac" ? "DEVICE" : "CONTROLLER"}#${clientId}`,
+        SK: "META",
+      },
+      ConsistentRead: true,
+    }),
+  );
+  if (
+    !principal.Item ||
+    principal.Item.revokedAt ||
+    (role === "mac" && principal.Item.deviceId !== clientId) ||
+    (role === "controller" && principal.Item.sessionId !== sessionId)
+  ) {
+    return { statusCode: 403 };
+  }
+  const ttl = nowSeconds() + 3 * 60 * 60;
+  await dynamo.send(
+    new TransactWriteCommand({
+      TransactItems: [
+        {
+          Put: {
+            TableName: tableName,
+            Item: {
+              PK: `CONNECTION#${connectionId}`,
+              SK: "META",
+              connectionId,
+              sessionId,
+              role,
+              clientId,
+              generation,
+              connectedAt: nowSeconds(),
+              ttl,
+            },
+          },
+        },
+        {
+          Put: {
+            TableName: tableName,
+            Item: {
+              PK: `SESSION#${sessionId}`,
+              SK: `SOCKET#${role}#${clientId}`,
+              connectionId,
+              role,
+              clientId,
+              generation,
+              connectedAt: nowSeconds(),
+              ttl,
+            },
+          },
+        },
+      ],
+    }),
+  );
+  return { statusCode: 200 };
+}
+
+async function disconnect(event: WebSocketEvent): Promise<APIGatewayProxyResultV2> {
+  const connectionId = event.requestContext.connectionId;
+  const source = await dynamo.send(
+    new GetCommand({ TableName: tableName, Key: { PK: `CONNECTION#${connectionId}`, SK: "META" } }),
+  );
+  await dynamo.send(
+    new DeleteCommand({ TableName: tableName, Key: { PK: `CONNECTION#${connectionId}`, SK: "META" } }),
+  );
+  if (source.Item) {
+    try {
+      await dynamo.send(
+        new DeleteCommand({
+          TableName: tableName,
+          Key: {
+            PK: `SESSION#${String(source.Item.sessionId)}`,
+            SK: `SOCKET#${String(source.Item.role)}#${String(source.Item.clientId)}`,
+          },
+          ConditionExpression: "connectionId = :connectionId",
+          ExpressionAttributeValues: { ":connectionId": connectionId },
+        }),
+      );
+    } catch {
+      // A newer make-before-break socket already owns the current mapping.
+    }
+  }
+  // WebSocket proxy integrations still expect a complete proxy response even
+  // though the peer has already closed by the time $disconnect is delivered.
+  return { statusCode: 200, body: "" };
+}
+
+export async function handler(
+  event: WebSocketEvent,
+): Promise<APIGatewayAuthorizerResult | APIGatewayProxyResultV2> {
+  if (event.type === "REQUEST") return authorize(event);
+  if (event.requestContext.eventType === "CONNECT" || event.requestContext.routeKey === "$connect") {
+    return connect(event);
+  }
+  if (event.requestContext.eventType === "DISCONNECT" || event.requestContext.routeKey === "$disconnect") {
+    return disconnect(event);
+  }
+  return { statusCode: 400 };
+}

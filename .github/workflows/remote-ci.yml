@@ -1,0 +1,67 @@
+name: Remote Web CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/web/**"
+      - "infra/cdk/**"
+      - "packages/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.base.json"
+      - ".github/workflows/remote-ci.yml"
+  pull_request:
+    paths:
+      - "apps/web/**"
+      - "infra/cdk/**"
+      - "packages/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.base.json"
+      - ".github/workflows/remote-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: remote-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Build monorepo
+        run: npm run build
+
+      - name: Unit, infrastructure, and cost tests
+        run: |
+          npm test
+          npm run test:cost
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Responsive and accessibility tests
+        run: npm run test:web:e2e
+
+      - name: CDK synth without AWS credentials
+        working-directory: infra/cdk
+        env:
+          CDK_DEFAULT_ACCOUNT: "111111111111"
+          CDK_DEFAULT_REGION: us-west-2
+        run: npx cdk synth -c stage=dev -c region=us-west-2

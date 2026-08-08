@@ -1,7 +1,7 @@
 # TerminalDB
 
 <p align="center">
-  <img src="Design/terminaldb-icon-preview.png" width="128" alt="TerminalDB prompt-and-ledger app icon">
+  <img src="design/desktop/terminaldb-icon-preview.png" width="128" alt="TerminalDB prompt-and-ledger app icon">
 </p>
 
 <p align="center">
@@ -21,13 +21,24 @@ a searchable local record of completed commands. It is written directly
 against AppKit and macOS system APIs with no Xcode project, package manager, or
 runtime framework dependency.
 
+The monorepo also contains TerminalDB Remote v1: a mobile-first React/PWA
+controller and a cost-capped AWS serverless ciphertext relay. It provides a
+Claude-first session dashboard, terminal control, existing-account switching,
+paired-controller management, explicit connectivity states, snapshot resync,
+and make-before-break WebSocket rotation. AWS never receives plaintext
+terminal or Claude content.
+
+- [Remote architecture](docs/remote-architecture.md)
+- [Security and abuse controls](docs/remote-security.md)
+- [Deployment, enrollment, and teardown](docs/remote-operations.md)
+
 > [!IMPORTANT]
 > TerminalDB is early alpha software. Test it with non-critical workflows,
 > review every generated command before running it, and read the
 > [security and privacy](#security-and-privacy) section before adding an API
 > key.
 
-![TerminalDB native interface with command ledger, terminal, AI chat, and usage status](Design/terminaldb-native-qa.png)
+![TerminalDB native interface with command ledger, terminal, AI chat, and usage status](design/desktop/terminaldb-native-qa.png)
 
 ## Why TerminalDB?
 
@@ -138,7 +149,7 @@ one native window:
   context out of persistent storage
 - Eight-step first-run onboarding and twelve settings categories
 
-![Claude Code account and usage states from the TerminalDB design reference](Design/terminaldb-status-usage-design.png)
+![Claude Code account and usage states from the TerminalDB design reference](design/desktop/terminaldb-status-usage-design.png)
 
 ## Project status
 
@@ -150,9 +161,11 @@ The design source covers the broader product direction, interaction states,
 menus, accessibility behavior, environment safety, history, runbooks, and
 monitoring surfaces:
 
-- [Interactive design export](Design/TerminalDB.dc.html)
-- [App icon SVG master](Design/terminaldb-icon.svg)
-- [Claude Design project](https://claude.ai/design/p/0e421271-5e0c-43e1-b34a-e52926506c66?file=TerminalDB.dc.html)
+- [Interactive desktop design export](design/desktop/TerminalDB.dc.html)
+- [Remote web design notes](design/remote/README.md)
+- [App icon SVG master](design/desktop/terminaldb-icon.svg)
+- [Claude Design desktop source](https://claude.ai/design/p/0e421271-5e0c-43e1-b34a-e52926506c66?file=TerminalDB.dc.html)
+- [Claude Design remote source](https://claude.ai/design/p/0e421271-5e0c-43e1-b34a-e52926506c66?file=TerminalDBRemote.dc.html)
 
 ## Requirements
 
@@ -180,7 +193,7 @@ git clone https://github.com/danb235/TerminalDB.git
 cd TerminalDB
 make
 make test
-open build/TerminalDB.app
+open apps/macos/build/TerminalDB.app
 ```
 
 During development, `make run` rebuilds and opens the app:
@@ -189,9 +202,38 @@ During development, `make run` rebuilds and opens the app:
 make run
 ```
 
-The generated bundle is `build/TerminalDB.app`. It is ad-hoc signed for local
+The generated bundle is `apps/macos/build/TerminalDB.app`. It is ad-hoc signed for local
 development. A distributed build should use an Apple Developer ID, hardened
 runtime, notarization, and a release-specific bundle/version process.
+
+### Open TerminalDB Remote
+
+For the reference AWS deployment, open **TerminalDB → Remote Control…** and
+click **Open Remote Web App**. TerminalDB obtains a short-lived enrollment,
+starts the encrypted relay, creates a single-use pairing link, and opens the
+mirrored terminal in the Mac's default browser. Safari opens when Safari is the
+system default; no browser choice or second confirmation is required.
+
+The remote terminal opens directly into the Mac's selected tab. The browser
+uses the same default 13.5-point Graphite Ledger terminal type at every window
+size and calculates its own visible rows and columns. Resizing the Mac changes
+the Mac viewport; resizing the browser changes the web viewport. Neither one
+zooms the other. Terminal history scrolls inside the terminal only; the browser
+window and status bars remain fixed. Each tab retains its own scroll position,
+selection, and follow-output state when switching between tabs.
+
+The shell process and its PTY remain Mac-authoritative. Normal transcript and
+scrollback can therefore expose more rows in a larger browser. Programs that
+perform their own full-screen PTY layout still format output for the Mac PTY's
+current rows and columns.
+
+Use **Pair a Phone** when the controller should open on another device. It
+shows a QR code and copyable one-time link. **Advanced Setup…** is only for a
+custom deployment or a Mac where automatic AWS enrollment is unavailable.
+
+The automatic reference path expects AWS CLI v2 and a working `stelao` profile
+in `us-west-2`. These defaults can be overridden with the documented macOS
+preferences for a self-hosted deployment.
 
 ## Configure AI chat
 
@@ -314,26 +356,32 @@ TerminalDB deliberately keeps its implementation small and inspectable:
 
 | Component | Responsibility |
 | --- | --- |
-| `src/main.m` | App lifecycle, PTY, terminal parser/renderer, tabs, menus, shell integration |
-| `src/ClaudeAssistantView.*` | AI conversation UI, streaming transcript, inline command actions |
-| `src/ClaudeAPI.*` | Provider configuration, API models, Anthropic API and Claude Code streaming |
-| `src/TerminalInspector.*` | Read-only command validation and sandboxed inspection |
-| `src/ClaudeProfile.*` | Isolated Claude Code profiles and local profile persistence |
-| `src/ClaudeStatusBar.*` | Active account, sign-in state, usage normalization and refresh |
-| `src/TerminalLedger.*` | Command lifecycle header, redacted history store, history window |
-| `src/TerminalPermissions.*` | Risk classification, approvals, and production confirmation |
-| `src/TerminalProduct.*` | Runbooks, monitors, workspaces, project/environment/settings views |
-| `src/TerminalTheme.*` | Graphite Ledger colors, type, and terminal appearance |
-| `Resources/` | Font, license, icon, and shell bridge assets |
-| `Design/` | Interactive product design and visual QA artifacts |
+| `apps/macos/src/main.m` | App lifecycle, PTY, terminal parser/renderer, tabs, menus, shell integration |
+| `apps/macos/src/ClaudeAssistantView.*` | AI conversation UI, streaming transcript, inline command actions |
+| `apps/macos/src/ClaudeAPI.*` | Provider configuration, API models, Anthropic API and Claude Code streaming |
+| `apps/macos/src/TerminalInspector.*` | Read-only command validation and sandboxed inspection |
+| `apps/macos/src/ClaudeProfile.*` | Isolated Claude Code profiles and local profile persistence |
+| `apps/macos/src/ClaudeStatusBar.*` | Active account, sign-in state, usage normalization and refresh |
+| `apps/macos/src/TerminalLedger.*` | Command lifecycle header, redacted history store, history window |
+| `apps/macos/src/TerminalPermissions.*` | Risk classification, approvals, and production confirmation |
+| `apps/macos/src/TerminalProduct.*` | Runbooks, monitors, workspaces, project/environment/settings views |
+| `apps/macos/src/TerminalTheme.*` | Graphite Ledger colors, type, and terminal appearance |
+| `apps/macos/Resources/` | Font, license, icon, and shell bridge assets |
+| `apps/web/` | Mobile-first React/PWA controller |
+| `packages/protocol/` | Envelopes, validation, E2E crypto, sequencing, and cost math |
+| `packages/design-system/` | Graphite Ledger web tokens and base components |
+| `packages/test-harness/` | Cost guard and fault/load fixtures |
+| `infra/cdk/` | AWS serverless stacks and relay Lambdas |
+| `design/` | Desktop and remote Claude Design artifacts |
 
 The build uses `clang`, AppKit, Foundation, and system pseudo-terminal APIs
 directly. There is no generated Xcode project or third-party runtime library.
 
 ## Data storage
 
-TerminalDB does not provide cloud synchronization. Local application data is
-scoped to the current macOS account.
+TerminalDB does not synchronize terminal content to cloud storage. Native
+application data is scoped to the current macOS account; Remote uses AWS only
+for ephemeral trust and routing metadata while enabled.
 
 | Data | Location | Notes |
 | --- | --- | --- |
@@ -343,6 +391,8 @@ scoped to the current macOS account.
 | Claude profiles | `~/Library/Application Support/TerminalDB/ClaudeProfiles/` | Separate configuration directory per profile |
 | Claude Code credentials | macOS Keychain | Created and read through the profile's Claude Code flow |
 | Temporary shell markers | A TerminalDB-created temporary directory | Removed with the terminal session |
+| Remote trust and routing | One DynamoDB table | Public keys, hashed one-time values, generations, and connection IDs only; TTL for ephemeral records |
+| Remote terminal and Claude content | Mac memory only | End-to-end encrypted in transit and never persisted by AWS |
 
 ## Security and privacy
 
