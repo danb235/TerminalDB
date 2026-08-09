@@ -43,6 +43,24 @@ releases have a stable signing identity. Otherwise the build is ad hoc signed.
 
 The current release process does not notarize the application.
 
+## Canonical local QA install
+
+After a feature branch has been reviewed and merged, update the primary
+checkout and install the merged app in the standard macOS location:
+
+```sh
+git switch main
+git pull --ff-only origin main
+make install
+open /Applications/TerminalDB.app
+```
+
+`make install` creates a universal release build, verifies its signature, and
+replaces `/Applications/TerminalDB.app`. It refuses to replace a running copy;
+save active terminal work and quit the installed app first. The bundle version
+comes from `apps/macos/Info.plist`, so the About window can be used to confirm
+which local QA build is open.
+
 ## Marketing site
 
 The static marketing site lives in `marketing/` and has no package installation

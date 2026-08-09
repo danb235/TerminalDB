@@ -46,6 +46,24 @@ python3 marketing/test_site.py
 git diff --check
 ```
 
+Automated checks are necessary but are not the user-acceptance pass. Before a
+feature PR is merged, write down its main user journeys and exercise them
+through the visible macOS and web interfaces. Record what a user did and saw,
+including recovery states; do not treat test-only commands or mocked fixtures
+as proof that the shipped workflow works.
+
+Completed work should be pushed on a branch, reviewed in a pull request, and
+merged into `main`. For local manual QA, update the primary checkout and run:
+
+```sh
+make install
+open /Applications/TerminalDB.app
+```
+
+This builds the universal app from the checked-out commit and installs the
+canonical QA copy. Do not hand off an app bundle inside a development
+worktree.
+
 The app and marketing site have separate CI paths. Application changes are
 validated by App CI. Files under `marketing/` are validated and deployed by Site
 CI.
