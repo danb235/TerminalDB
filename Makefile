@@ -1,10 +1,13 @@
-.PHONY: all run test test-ci clean web web-test infra-test
+.PHONY: all run install test test-ci clean web web-test infra-test
 
 all:
 	$(MAKE) -C apps/macos all
 
 run:
 	$(MAKE) -C apps/macos run
+
+install:
+	$(MAKE) -C apps/macos install
 
 test:
 	$(MAKE) -C apps/macos test

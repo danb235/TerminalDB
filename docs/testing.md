@@ -65,6 +65,32 @@ Visual QA should verify:
 - keyboard focus, VoiceOver labels, contrast, truncation, and scroll behavior
 - the app icon at Finder, Dock, About, and alert sizes
 
+## User-perspective acceptance QA
+
+For every user-visible feature, write a short journey-based QA plan before the
+final handoff and execute it through the same installed app and deployed web
+interface a user opens. Click the real menu items and buttons, type into the
+real forms and terminal, and verify the visible success, error, and recovery
+states. Automated tests and developer fixtures remain useful regression gates,
+but do not replace this acceptance pass.
+
+For TerminalDB Remote account changes, include these journeys:
+
+1. Open **TerminalDB → Remote Control…** in the installed app and start account
+   creation.
+2. Open a one-time guest session, choose **Accounts**, and start account
+   creation with that Mac.
+3. Complete username, password, and MFA setup; verify the Mac appears without
+   sharing another link.
+4. Sign out, sign back in, and open the same live terminal session.
+5. Create another one-time guest link and verify account creation remains
+   optional.
+6. Verify visible guidance when the desktop app, Mac agent, network, or session
+   is unavailable.
+
+Use a disposable account and delete it when the pass is complete. Keep secrets,
+pairing material, tokens, and terminal content out of the QA record.
+
 ## CI separation
 
 Application CI ignores marketing only changes. Site CI validates changes under

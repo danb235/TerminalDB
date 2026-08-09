@@ -1,5 +1,6 @@
 APP := build/TerminalDB.app
 BIN := $(APP)/Contents/MacOS/TerminalDB
+INSTALL_APP ?= /Applications/TerminalDB.app
 SOURCES := src/main.m src/ClaudeAPI.m src/ClaudeAssistantView.m \
 	src/TerminalInspector.m \
 	src/ClaudeProfile.m src/ClaudeStatusBar.m src/TerminalTheme.m \
@@ -17,7 +18,7 @@ SCRIPT_RESOURCES := \
 	Resources/Scripts/claude-status-bridge.sh \
 	Resources/Scripts/claude-tab-state.sh
 
-.PHONY: all run test test-ci qa-tabs qa-claude-state qa-claude-status qa-remote-agent qa-signature qa-icon qa-secrets clean
+.PHONY: all release run install test test-ci qa-tabs qa-claude-state qa-claude-status qa-remote-agent qa-signature qa-icon qa-secrets clean
 
 all: $(BIN)
 
@@ -49,6 +50,24 @@ $(BIN): $(SOURCES) $(REMOTE_AGENT_SOURCE) Info.plist Makefile $(FONT_RESOURCES) 
 
 run: all
 	open $(APP)
+
+release:
+	./Scripts/build-app.sh release
+
+install: release
+	@set -eu; \
+		target="$(INSTALL_APP)"; \
+		if ps -axo command= | grep -F "$$target/Contents/MacOS/TerminalDB" | grep -v grep >/dev/null; then \
+			printf '%s\n' "Quit the installed TerminalDB before replacing $$target" >&2; \
+			exit 1; \
+		fi; \
+		staging="$${target}.installing"; \
+		/bin/rm -rf "$$staging"; \
+		/usr/bin/ditto "$(APP)" "$$staging"; \
+		/usr/bin/codesign --verify --deep --strict "$$staging"; \
+		if test -e "$$target"; then /bin/rm -rf "$$target"; fi; \
+		/bin/mv "$$staging" "$$target"; \
+		printf '%s\n' "Installed $$target"
 
 test: all
 	$(BIN) --self-test
