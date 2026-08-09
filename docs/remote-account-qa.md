@@ -52,6 +52,10 @@ guest regression, encryption check, or production security gate fails.
 - Verify the native Remote Control window keeps Create Account visible within
   its bounds, enables it only after an account-capable agent responds, and
   explains how to clear an older background agent after an app update.
+- Move an ad-hoc development build to the canonical Applications location,
+  start account creation, and verify the macOS Keychain approval comes to the
+  foreground with an explanation in the Remote Control window. Cancel once and
+  confirm retry guidance is readable rather than a raw OSStatus failure.
 
 ## 4. Anonymous-link regression
 

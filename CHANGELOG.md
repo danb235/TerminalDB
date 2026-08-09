@@ -7,6 +7,14 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Account creation now brings the macOS Keychain approval forward when a
+  moved or updated local build needs permission to reuse the Mac's existing
+  non-exportable identity. The native window explains the approval instead of
+  appearing to hang, and cancellation returns actionable guidance rather than
+  a raw OSStatus error.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added
