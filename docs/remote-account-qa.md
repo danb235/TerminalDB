@@ -49,12 +49,13 @@ guest regression, encryption check, or production security gate fails.
   account deletion. Verify a change rejects the old password, accepts the new
   password only with the existing MFA factor, rejects pre-change API tokens,
   and disconnects existing account controllers.
-- Verify the native Remote Control window keeps Create Account visible within
-  its bounds, enables it only after an account-capable agent responds, and
+- Verify the native Remote Control panel opens inside the terminal, keeps
+  Create Account visible, dismisses with its X and Escape, enables account
+  creation only after an account-capable agent responds, and
   explains how to clear an older background agent after an app update.
 - Move an ad-hoc development build to the canonical Applications location,
   start account creation, and verify the macOS Keychain approval comes to the
-  foreground with an explanation in the Remote Control window. Cancel once and
+  foreground with an explanation in the Remote Control panel. Cancel once and
   confirm retry guidance is readable rather than a raw OSStatus failure.
 
 ## 4. Anonymous-link regression

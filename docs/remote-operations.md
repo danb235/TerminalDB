@@ -61,7 +61,7 @@ The reference defaults are configurable through macOS preferences:
 
 ## Use an account across devices
 
-Choose **Create Account** in TerminalDB's Remote Control window, or choose
+Choose **Create Account** in TerminalDB's Remote Control panel, or choose
 **Create account with this Mac** from **Accounts** in an active one-time web
 terminal. Standalone browsers can sign in but cannot create an unapproved
 account. The Mac proves possession of its non-exportable P-256 key and receives
@@ -116,7 +116,7 @@ npm run remote:enrollment -- --profile stelao --stage dev
 
 The plaintext code appears once and expires in 15 minutes. The Lambda retains
 only a salted hash. Enter it under **Advanced Setup…** in TerminalDB's Remote
-Control window on the target Mac.
+Control panel on the target Mac.
 
 ## Emergency controls
 

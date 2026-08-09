@@ -415,6 +415,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
 
 @protocol TerminalTabActionTarget <NSObject>
 - (void)newWindowForTab:(id)sender;
+- (BOOL)terminalWindowDidRequestCancel:(NSWindow *)window;
 @end
 
 @interface TerminalWindow : NSWindow
@@ -426,6 +427,22 @@ static BOOL TerminalDBWriteAll(int descriptor,
 - (void)newWindowForTab:(id)sender {
     (void)sender;
     [self.tabActionTarget newWindowForTab:self];
+}
+
+- (void)keyDown:(NSEvent *)event {
+    if (event.keyCode == 53 &&
+        [self.tabActionTarget terminalWindowDidRequestCancel:self]) {
+        return;
+    }
+    [super keyDown:event];
+}
+
+- (BOOL)performKeyEquivalent:(NSEvent *)event {
+    if (event.keyCode == 53 &&
+        [self.tabActionTarget terminalWindowDidRequestCancel:self]) {
+        return YES;
+    }
+    return [super performKeyEquivalent:event];
 }
 
 @end
@@ -458,7 +475,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
 @property(nonatomic, strong) NSMutableArray<AppDelegate *> *windowControllers;
 @property(nonatomic, strong, nullable) TerminalRemoteBridge *remoteBridge;
 @property(nonatomic, strong, nullable)
-    TerminalRemoteWindowController *remoteWindowController;
+    TerminalRemotePanelController *remotePanelController;
 @property(nonatomic, copy) NSString *remoteInstanceIdentifier;
 @property(nonatomic, copy) NSString *remoteTabIdentifier;
 @property(nonatomic, strong) NSMenu *claudeMenu;
@@ -536,6 +553,14 @@ static BOOL TerminalDBWriteAll(int descriptor,
 @property(nonatomic) BOOL privateSession;
 @property(nonatomic) BOOL focusMode;
 @property(nonatomic, strong) ClaudeAssistantView *assistantView;
+@property(nonatomic, strong) NSView *utilityPanelView;
+@property(nonatomic, strong) NSScrollView *utilityPanelScrollView;
+@property(nonatomic, strong) NSTextField *utilityPanelTitleLabel;
+@property(nonatomic, strong) NSButton *utilityPanelCloseButton;
+@property(nonatomic) BOOL utilityPanelRestoresAssistant;
+@property(nonatomic) BOOL utilityPanelUsesFullWidth;
+@property(nonatomic) CGFloat utilityPanelMinimumContentHeight;
+@property(nonatomic, copy, nullable) void (^utilityPanelDismissHandler)(void);
 @property(nonatomic, strong) NSButton *assistantToggleButton;
 @property(nonatomic, strong)
     NSTitlebarAccessoryViewController *assistantAccessoryController;
@@ -590,6 +615,11 @@ static BOOL TerminalDBWriteAll(int descriptor,
                          intent:(NSString *)intent;
 - (void)requestExecutionForCommand:(NSString *)command;
 - (void)showProductSection:(TerminalProductSection)section;
+- (void)showUtilityPanelView:(NSView *)view
+                       title:(NSString *)title
+                   fullWidth:(BOOL)fullWidth
+              dismissHandler:(nullable void (^)(void))dismissHandler;
+- (void)hideUtilityPanel:(nullable id)sender;
 - (void)saveRunbookFromRecord:(NSDictionary *)record;
 - (void)newTerminalSplitVertical:(BOOL)vertical;
 - (void)appendLedgerFooterForRecord:(NSDictionary *)record;
@@ -602,6 +632,17 @@ static BOOL TerminalDBWriteAll(int descriptor,
 @end
 
 @implementation AppDelegate
+
+- (BOOL)terminalWindowDidRequestCancel:(NSWindow *)window {
+    (void)window;
+    AppDelegate *host = self;
+    while (host.embeddedSplitOwner != nil) {
+        host = host.embeddedSplitOwner;
+    }
+    if (host.utilityPanelView.hidden) return NO;
+    [host hideUtilityPanel:nil];
+    return YES;
+}
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     (void)notification;
@@ -1769,10 +1810,24 @@ static BOOL TerminalDBWriteAll(int descriptor,
                 };
             };
     }
+    __weak AppDelegate *weakController = controller;
+    __weak TerminalProductWindowController *weakProduct =
+        root.productWindowController;
+    root.productWindowController.dismissHandler = ^{
+        [weakController hideUtilityPanel:nil];
+    };
     [root.productWindowController
-        showSection:section
-          directory:[controller currentAssistantDirectory]
-       accountLabel:controller.selectedProfile.label];
+        prepareSection:section
+              directory:[controller currentAssistantDirectory]
+           accountLabel:controller.selectedProfile.label
+                inWindow:controller.window];
+    [controller showUtilityPanelView:root.productWindowController.panelView
+                               title:@"TerminalDB"
+                           fullWidth:YES
+                      dismissHandler:^{
+        [weakProduct didDismissPanel];
+        weakProduct.dismissHandler = nil;
+    }];
 }
 
 - (void)showProjectToolsFromMenu:(id)sender {
@@ -1827,20 +1882,27 @@ static BOOL TerminalDBWriteAll(int descriptor,
 - (void)showRemoteControl:(id)sender {
     (void)sender;
     AppDelegate *root = [self rootController];
+    AppDelegate *controller = [root activeTerminalController];
+    if (controller == nil) return;
+    while (controller.embeddedSplitOwner != nil) {
+        controller = controller.embeddedSplitOwner;
+    }
     if (root.remoteBridge == nil) {
         root.remoteBridge =
             [[TerminalRemoteBridge alloc] initWithDelegate:root];
     }
     [root.remoteBridge start];
-    if (root.remoteWindowController == nil) {
-        root.remoteWindowController =
-            [[TerminalRemoteWindowController alloc]
+    if (root.remotePanelController == nil) {
+        root.remotePanelController =
+            [[TerminalRemotePanelController alloc]
                 initWithBridge:root.remoteBridge];
     }
-    [root.remoteWindowController refresh];
-    [root.remoteWindowController.window center];
-    [root.remoteWindowController showWindow:nil];
-    [root.remoteWindowController.window makeKeyAndOrderFront:nil];
+    [controller showUtilityPanelView:root.remotePanelController.view
+                               title:@"Remote Control"
+                           fullWidth:NO
+                      dismissHandler:nil];
+    [root.remotePanelController
+        prepareForPresentationInWindow:controller.window];
 }
 
 - (NSDictionary *)remoteUsageForProfile:(ClaudeProfile *)profile {
@@ -2434,7 +2496,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
 - (void)terminalRemoteBridgeStatusDidChange:
     (TerminalRemoteBridge *)bridge {
     (void)bridge;
-    [[self rootController].remoteWindowController refresh];
+    [[self rootController].remotePanelController refresh];
 }
 
 - (NSDictionary *)currentCommandRecord {
@@ -3319,8 +3381,25 @@ static BOOL TerminalDBWriteAll(int descriptor,
                 initWithConfiguration:root.apiConfiguration];
     }
     AppDelegate *active = [root activeTerminalController] ?: root;
+    while (active.embeddedSplitOwner != nil) {
+        active = active.embeddedSplitOwner;
+    }
+    __weak AppDelegate *weakActive = active;
+    __weak ClaudeAPISettingsWindowController *weakSettings =
+        root.apiSettingsController;
+    root.apiSettingsController.dismissHandler = ^{
+        [weakActive hideUtilityPanel:nil];
+    };
     [root.apiSettingsController
-        presentWithSubscriptionStatus:[active assistantSubscriptionStatus]];
+        prepareWithSubscriptionStatus:[active assistantSubscriptionStatus]
+                               inWindow:active.window];
+    [active showUtilityPanelView:root.apiSettingsController.panelView
+                           title:@"AI Chat Settings"
+                       fullWidth:YES
+                  dismissHandler:^{
+        [weakSettings didDismissPanel];
+        weakSettings.dismissHandler = nil;
+    }];
 }
 
 - (void)pasteCommandForReview:(NSString *)command {
@@ -4239,6 +4318,65 @@ static BOOL TerminalDBWriteAll(int descriptor,
     self.assistantView.delegate = self;
     self.assistantView.hidden = YES;
     [contentView addSubview:self.assistantView];
+
+    self.utilityPanelView = [[NSView alloc]
+        initWithFrame:NSMakeRect(0, statusBarHeight, 520,
+                                 frame.size.height - statusBarHeight)];
+    self.utilityPanelView.wantsLayer = YES;
+    self.utilityPanelView.layer.backgroundColor =
+        [NSColor colorWithRed:0.063 green:0.063 blue:0.075 alpha:1].CGColor;
+    self.utilityPanelView.hidden = YES;
+    [self.utilityPanelView setAccessibilityElement:YES];
+    [self.utilityPanelView setAccessibilityRole:NSAccessibilityGroupRole];
+    [self.utilityPanelView setAccessibilityLabel:@"TerminalDB control panel"];
+
+    NSBox *utilityDivider = [[NSBox alloc]
+        initWithFrame:NSMakeRect(0, 0, 1, frame.size.height)];
+    utilityDivider.boxType = NSBoxSeparator;
+    utilityDivider.autoresizingMask = NSViewHeightSizable;
+    [self.utilityPanelView addSubview:utilityDivider];
+
+    self.utilityPanelTitleLabel =
+        [NSTextField labelWithString:@"Control Panel"];
+    self.utilityPanelTitleLabel.font =
+        [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
+    self.utilityPanelTitleLabel.textColor =
+        [NSColor colorWithWhite:0.78 alpha:1];
+    self.utilityPanelTitleLabel.frame = NSMakeRect(18, 12, 380, 22);
+    self.utilityPanelTitleLabel.autoresizingMask = NSViewWidthSizable;
+    [self.utilityPanelView addSubview:self.utilityPanelTitleLabel];
+
+    self.utilityPanelCloseButton =
+        [[NSButton alloc] initWithFrame:NSMakeRect(478, 7, 34, 32)];
+    self.utilityPanelCloseButton.title = @"";
+    self.utilityPanelCloseButton.bordered = NO;
+    self.utilityPanelCloseButton.image =
+        [NSImage imageWithSystemSymbolName:@"xmark"
+                  accessibilityDescription:@"Close control panel"];
+    self.utilityPanelCloseButton.imagePosition = NSImageOnly;
+    self.utilityPanelCloseButton.contentTintColor =
+        [NSColor colorWithWhite:0.65 alpha:1];
+    self.utilityPanelCloseButton.target = self;
+    self.utilityPanelCloseButton.action = @selector(hideUtilityPanel:);
+    self.utilityPanelCloseButton.keyEquivalent = @"\e";
+    self.utilityPanelCloseButton.keyEquivalentModifierMask = 0;
+    self.utilityPanelCloseButton.toolTip = @"Close (Escape)";
+    self.utilityPanelCloseButton.autoresizingMask = NSViewMinXMargin;
+    [self.utilityPanelCloseButton setAccessibilityLabel:@"Close control panel"];
+    [self.utilityPanelView addSubview:self.utilityPanelCloseButton];
+
+    self.utilityPanelScrollView = [[NSScrollView alloc]
+        initWithFrame:NSMakeRect(1, 44, 519,
+                                 frame.size.height - statusBarHeight - 44)];
+    self.utilityPanelScrollView.autoresizingMask =
+        NSViewWidthSizable | NSViewHeightSizable;
+    self.utilityPanelScrollView.borderType = NSNoBorder;
+    self.utilityPanelScrollView.drawsBackground = NO;
+    self.utilityPanelScrollView.hasVerticalScroller = YES;
+    self.utilityPanelScrollView.autohidesScrollers = YES;
+    [self.utilityPanelView addSubview:self.utilityPanelScrollView];
+    [contentView addSubview:self.utilityPanelView];
+
     [NSNotificationCenter.defaultCenter
         addObserver:self
            selector:@selector(assistantConfigurationDidChange:)
@@ -4315,13 +4453,28 @@ static BOOL TerminalDBWriteAll(int descriptor,
         self.window.tabGroup.tabBarVisible ? 8.0 : 0.0;
     CGFloat workspaceHeight =
         MAX(1, bounds.size.height - statusBarHeight - titlebarInset);
-    BOOL chatVisible = !self.focusMode && !self.assistantView.hidden;
+    BOOL utilityVisible =
+        !self.focusMode && !self.utilityPanelView.hidden;
+    BOOL chatVisible = !self.focusMode && !self.assistantView.hidden &&
+        !utilityVisible;
     CGFloat paneWidth = 0;
-    if (chatVisible) {
+    BOOL utilityOverlaysTerminal = NO;
+    if (utilityVisible) {
+        if (self.utilityPanelUsesFullWidth) {
+            paneWidth = bounds.size.width;
+            utilityOverlaysTerminal = YES;
+        } else {
+            paneWidth = MIN(660.0,
+                MAX(520.0, floor(bounds.size.width * 0.43)));
+            paneWidth = MIN(paneWidth, bounds.size.width);
+            utilityOverlaysTerminal = bounds.size.width < 1100.0;
+        }
+    } else if (chatVisible) {
         paneWidth = MIN(460.0, MAX(340.0, floor(bounds.size.width * 0.39)));
         paneWidth = MIN(paneWidth, MAX(0, bounds.size.width - 420.0));
     }
-    CGFloat terminalWidth = MAX(1, bounds.size.width - paneWidth);
+    CGFloat terminalWidth = utilityOverlaysTerminal
+        ? bounds.size.width : MAX(1, bounds.size.width - paneWidth);
     self.terminalScrollView.frame =
         NSMakeRect(0, statusBarHeight,
                    terminalWidth,
@@ -4332,6 +4485,27 @@ static BOOL TerminalDBWriteAll(int descriptor,
     self.assistantView.frame =
         NSMakeRect(bounds.size.width - paneWidth, statusBarHeight,
                    paneWidth, workspaceHeight);
+    self.utilityPanelView.frame =
+        NSMakeRect(bounds.size.width - paneWidth, statusBarHeight,
+                   paneWidth, workspaceHeight);
+    self.utilityPanelTitleLabel.frame =
+        NSMakeRect(18, MAX(0, workspaceHeight - 35),
+                   MAX(1, paneWidth - 64), 22);
+    self.utilityPanelCloseButton.frame =
+        NSMakeRect(MAX(0, paneWidth - 42),
+                   MAX(0, workspaceHeight - 39), 34, 32);
+    self.utilityPanelScrollView.frame =
+        NSMakeRect(1, 0, MAX(1, paneWidth - 1),
+                   MAX(1, workspaceHeight - 44));
+    NSView *utilityContent = self.utilityPanelScrollView.documentView;
+    if (utilityContent != nil) {
+        NSSize viewport = self.utilityPanelScrollView.contentSize;
+        utilityContent.frame =
+            NSMakeRect(0, 0, MAX(1, viewport.width),
+                       MAX(self.utilityPanelMinimumContentHeight,
+                           viewport.height));
+        [utilityContent layoutSubtreeIfNeeded];
+    }
     self.ledgerBar.hidden = self.focusMode;
     self.claudeStatusBar.hidden = self.focusMode;
     self.assistantToggleButton.state =
@@ -4348,6 +4522,10 @@ static BOOL TerminalDBWriteAll(int descriptor,
 
 - (void)showAssistantPane {
     if (self.focusMode) self.focusMode = NO;
+    if (!self.utilityPanelView.hidden) {
+        self.utilityPanelRestoresAssistant = NO;
+        [self hideUtilityPanel:nil];
+    }
     if (!self.assistantView.hidden) {
         [self layoutWorkspace];
         [self.assistantView focusComposer];
@@ -4367,10 +4545,82 @@ static BOOL TerminalDBWriteAll(int descriptor,
 
 - (void)toggleAssistantPane:(id)sender {
     (void)sender;
-    if (self.assistantView.hidden) {
+    if (!self.utilityPanelView.hidden || self.assistantView.hidden) {
         [self showAssistantPane];
     } else {
         [self hideAssistantPane];
+    }
+}
+
+- (void)showUtilityPanelView:(NSView *)view
+                       title:(NSString *)title
+                   fullWidth:(BOOL)fullWidth
+              dismissHandler:(void (^)(void))dismissHandler {
+    AppDelegate *host = self;
+    while (host.embeddedSplitOwner != nil) {
+        host = host.embeddedSplitOwner;
+    }
+    if (host.focusMode) host.focusMode = NO;
+    if (host.utilityPanelView.hidden) {
+        host.utilityPanelRestoresAssistant = !host.assistantView.hidden;
+    } else if (host.utilityPanelScrollView.documentView != view) {
+        void (^previousDismissHandler)(void) =
+            host.utilityPanelDismissHandler;
+        host.utilityPanelDismissHandler = nil;
+        if (previousDismissHandler != nil) previousDismissHandler();
+    }
+    host.assistantView.hidden = YES;
+    host.utilityPanelUsesFullWidth = fullWidth;
+    host.utilityPanelMinimumContentHeight = MAX(1, view.frame.size.height);
+    host.utilityPanelDismissHandler = dismissHandler;
+    host.utilityPanelTitleLabel.stringValue = title.length > 0
+        ? title : @"Control Panel";
+    if (view.superview != nil &&
+        view != host.utilityPanelScrollView.documentView) {
+        [view removeFromSuperview];
+    }
+    host.utilityPanelScrollView.documentView = view;
+    host.utilityPanelView.hidden = NO;
+    [host.workspaceView addSubview:host.utilityPanelView
+                       positioned:NSWindowAbove
+                       relativeTo:nil];
+    [host.utilityPanelView addSubview:host.utilityPanelTitleLabel
+                          positioned:NSWindowAbove
+                          relativeTo:nil];
+    [host.utilityPanelView addSubview:host.utilityPanelCloseButton
+                          positioned:NSWindowAbove
+                          relativeTo:nil];
+    [host layoutWorkspace];
+    NSClipView *clipView = host.utilityPanelScrollView.contentView;
+    CGFloat topOffset = view.isFlipped ? 0 :
+        MAX(0, NSHeight(view.bounds) - NSHeight(clipView.bounds));
+    [clipView scrollToPoint:NSMakePoint(0, topOffset)];
+    [host.utilityPanelScrollView reflectScrolledClipView:clipView];
+    [host.window makeFirstResponder:host.utilityPanelCloseButton];
+}
+
+- (void)hideUtilityPanel:(id)sender {
+    (void)sender;
+    AppDelegate *host = self;
+    while (host.embeddedSplitOwner != nil) {
+        host = host.embeddedSplitOwner;
+    }
+    if (host.utilityPanelView.hidden) return;
+    BOOL restoreAssistant = host.utilityPanelRestoresAssistant;
+    void (^dismissHandler)(void) = host.utilityPanelDismissHandler;
+    host.utilityPanelRestoresAssistant = NO;
+    host.utilityPanelUsesFullWidth = NO;
+    host.utilityPanelMinimumContentHeight = 0;
+    host.utilityPanelDismissHandler = nil;
+    host.utilityPanelScrollView.documentView = nil;
+    host.utilityPanelView.hidden = YES;
+    if (dismissHandler != nil) dismissHandler();
+    host.assistantView.hidden = !restoreAssistant;
+    [host layoutWorkspace];
+    if (restoreAssistant) {
+        [host.assistantView focusComposer];
+    } else {
+        [host.window makeFirstResponder:host.terminalView];
     }
 }
 
@@ -6895,6 +7145,25 @@ static BOOL TerminalDBWriteAll(int descriptor,
     [[self rootController] removeClaudeProfileFromMenu:nil];
 }
 
+- (void)claudeStatusBarDidRequestUsagePanel:(ClaudeStatusBar *)statusBar {
+    AppDelegate *host = self;
+    while (host.embeddedSplitOwner != nil) {
+        host = host.embeddedSplitOwner;
+    }
+    NSView *usageView = [statusBar prepareUsagePanel];
+    __weak AppDelegate *weakHost = host;
+    __weak ClaudeStatusBar *weakStatusBar = statusBar;
+    statusBar.usagePanelDismissHandler = ^{
+        [weakHost hideUtilityPanel:nil];
+    };
+    [host showUtilityPanelView:usageView
+                         title:@"Claude Account & Usage"
+                     fullWidth:YES
+                dismissHandler:^{
+        [weakStatusBar didDismissUsagePanel];
+    }];
+}
+
 - (void)claudeStatusBar:(ClaudeStatusBar *)statusBar
  didRequestLoginProfile:(ClaudeProfile *)profile {
     (void)statusBar;
@@ -8419,7 +8688,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
         fprintf(stderr, "FAIL remote PTY output preserves split UTF-8\n");
         failures++;
     }
-    if (![TerminalRemoteWindowController runAccountControlsSelfTests]) {
+    if (![TerminalRemotePanelController runAccountControlsSelfTests]) {
         fprintf(stderr, "FAIL Remote Control exposes a visible Create Account action\n");
         failures++;
     }
@@ -8478,7 +8747,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
     if (![TerminalProductWindowController
             runWindowSelfTestsWithTheme:theme
                                   store:testProductStore]) {
-        fprintf(stderr, "FAIL product workflow window states\n");
+        fprintf(stderr, "FAIL product workflow panel states\n");
         failures++;
     }
 
@@ -8489,7 +8758,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
             initWithConfiguration:testAPIConfiguration];
     BOOL secureAPIKeyField = NO;
     BOOL providerSelector = NO;
-    for (NSView *subview in testAPISettings.window.contentView.subviews) {
+    for (NSView *subview in testAPISettings.panelView.subviews) {
         if ([subview isKindOfClass:NSSecureTextField.class]) {
             NSSecureTextField *secureField =
                 (NSSecureTextField *)subview;
@@ -8504,9 +8773,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
                     isEqualToString:@"Anthropic API"];
         }
     }
-    if (!secureAPIKeyField || !providerSelector ||
-        ![testAPISettings.window.title
-            isEqualToString:@"AI Chat Settings"]) {
+    if (!secureAPIKeyField || !providerSelector) {
         fprintf(stderr, "FAIL AI provider settings controls\n");
         failures++;
     }

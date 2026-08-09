@@ -712,6 +712,9 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
 
 @interface ClaudeAPISettingsWindowController ()
 @property(nonatomic, strong) ClaudeAPIConfiguration *configuration;
+@property(nonatomic, strong, readwrite) NSView *panelView;
+@property(nonatomic, weak, nullable) NSWindow *presentingWindow;
+@property(nonatomic) BOOL panelPresented;
 @property(nonatomic, strong) NSSegmentedControl *providerControl;
 @property(nonatomic, strong) NSTextField *providerDetailLabel;
 @property(nonatomic, strong) NSTextField *keyLabel;
@@ -745,6 +748,7 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
     window.appearance =
         [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     [self buildContent];
+    _panelView = window.contentView;
     [self reloadConfiguration];
     [NSNotificationCenter.defaultCenter
         addObserver:self
@@ -902,6 +906,7 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
 }
 
 - (void)presentWithSubscriptionStatus:(NSString *)status {
+    self.panelPresented = NO;
     self.subscriptionStatus = status ?: @"No Claude Code account is selected.";
     [self reloadConfiguration];
     [self showWindow:nil];
@@ -915,6 +920,35 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
                    isEqualToString:ClaudeAIProviderAPI]) {
         [self.window makeFirstResponder:self.keyField];
     }
+}
+
+- (void)prepareWithSubscriptionStatus:(NSString *)status
+                               inWindow:(NSWindow *)window {
+    self.subscriptionStatus = status ?: @"No Claude Code account is selected.";
+    self.presentingWindow = window;
+    self.panelPresented = YES;
+    if (self.window.contentView == self.panelView) {
+        self.window.contentView = [[NSView alloc]
+            initWithFrame:self.panelView.frame];
+    }
+    [self reloadConfiguration];
+    if ([self.configuration.chatProvider
+            isEqualToString:ClaudeAIProviderAPI] &&
+        self.keyField.stringValue.length > 0) {
+        [self refreshModels];
+    } else if ([self.configuration.chatProvider
+                   isEqualToString:ClaudeAIProviderAPI]) {
+        [window makeFirstResponder:self.keyField];
+    }
+}
+
+- (void)didDismissPanel {
+    self.panelPresented = NO;
+    self.presentingWindow = nil;
+}
+
+- (NSWindow *)presentationWindow {
+    return self.presentingWindow ?: self.window;
 }
 
 - (void)configurationDidChange:(NSNotification *)notification {
@@ -1016,7 +1050,7 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
     [self reloadConfiguration];
     if ([provider isEqualToString:ClaudeAIProviderAPI] &&
         !self.configuration.hasAPIKey) {
-        [self.window makeFirstResponder:self.keyField];
+        [[self presentationWindow] makeFirstResponder:self.keyField];
     }
 }
 
@@ -1034,7 +1068,7 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
     if (!self.configuration.hasAPIKey) {
         self.statusLabel.stringValue = @"Enter an Anthropic API key first.";
         self.statusLabel.textColor = NSColor.systemRedColor;
-        [self.window makeFirstResponder:self.keyField];
+        [[self presentationWindow] makeFirstResponder:self.keyField];
         return;
     }
     [self refreshModels];
@@ -1125,7 +1159,11 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
 
 - (void)done:(id)sender {
     (void)sender;
-    [self.window orderOut:nil];
+    if (self.panelPresented && self.dismissHandler != nil) {
+        self.dismissHandler();
+    } else {
+        [self.window orderOut:nil];
+    }
 }
 
 @end

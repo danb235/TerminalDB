@@ -31,7 +31,7 @@ static double ClaudeUsageClampedPercent(double percent) {
 @property(nonatomic) BOOL usageRefreshInFlight;
 @property(nonatomic, readwrite) BOOL accountIsLoggedIn;
 @property(nonatomic, readwrite) BOOL accountStatusKnown;
-@property(nonatomic, strong, nullable) NSWindow *usageWindow;
+@property(nonatomic, strong, readwrite, nullable) NSView *usagePanelView;
 @property(nonatomic, strong, nullable) NSTextField *usageWindowAccountLabel;
 @property(nonatomic, strong, nullable) NSTextField *usageWindowUsageLabel;
 @property(nonatomic, strong, nullable) NSTextField *usageWindowAccountsLabel;
@@ -226,19 +226,13 @@ static double ClaudeUsageClampedPercent(double percent) {
 
 - (void)showUsageWindow:(id)sender {
     (void)sender;
-    if (self.usageWindow == nil) {
-        NSWindow *window = [[NSWindow alloc]
-            initWithContentRect:NSMakeRect(0, 0, 920, 570)
-                      styleMask:NSWindowStyleMaskTitled |
-                                NSWindowStyleMaskClosable |
-                                NSWindowStyleMaskMiniaturizable |
-                                NSWindowStyleMaskResizable
-                        backing:NSBackingStoreBuffered
-                          defer:NO];
-        window.title = @"TerminalDB — Claude Code Account & Usage";
-        window.contentMinSize = NSMakeSize(920, 570);
-        window.backgroundColor = self.theme.terminalBackground;
-        NSView *content = window.contentView;
+    [self.delegate claudeStatusBarDidRequestUsagePanel:self];
+}
+
+- (NSView *)prepareUsagePanel {
+    if (self.usagePanelView == nil) {
+        NSView *content = [[NSView alloc]
+            initWithFrame:NSMakeRect(0, 0, 920, 570)];
         content.wantsLayer = YES;
         content.layer.backgroundColor =
             self.theme.terminalBackground.CGColor;
@@ -360,20 +354,25 @@ static double ClaudeUsageClampedPercent(double percent) {
         add.frame = NSMakeRect(166, 32, 130, 32);
         [content addSubview:add];
         NSButton *done = [NSButton buttonWithTitle:@"Done"
-                                            target:window
-                                            action:@selector(performClose:)];
+                                            target:self
+                                            action:@selector(dismissUsagePanel:)];
         done.frame = NSMakeRect(800, 32, 92, 32);
         [content addSubview:done];
-        self.usageWindow = window;
+        self.usagePanelView = content;
     }
     [self refreshUsageWindowContents];
-    [self.usageWindow center];
-    if ([NSProcessInfo.processInfo.arguments
-            containsObject:@"--visual-qa"]) {
-        [self.usageWindow orderBack:nil];
-    } else {
-        [self.usageWindow makeKeyAndOrderFront:nil];
+    return self.usagePanelView;
+}
+
+- (void)dismissUsagePanel:(id)sender {
+    (void)sender;
+    if (self.usagePanelDismissHandler != nil) {
+        self.usagePanelDismissHandler();
     }
+}
+
+- (void)didDismissUsagePanel {
+    self.usagePanelDismissHandler = nil;
 }
 
 - (void)presentUsageWindow {
@@ -393,7 +392,7 @@ static double ClaudeUsageClampedPercent(double percent) {
 }
 
 - (void)refreshUsageWindowContents {
-    if (self.usageWindow == nil) return;
+    if (self.usagePanelView == nil) return;
     NSString *account = self.selectedProfile != nil
         ? [self displayTitleForProfile:self.selectedProfile]
         : @"●  No Claude Code account selected";

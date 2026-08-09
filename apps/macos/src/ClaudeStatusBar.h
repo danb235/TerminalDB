@@ -15,6 +15,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)claudeStatusBar:(ClaudeStatusBar *)statusBar
  didRequestLoginProfile:(ClaudeProfile *)profile;
 - (void)claudeStatusBarDidRequestRemoveProfile:(ClaudeStatusBar *)statusBar;
+- (void)claudeStatusBarDidRequestUsagePanel:(ClaudeStatusBar *)statusBar;
 
 @end
 
@@ -24,6 +25,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, strong, readonly, nullable) ClaudeProfile *selectedProfile;
 @property(nonatomic, readonly) BOOL accountIsLoggedIn;
 @property(nonatomic, readonly) BOOL accountStatusKnown;
+@property(nonatomic, strong, readonly, nullable) NSView *usagePanelView;
+@property(nonatomic, copy, nullable) void (^usagePanelDismissHandler)(void);
 
 - (instancetype)initWithFrame:(NSRect)frame
              claudeExecutable:(nullable NSString *)claudeExecutable
@@ -34,6 +37,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)selectProfile:(nullable ClaudeProfile *)profile;
 - (void)refreshNow;
 - (void)presentUsageWindow;
+- (NSView *)prepareUsagePanel;
+- (void)didDismissUsagePanel;
 - (void)showEnvironment:(NSString *)environment
                    host:(nullable NSString *)host
                  detail:(nullable NSString *)detail;

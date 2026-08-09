@@ -58,7 +58,7 @@ The current manual and adversarial audit is tracked in
 
 Visual QA should verify:
 
-- every top level menu and window opened from it
+- every top-level menu and its in-window panel, sheet, or intentional window
 - normal, private, split, and tabbed terminal states
 - empty, loading, success, failure, and destructive permission states
 - long paths, large output, narrow windows, and multiple Claude profiles

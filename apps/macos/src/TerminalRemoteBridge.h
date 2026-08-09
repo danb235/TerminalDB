@@ -71,9 +71,12 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
-@interface TerminalRemoteWindowController : NSWindowController
+@interface TerminalRemotePanelController : NSObject
+
+@property(nonatomic, strong, readonly) NSView *view;
 
 - (instancetype)initWithBridge:(TerminalRemoteBridge *)bridge;
+- (void)prepareForPresentationInWindow:(NSWindow *)window;
 - (void)refresh;
 + (BOOL)runAccountControlsSelfTests;
 
