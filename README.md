@@ -74,6 +74,9 @@ one native window:
 - UTF-8, ANSI/256/truecolor output, alternate-screen programs, bracketed paste,
   cursor modes, and xterm navigation keys
 - Native macOS windows, tabs, and independent right/down split panes
+- In-window control panels for Remote Control, settings, project workflows,
+  Claude account usage, and AI provider configuration; dismiss with the visible
+  X or Escape without creating another app window
 - Event-driven tab titles for shell commands and Claude Code lifecycle states
 - Graphite Ledger visual system with bundled JetBrains Mono
 
@@ -133,7 +136,7 @@ one native window:
 - Active account and subscription remain visible in the bottom status strip
 - 5-hour, 7-day, and Fable usage with reported reset dates
 - Usage refresh on demand and automatically every five minutes
-- A dedicated account-and-usage window keeps the active account, plan,
+- A dedicated in-window account-and-usage panel keeps the active account, plan,
   sign-in state, all profiles, usage, and reset details separate from API chat
 
 ### Workflows and project context
@@ -245,7 +248,7 @@ shows a QR code and copyable one-time link. **Advanced Setup…** is only for a
 custom deployment or a Mac where automatic AWS enrollment is unavailable.
 
 The same deployment also supports optional TerminalDB accounts. Choose
-**Create Account** in the Mac's Remote Control window, or open **Accounts**
+**Create Account** in the Mac's Remote Control panel, or open **Accounts**
 from an active one-time web terminal. The Mac signs a short-lived signup
 approval with its non-exportable Keychain identity; the password then goes
 directly from the browser to Cognito. No email address or verification email is
@@ -270,7 +273,7 @@ preferences for a self-hosted deployment.
 1. Add and sign in to a Claude Code account from
    **AI → Claude Code Account for This Tab**, or have an Anthropic API key
    ready.
-2. Open **TerminalDB → Settings…**, **AI → AI Chat Settings…**, or the gear
+2. Open **TerminalDB → Settings…**, **Claude → AI Chat Settings…**, or the gear
    in the AI pane.
 3. Choose **Claude Subscription** or **Anthropic API** as the AI provider.
 4. For a subscription, choose Default, Sonnet, Opus, or Fable. For the API,

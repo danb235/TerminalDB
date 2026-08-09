@@ -53,6 +53,9 @@ typedef NS_ENUM(NSInteger, TerminalProductSection) {
 
 @interface TerminalProductWindowController : NSWindowController
 
+@property(nonatomic, strong, readonly) NSView *panelView;
+@property(nonatomic, copy, nullable) void (^dismissHandler)(void);
+
 @property(nonatomic, copy, nullable) void (^runCommandHandler)(NSString *command);
 @property(nonatomic, copy, nullable) void (^pasteCommandHandler)(NSString *command);
 @property(nonatomic, copy, nullable) void (^restoreWorkspaceHandler)(
@@ -74,6 +77,11 @@ typedef NS_ENUM(NSInteger, TerminalProductSection) {
 - (void)showSection:(TerminalProductSection)section
           directory:(NSString *)directory
        accountLabel:(nullable NSString *)accountLabel;
+- (void)prepareSection:(TerminalProductSection)section
+             directory:(NSString *)directory
+          accountLabel:(nullable NSString *)accountLabel
+               inWindow:(NSWindow *)window;
+- (void)didDismissPanel;
 - (void)promptToSaveCurrentWorkspace;
 - (void)refresh;
 

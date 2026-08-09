@@ -1020,8 +1020,21 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
 
 @end
 
-@interface TerminalRemoteWindowController ()
+@interface TerminalRemotePanelView : NSView
+@end
+
+@implementation TerminalRemotePanelView
+
+- (BOOL)isFlipped {
+    return YES;
+}
+
+@end
+
+@interface TerminalRemotePanelController ()
 @property(nonatomic, weak) TerminalRemoteBridge *bridge;
+@property(nonatomic, strong, readwrite) NSView *view;
+@property(nonatomic, weak, nullable) NSWindow *presentingWindow;
 @property(nonatomic, strong) NSTextField *statusLabel;
 @property(nonatomic, strong) NSTextField *detailLabel;
 @property(nonatomic, strong) NSImageView *pairingQRCode;
@@ -1048,41 +1061,34 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
 @property(nonatomic, copy, nullable) NSString *pendingAccountEnrollmentCode;
 @end
 
-@implementation TerminalRemoteWindowController
+@implementation TerminalRemotePanelController
 
 + (BOOL)runAccountControlsSelfTests {
     TerminalRemoteBridge *bridge =
         [[TerminalRemoteBridge alloc] initWithDelegate:nil];
     [bridge setValue:@YES forKey:@"remoteAgentCapabilitiesKnown"];
-    TerminalRemoteWindowController *controller =
-        [[TerminalRemoteWindowController alloc] initWithBridge:bridge];
-    [controller.window.contentView layoutSubtreeIfNeeded];
+    TerminalRemotePanelController *controller =
+        [[TerminalRemotePanelController alloc] initWithBridge:bridge];
+    [controller.view layoutSubtreeIfNeeded];
     NSButton *create = controller.createAccountButton;
-    NSRect visibleBounds = controller.window.contentView.bounds;
+    NSRect visibleBounds = controller.view.bounds;
     BOOL legacyAgentExplained = !create.enabled &&
         [controller.accountDetailLabel.stringValue
             containsString:@"older Remote Control agent"];
     [bridge setValue:@YES forKey:@"accountBootstrapSupported"];
     [controller refresh];
     return legacyAgentExplained &&
-        [controller.window.title isEqualToString:@"TerminalDB Remote Control"] &&
         [create.title isEqualToString:@"Create Account"] &&
         create.enabled && !create.hidden &&
         NSContainsRect(visibleBounds, create.frame);
 }
 
 - (instancetype)initWithBridge:(TerminalRemoteBridge *)bridge {
-    NSWindow *window = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(0, 0, 500, 600)
-                  styleMask:NSWindowStyleMaskTitled |
-                            NSWindowStyleMaskClosable
-                    backing:NSBackingStoreBuffered
-                      defer:NO];
-    self = [super initWithWindow:window];
+    self = [super init];
     if (self) {
         _bridge = bridge;
-        window.title = @"TerminalDB Remote Control";
-        window.releasedWhenClosed = NO;
+        _view = [[TerminalRemotePanelView alloc]
+            initWithFrame:NSMakeRect(0, 0, 520, 640)];
         [self buildInterface];
         [self refresh];
     }
@@ -1245,7 +1251,7 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
     [self refresh];
     __weak typeof(self) weakSelf = self;
     [self requestAutomaticEnrollment:^(NSString *code, NSError *error) {
-        TerminalRemoteWindowController *strongSelf = weakSelf;
+        TerminalRemotePanelController *strongSelf = weakSelf;
         if (strongSelf == nil) return;
         strongSelf.automaticSetupInProgress = NO;
         if (error != nil || code.length == 0) {
@@ -1266,7 +1272,7 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
 }
 
 - (void)buildInterface {
-    NSView *content = self.window.contentView;
+    NSView *content = self.view;
     content.wantsLayer = YES;
     content.layer.backgroundColor =
         [NSColor colorWithRed:0.063 green:0.063 blue:0.075 alpha:1].CGColor;
@@ -1570,9 +1576,23 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
     }
 }
 
-- (void)showWindow:(id)sender {
-    [super showWindow:sender];
+- (void)prepareForPresentationInWindow:(NSWindow *)window {
+    self.presentingWindow = window;
+    [self refresh];
     [self.bridge refreshControllers];
+}
+
+- (void)presentAlert:(NSAlert *)alert
+          completion:(void (^_Nullable)(NSModalResponse response))completion {
+    NSWindow *window = self.presentingWindow ?: NSApp.keyWindow ?:
+        NSApp.mainWindow;
+    if (window != nil) {
+        [alert beginSheetModalForWindow:window
+                      completionHandler:completion];
+        return;
+    }
+    NSModalResponse response = [alert runModal];
+    if (completion != nil) completion(response);
 }
 
 - (void)pairPhone:(id)sender {
@@ -1606,8 +1626,7 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
         @"The browser will immediately lose remote access. Local terminal work continues.";
     [alert addButtonWithTitle:@"Revoke Controller"];
     [alert addButtonWithTitle:@"Cancel"];
-    [alert beginSheetModalForWindow:self.window
-                  completionHandler:^(NSModalResponse response) {
+    [self presentAlert:alert completion:^(NSModalResponse response) {
         if (response == NSAlertFirstButtonReturn) {
             [self.bridge revokeControllerWithIdentifier:controllerIdentifier];
         }
@@ -1680,8 +1699,7 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
     [enrollment.widthAnchor constraintEqualToConstant:380].active = YES;
     alert.accessoryView = fields;
 
-    [alert beginSheetModalForWindow:self.window
-                  completionHandler:^(NSModalResponse response) {
+    [self presentAlert:alert completion:^(NSModalResponse response) {
         if (response != NSAlertFirstButtonReturn) return;
         NSString *url = [baseURL.stringValue
             stringByTrimmingCharactersInSet:
@@ -1764,8 +1782,7 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
     [password.widthAnchor constraintEqualToConstant:380].active = YES;
     [confirmation.widthAnchor constraintEqualToConstant:380].active = YES;
     alert.accessoryView = fields;
-    [alert beginSheetModalForWindow:self.window
-                  completionHandler:^(NSModalResponse response) {
+    [self presentAlert:alert completion:^(NSModalResponse response) {
         if (response != NSAlertFirstButtonReturn) return;
         NSString *next = password.stringValue;
         BOOL strong = next.length >= 12 &&
@@ -1802,8 +1819,7 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
     confirmation.placeholderString = @"Type DELETE";
     confirmation.frame = NSMakeRect(0, 0, 380, 24);
     alert.accessoryView = confirmation;
-    [alert beginSheetModalForWindow:self.window
-                  completionHandler:^(NSModalResponse response) {
+    [self presentAlert:alert completion:^(NSModalResponse response) {
         if (response != NSAlertFirstButtonReturn) return;
         if (![confirmation.stringValue isEqualToString:@"DELETE"]) {
             self.automaticSetupError = @"Type DELETE exactly to confirm account deletion.";
@@ -1842,7 +1858,7 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
         activeAlert.informativeText =
             @"End the current remote session before changing this Mac's deployment or account enrollment.";
         [activeAlert addButtonWithTitle:@"OK"];
-        [activeAlert beginSheetModalForWindow:self.window completionHandler:nil];
+        [self presentAlert:activeAlert completion:nil];
         return;
     }
     NSAlert *alert = [[NSAlert alloc] init];
@@ -1870,8 +1886,7 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
     [baseURL.widthAnchor constraintEqualToConstant:380].active = YES;
     [enrollment.widthAnchor constraintEqualToConstant:380].active = YES;
     alert.accessoryView = fields;
-    [alert beginSheetModalForWindow:self.window
-                  completionHandler:^(NSModalResponse response) {
+    [self presentAlert:alert completion:^(NSModalResponse response) {
         if (response != NSAlertFirstButtonReturn) return;
         NSString *url = [baseURL.stringValue
             stringByTrimmingCharactersInSet:

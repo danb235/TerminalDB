@@ -32,9 +32,15 @@ extern NSString *const ClaudeAIProviderAPI;
 
 @interface ClaudeAPISettingsWindowController : NSWindowController
 
+@property(nonatomic, strong, readonly) NSView *panelView;
+@property(nonatomic, copy, nullable) void (^dismissHandler)(void);
+
 - (instancetype)initWithConfiguration:
     (ClaudeAPIConfiguration *)configuration;
 - (void)presentWithSubscriptionStatus:(nullable NSString *)status;
+- (void)prepareWithSubscriptionStatus:(nullable NSString *)status
+                               inWindow:(NSWindow *)window;
+- (void)didDismissPanel;
 
 @end
 

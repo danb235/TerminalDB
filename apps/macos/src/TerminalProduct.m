@@ -540,6 +540,9 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
 
 @interface TerminalProductWindowController () <
     NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate>
+@property(nonatomic, strong, readwrite) NSView *panelView;
+@property(nonatomic, weak, nullable) NSWindow *presentingWindow;
+@property(nonatomic) BOOL panelPresented;
 @property(nonatomic, strong) TerminalTheme *theme;
 @property(nonatomic, strong) TerminalProductStore *store;
 @property(nonatomic) TerminalProductSection section;
@@ -641,6 +644,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     _directory = NSHomeDirectory();
     _accountLabel = @"No Claude Code account";
     [self buildInterface];
+    _panelView = window.contentView;
     _refreshTimer = [NSTimer scheduledTimerWithTimeInterval:2.0
                                                      target:self
                                                    selector:@selector(timerFired:)
@@ -805,6 +809,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
 - (void)showSection:(TerminalProductSection)section
           directory:(NSString *)directory
        accountLabel:(NSString *)accountLabel {
+    self.panelPresented = NO;
     self.section = section;
     self.directory = directory.length > 0 ? directory : NSHomeDirectory();
     self.accountLabel =
@@ -818,6 +823,39 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     [self.window makeKeyAndOrderFront:nil];
 }
 
+- (void)prepareSection:(TerminalProductSection)section
+             directory:(NSString *)directory
+          accountLabel:(NSString *)accountLabel
+               inWindow:(NSWindow *)window {
+    self.section = section;
+    self.directory = directory.length > 0 ? directory : NSHomeDirectory();
+    self.accountLabel = accountLabel.length > 0
+        ? accountLabel : @"No Claude Code account";
+    self.presentingWindow = window;
+    self.panelPresented = YES;
+    if (section <= TerminalProductSectionSettings) {
+        self.sectionControl.selectedSegment = section;
+    }
+    if (self.window.contentView == self.panelView) {
+        self.window.contentView = [[NSView alloc]
+            initWithFrame:self.panelView.frame];
+    }
+    [self refresh];
+}
+
+- (void)didDismissPanel {
+    self.panelPresented = NO;
+    self.presentingWindow = nil;
+}
+
+- (void)dismissPresentedSurface {
+    if (self.panelPresented && self.dismissHandler != nil) {
+        self.dismissHandler();
+    } else {
+        [self.window close];
+    }
+}
+
 - (void)sectionChanged:(NSSegmentedControl *)sender {
     self.section = sender.selectedSegment;
     [self refresh];
@@ -829,7 +867,8 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
 
 - (void)timerFired:(NSTimer *)timer {
     (void)timer;
-    if (self.window.visible && self.section == TerminalProductSectionMonitor) {
+    if ((self.window.visible || self.panelPresented) &&
+        self.section == TerminalProductSectionMonitor) {
         [self refresh];
     }
 }
@@ -1633,7 +1672,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         } else if (step == 7) {
             [NSUserDefaults.standardUserDefaults
                 setBool:YES forKey:@"TerminalDBDidCompleteOnboarding"];
-            [self.window close];
+            [self dismissPresentedSurface];
             return;
         }
         NSInteger next = MIN(step + 1,
@@ -1729,7 +1768,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     if (self.section == TerminalProductSectionOnboarding) {
         [NSUserDefaults.standardUserDefaults
             setBool:YES forKey:@"TerminalDBDidCompleteOnboarding"];
-        [self.window close];
+        [self dismissPresentedSurface];
         return;
     }
     NSString *value =
