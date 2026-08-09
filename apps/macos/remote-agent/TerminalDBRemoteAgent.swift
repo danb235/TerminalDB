@@ -429,15 +429,22 @@ private final class DeviceIdentity {
 
     func sign(_ data: Data) throws -> Data {
         var error: Unmanaged<CFError>?
-        guard let signature = SecKeyCreateSignature(
+        if let signature = SecKeyCreateSignature(
             privateKey,
             .ecdsaSignatureMessageX962SHA256,
             data as CFData,
             &error
-        ) as Data? else {
-            throw AgentError.cryptography(error?.takeRetainedValue().localizedDescription ?? "signature")
+        ) as Data? {
+            return signature
         }
-        return signature
+        let signingError = error?.takeRetainedValue()
+        if let signingError,
+           CFErrorGetCode(signingError) == Int(errSecUserCanceled) {
+            throw AgentError.server(
+                "Mac approval was canceled. Try again and approve TerminalDBRemoteAgent in the Keychain prompt."
+            )
+        }
+        throw AgentError.cryptography(signingError?.localizedDescription ?? "signature")
     }
 
     func sharedSecret(peerJWK: [String: Any]) throws -> Data {
@@ -1498,6 +1505,9 @@ private final class RemoteAgent: @unchecked Sendable {
         accountBootstrapInProgress = true
         state.baseURL = normalized
         try? store.save(state)
+        for client in clients.values where client.authenticated {
+            client.send(["type": "accountBootstrapStarting"])
+        }
         Task {
             var grantDelivered = false
             do {

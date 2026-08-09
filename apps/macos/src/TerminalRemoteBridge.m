@@ -43,6 +43,19 @@ static NSURL *TerminalRemoteAccountOnboardingURL(NSString *baseURL) {
     return components.URL;
 }
 
+static void TerminalRemotePresentKeychainApproval(void) {
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+            NSArray<NSRunningApplication *> *agents =
+                [NSRunningApplication runningApplicationsWithBundleIdentifier:
+                    @"com.apple.SecurityAgent"];
+            for (NSRunningApplication *agent in agents) {
+                [agent activateWithOptions:0];
+            }
+        });
+}
+
 static NSTimeInterval TerminalRemoteOutputDelay(
     BOOL interactive, NSTimeInterval sinceLast) {
     NSTimeInterval interval = interactive ? 0.05 : 0.2;
@@ -416,6 +429,15 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
                     detail:detail];
         return;
     }
+    if ([type isEqualToString:@"accountBootstrapStarting"]) {
+        [self updateState:@"connecting"
+                  enabled:self.enabled
+               pairingURL:self.pairingURL
+                    detail:
+            @"Approve TerminalDBRemoteAgent in the macOS Keychain prompt to continue. Your login password stays on this Mac."];
+        TerminalRemotePresentKeychainApproval();
+        return;
+    }
     if ([type isEqualToString:@"accountBootstrap"]) {
         NSString *urlValue = [message[@"url"] isKindOfClass:NSString.class]
             ? message[@"url"] : @"";
@@ -679,6 +701,10 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
         return;
     }
     [self start];
+    [self updateState:@"connecting"
+              enabled:self.enabled
+           pairingURL:self.pairingURL
+                detail:@"Preparing secure Mac approval…"];
     [self sendMessage:@{
         @"type" : @"createAccountBootstrap",
         @"baseURL" : baseURL,
@@ -1454,8 +1480,9 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
     else if ([visibleState isEqualToString:@"disabled"]) visibleState = @"ready";
     self.statusLabel.stringValue = visibleState.uppercaseString;
     if (self.accountSetupInProgress) {
-        self.detailLabel.stringValue =
-            @"Connecting this Mac to your TerminalDB account…";
+        self.detailLabel.stringValue = bridge.statusDetail.length > 0
+            ? bridge.statusDetail
+            : @"Connecting this Mac to your TerminalDB account…";
     } else if (self.automaticSetupInProgress) {
         self.detailLabel.stringValue =
             @"Securely enrolling this Mac and preparing the browser…";
