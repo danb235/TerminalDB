@@ -21,9 +21,11 @@ import { clearControllerSession, loadControllerSession } from "./identity";
 import {
   accountAccessToken,
   beginAccountSignIn,
+  changeAccountPassword,
   clearAccountCredentials,
   clearPendingAccountBootstrap,
   completeAccountSignIn,
+  hasRecentAccountAuthentication,
   pendingAccountBootstrap,
   savePendingAccountBootstrap,
   signUpWithBootstrap,
@@ -35,11 +37,11 @@ import type { SequencedInputBatch } from "./ordered-input";
 import {
   controllerDeviceName,
   completeAccountBootstrap,
-  createAccountEnrollment,
   deleteTerminalDBAccount,
   listAccountDevices,
   loadPublicConfiguration,
   openAccountSession,
+  recordAccountPasswordChanged,
   redeemPairing,
   RemoteClient,
   type AccountDeviceSummary,
@@ -350,13 +352,20 @@ function AccountAccess({
   const [devices, setDevices] = useState<readonly AccountDeviceSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
-  const [enrollment, setEnrollment] = useState<{
-    readonly enrollmentCode: string;
-    readonly expiresAt: number;
-  }>();
-  const [copiedEnrollment, setCopiedEnrollment] = useState(false);
-  const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
+  const initialAccountAction = new URLSearchParams(location.search).get("account");
+  const bootstrapIntent = initialAccountAction === "connect" ||
+    new URLSearchParams(location.search).get("intent") === "connect"
+    ? "connect"
+    : "create";
+  const [securityAction, setSecurityAction] = useState<"password" | "delete" | undefined>(
+    initialAccountAction === "password" || initialAccountAction === "delete"
+      ? initialAccountAction
+      : undefined,
+  );
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [nextPassword, setNextPassword] = useState("");
+  const [nextPasswordConfirmation, setNextPasswordConfirmation] = useState("");
   const [accountActionBusy, setAccountActionBusy] = useState(false);
   const [bootstrapRequestBusy, setBootstrapRequestBusy] = useState(false);
   const [signupBusy, setSignupBusy] = useState(false);
@@ -364,8 +373,9 @@ function AccountAccess({
   const [signupPassword, setSignupPassword] = useState("");
   const [signupPasswordConfirmation, setSignupPasswordConfirmation] = useState("");
   const [bootstrapComplete, setBootstrapComplete] = useState(false);
-  const enrollmentRequestedRef = useRef(false);
   const bootstrapCompletionRequestedRef = useRef(false);
+  const bootstrapReauthenticationRequestedRef = useRef(false);
+  const securityReauthenticationRequestedRef = useRef(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -425,6 +435,16 @@ function AccountAccess({
 
   useEffect(() => {
     if (!accessToken || !bootstrapToken || bootstrapCompletionRequestedRef.current) return;
+    if (!hasRecentAccountAuthentication(accessToken)) {
+      if (bootstrapReauthenticationRequestedRef.current) return;
+      bootstrapReauthenticationRequestedRef.current = true;
+      savePendingAccountBootstrap(bootstrapToken);
+      void beginAccountSignIn(configuration, undefined, {
+        returnTo: `/?account=finish&intent=${bootstrapIntent}`,
+        forceReauthentication: true,
+      });
+      return;
+    }
     bootstrapCompletionRequestedRef.current = true;
     void completeAccountBootstrap({ accessToken, bootstrapToken }).then(() => {
       clearPendingAccountBootstrap();
@@ -437,7 +457,19 @@ function AccountAccess({
         ? completionError.message
         : "This Mac could not be connected to the account.");
     });
-  }, [accessToken, bootstrapToken, onBootstrapConsumed, refresh]);
+  }, [accessToken, bootstrapIntent, bootstrapToken, configuration, onBootstrapConsumed, refresh]);
+
+  useEffect(() => {
+    if (!securityAction || loading || (accessToken && hasRecentAccountAuthentication(accessToken))) {
+      return;
+    }
+    if (securityReauthenticationRequestedRef.current) return;
+    securityReauthenticationRequestedRef.current = true;
+    void beginAccountSignIn(configuration, undefined, {
+      returnTo: `/?account=${securityAction}&source=desktop`,
+      forceReauthentication: true,
+    });
+  }, [accessToken, configuration, loading, securityAction]);
 
   const createAccount = async () => {
     const username = signupUsername.trim();
@@ -508,12 +540,14 @@ function AccountAccess({
 
   const deleteAccount = async () => {
     if (deleteConfirmation !== "DELETE") return;
+    if (!accessToken || !hasRecentAccountAuthentication(accessToken)) {
+      await beginSecurityAction("delete");
+      return;
+    }
     setAccountActionBusy(true);
     setError(undefined);
     try {
-      const token = await accountAccessToken(configuration);
-      if (!token) throw new Error("Sign in again before deleting this account.");
-      await deleteTerminalDBAccount(token);
+      await deleteTerminalDBAccount(accessToken);
       await clearAccountControllerIfNeeded();
       await signOutAccount(configuration);
     } catch (deletionError) {
@@ -522,28 +556,87 @@ function AccountAccess({
     }
   };
 
-  const createEnrollment = useCallback(async () => {
-    if (!accessToken) return;
+  const beginSecurityAction = async (action: "password" | "delete") => {
+    setSecurityAction(action);
+    history.replaceState({}, "", `/?account=${action}`);
+    if (accessToken && hasRecentAccountAuthentication(accessToken)) return;
+    securityReauthenticationRequestedRef.current = true;
+    await beginAccountSignIn(configuration, undefined, {
+      returnTo: `/?account=${action}`,
+      forceReauthentication: true,
+    });
+  };
+
+  const cancelSecurityAction = () => {
+    setSecurityAction(undefined);
+    setDeleteConfirmation("");
+    setCurrentPassword("");
+    setNextPassword("");
+    setNextPasswordConfirmation("");
+    history.replaceState({}, "", "/");
+  };
+
+  const updatePassword = async () => {
+    if (!accessToken || !hasRecentAccountAuthentication(accessToken)) {
+      await beginSecurityAction("password");
+      return;
+    }
+    if (nextPassword !== nextPasswordConfirmation) {
+      setError("The new passwords do not match.");
+      return;
+    }
+    setAccountActionBusy(true);
     setError(undefined);
     try {
-      setEnrollment(await createAccountEnrollment(accessToken));
-    } catch (enrollmentError) {
-      setError(enrollmentError instanceof Error ? enrollmentError.message : "An enrollment code could not be created.");
+      await changeAccountPassword({
+        configuration,
+        accessToken,
+        currentPassword,
+        newPassword: nextPassword,
+      });
+      await recordAccountPasswordChanged(accessToken);
+      setCurrentPassword("");
+      setNextPassword("");
+      setNextPasswordConfirmation("");
+      await clearAccountControllerIfNeeded();
+      await signOutAccount(configuration);
+    } catch (passwordError) {
+      setError(passwordError instanceof Error
+        ? passwordError.message
+        : "The password could not be changed.");
+      setAccountActionBusy(false);
     }
-  }, [accessToken]);
-
-  useEffect(() => {
-    if (!accessToken || enrollmentRequestedRef.current) return;
-    const query = new URLSearchParams(location.search);
-    if (query.get("account") !== "connect") return;
-    enrollmentRequestedRef.current = true;
-    void createEnrollment().finally(() => {
-      history.replaceState({}, "", "/");
-    });
-  }, [accessToken, createEnrollment]);
+  };
 
   if (!accessToken) {
     if (bootstrapToken) {
+      if (bootstrapIntent === "connect") {
+        return (
+          <section className="account-access account-signup">
+            <span>MAC APPROVED · FRESH SIGN-IN REQUIRED</span>
+            <h2>Connect this Mac</h2>
+            <p>Sign in with your TerminalDB password and authenticator code. This one-time Mac approval expires automatically and cannot be reused.</p>
+            <div className="account-security-notice">
+              <strong>Your credentials stay with Cognito</strong>
+              <p>TerminalDB receives only the verified account identity needed to bind this Mac's non-exportable key. It never receives your password or authenticator secret.</p>
+            </div>
+            <button
+              disabled={loading}
+              onClick={() => {
+                savePendingAccountBootstrap(bootstrapToken);
+                void beginAccountSignIn(configuration, undefined, {
+                  returnTo: "/?account=finish&intent=connect",
+                  forceReauthentication: true,
+                });
+              }}
+            >
+              Sign in & connect this Mac
+            </button>
+            <small>Need a new account instead? Return to TerminalDB and choose Create Account.</small>
+            {error ? <small role="alert">{error}</small> : null}
+          </section>
+        );
+      }
       return (
         <section className="account-access account-signup">
           <span>MAC APPROVED · NO EMAIL REQUIRED</span>
@@ -603,9 +696,15 @@ function AccountAccess({
           <button
             className="text-button"
             disabled={signupBusy}
-            onClick={() => void beginAccountSignIn(configuration)}
+            onClick={() => {
+              savePendingAccountBootstrap(bootstrapToken);
+              void beginAccountSignIn(configuration, undefined, {
+                returnTo: "/?account=finish&intent=connect",
+                forceReauthentication: true,
+              });
+            }}
           >
-            Already have an account? Sign in
+            Already have an account? Sign in & connect this Mac
           </button>
           {error ? <small role="alert">{error}</small> : null}
         </section>
@@ -666,6 +765,91 @@ function AccountAccess({
     );
   }
 
+  if (securityAction === "password") {
+    return (
+      <section className="account-access account-security-action">
+        <span>RECENT PASSWORD + AUTHENTICATOR REQUIRED</span>
+        <h2>Change your password</h2>
+        <p>Your passwords are sent directly from this browser to AWS Cognito. TerminalDB is notified only after Cognito accepts the change so it can sign out trusted browsers.</p>
+        <form onSubmit={(event) => {
+          event.preventDefault();
+          void updatePassword();
+        }}>
+          <label htmlFor="account-current-password">Current password</label>
+          <input
+            id="account-current-password"
+            type="password"
+            autoComplete="current-password"
+            value={currentPassword}
+            onChange={(event) => setCurrentPassword(event.target.value)}
+            disabled={accountActionBusy}
+            required
+          />
+          <label htmlFor="account-new-password">New password</label>
+          <input
+            id="account-new-password"
+            type="password"
+            autoComplete="new-password"
+            value={nextPassword}
+            onChange={(event) => setNextPassword(event.target.value)}
+            disabled={accountActionBusy}
+            minLength={12}
+            required
+          />
+          <small>At least 12 characters with upper and lowercase letters, a number, and a symbol.</small>
+          <label htmlFor="account-new-password-confirmation">Confirm new password</label>
+          <input
+            id="account-new-password-confirmation"
+            type="password"
+            autoComplete="new-password"
+            value={nextPasswordConfirmation}
+            onChange={(event) => setNextPasswordConfirmation(event.target.value)}
+            disabled={accountActionBusy}
+            minLength={12}
+            required
+          />
+          <button disabled={accountActionBusy} type="submit">
+            {accountActionBusy ? "Changing password…" : "Change password & sign out browsers"}
+          </button>
+        </form>
+        <button className="text-button" disabled={accountActionBusy} onClick={cancelSecurityAction}>
+          Cancel
+        </button>
+        <small>Your existing authenticator-app TOTP remains required at the next sign-in.</small>
+        {error ? <small role="alert">{error}</small> : null}
+      </section>
+    );
+  }
+
+  if (securityAction === "delete") {
+    return (
+      <section className="account-access account-security-action account-danger-zone">
+        <span>RECENT PASSWORD + AUTHENTICATOR REQUIRED</span>
+        <h2>Delete your TerminalDB account?</h2>
+        <p>This permanently removes your Cognito login, enrolled Macs, active account sessions, and trusted account browsers. One-time sessions that were never connected to the account are not affected.</p>
+        <label htmlFor="delete-account-confirmation">Type DELETE to confirm</label>
+        <input
+          id="delete-account-confirmation"
+          autoComplete="off"
+          spellCheck={false}
+          value={deleteConfirmation}
+          onChange={(event) => setDeleteConfirmation(event.target.value)}
+          disabled={accountActionBusy}
+        />
+        <div>
+          <button
+            disabled={accountActionBusy || deleteConfirmation !== "DELETE"}
+            onClick={() => void deleteAccount()}
+          >
+            {accountActionBusy ? "Deleting…" : "Permanently delete account"}
+          </button>
+          <button disabled={accountActionBusy} onClick={cancelSecurityAction}>Cancel</button>
+        </div>
+        {error ? <small role="alert">{error}</small> : null}
+      </section>
+    );
+  }
+
   return (
     <section className="account-access account-access-signed-in">
       <header>
@@ -719,68 +903,20 @@ function AccountAccess({
           })}
         </div>
       ) : (
-        <p>No Macs are enrolled yet. Add a Mac to make its live terminal sessions available to this account.</p>
+        <p>No Macs are enrolled yet. Open TerminalDB on a Mac and choose Connect Account.</p>
       )}
       <small className="account-privacy-detail">Terminal names and counts remain end-to-end encrypted and appear only after you open an online Mac.</small>
+      <small className="account-privacy-detail">To add another Mac, open TerminalDB on that Mac and choose Connect Account. No enrollment code is needed.</small>
       <div className="account-actions">
         <button disabled={loading} onClick={() => void refresh()}>Refresh Macs</button>
-        <button disabled={loading} onClick={() => void createEnrollment()}>Add a Mac</button>
+        <button disabled={accountActionBusy} onClick={() => void beginSecurityAction("password")}>
+          Change password
+        </button>
       </div>
-      {enrollment ? (
-        <div className="enrollment-code">
-          <span>15-MINUTE MAC ENROLLMENT CODE</span>
-          <code>{enrollment.enrollmentCode}</code>
-          <button
-            onClick={() => {
-              void navigator.clipboard.writeText(enrollment.enrollmentCode).then(() => {
-                setCopiedEnrollment(true);
-                window.setTimeout(() => setCopiedEnrollment(false), 2_000);
-              }).catch(() => setError("The code could not be copied. Select it manually instead."));
-            }}
-          >
-            {copiedEnrollment ? "Copied" : "Copy code"}
-          </button>
-          <small>{context === "session" && activeAccessMode === "pairing"
-            ? "Return to TerminalDB Remote Control on your Mac, choose Connect Account…, and paste this code. The current one-time session ends only after you approve that change locally."
-            : "On the Mac you want to add, open TerminalDB Remote Control, choose Connect Account…, and paste this code."}</small>
-        </div>
-      ) : null}
       <div className="account-danger-zone">
-        {!deleteAccountOpen ? (
-          <button disabled={accountActionBusy} onClick={() => setDeleteAccountOpen(true)}>
-            Delete account
-          </button>
-        ) : (
-          <>
-            <strong>Delete your TerminalDB account?</strong>
-            <p>This permanently removes your login, enrolled Macs, active account sessions, and trusted account browsers. One-time sessions that were never connected to this account are not affected.</p>
-            <label htmlFor="delete-account-confirmation">Type DELETE to confirm</label>
-            <input
-              id="delete-account-confirmation"
-              autoComplete="off"
-              spellCheck={false}
-              value={deleteConfirmation}
-              onChange={(event) => setDeleteConfirmation(event.target.value)}
-            />
-            <div>
-              <button
-                disabled={accountActionBusy || deleteConfirmation !== "DELETE"}
-                onClick={() => void deleteAccount()}
-              >
-                {accountActionBusy ? "Deleting…" : "Permanently delete account"}
-              </button>
-              <button
-                disabled={accountActionBusy}
-                onClick={() => {
-                  setDeleteAccountOpen(false);
-                  setDeleteConfirmation("");
-                }}
-              >
-                Cancel
-              </button>
-            </div>
-          </>
-        )}
+        <button disabled={accountActionBusy} onClick={() => void beginSecurityAction("delete")}>
+          Delete account
+        </button>
       </div>
       {error ? <small role="alert">{error}</small> : null}
     </section>

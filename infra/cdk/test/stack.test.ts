@@ -68,6 +68,11 @@ describe("TerminalDB Remote infrastructure", () => {
     expect(JSON.stringify(userPools[0])).not.toContain("WebAuthn");
     template.hasResourceProperties("AWS::Cognito::UserPoolClient", {
       AllowedOAuthFlows: ["code"],
+      AllowedOAuthScopes: Match.arrayWith([
+        "openid",
+        "profile",
+        "aws.cognito.signin.user.admin",
+      ]),
       PreventUserExistenceErrors: "ENABLED",
       GenerateSecret: false,
     });
@@ -106,11 +111,11 @@ describe("TerminalDB Remote infrastructure", () => {
       .map((resource) => JSON.stringify(resource));
     const accountDeletionPolicy = policies.find((policy) =>
       policy.includes("cognito-idp:AdminDeleteUser") &&
-      policy.includes("cognito-idp:AdminUserGlobalSignOut") &&
-      policy.includes("cognito-idp:AdminSetUserPassword"),
+      policy.includes("cognito-idp:AdminUserGlobalSignOut"),
     );
     expect(accountDeletionPolicy).toBeDefined();
     expect(accountDeletionPolicy).not.toContain('"Resource":"*"');
+    expect(accountDeletionPolicy).not.toContain("cognito-idp:AdminSetUserPassword");
     template.hasResourceProperties("AWS::Cognito::UserPool", {
       LambdaConfig: { PreSignUp: Match.anyValue() },
     });

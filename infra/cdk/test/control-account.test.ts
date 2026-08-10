@@ -177,37 +177,82 @@ describe("account control-plane tenant isolation", () => {
       .find((input) => input.TransactItems);
     const serialized = JSON.stringify(transaction);
     expect(serialized).toContain(`USER#${tenantA}`);
-    expect(serialized).toContain('"recovery":"trusted-mac"');
+    expect(serialized).toContain('"recovery":"authenticator-app-only"');
     expect(serialized).toContain('":owner":"11111111-1111-4111-8111-111111111111"');
     expect(serialized).toContain('"#temporary":"temporary"');
     expect(serialized).toContain("REMOVE #ttl, #temporary");
     expect(serialized).not.toContain("approved-bootstrap");
   });
 
-  it("lets an enrolled Mac change the password and revoke account sessions without email", async () => {
-    mocks.verifyAuthenticatedRequest.mockResolvedValue({
-      principalId: "mac-a",
-      principal: { deviceId: "mac-a", ownerSub: tenantA },
-    });
+  it("connects another Mac only after a fresh login to an existing account", async () => {
     mocks.send.mockImplementation(async (command: unknown) => {
       const input = commandInput(command);
-      if (input.Key?.SK === "ACCOUNT#META") return { Item: { username: "qa-user" } };
+      if (String(input.Key?.PK).startsWith("ACCOUNT_BOOTSTRAP#")) {
+        return {
+          Item: {
+            status: "pending",
+            deviceName: "Second Mac",
+            signingPublicKey: publicKey,
+            agreementPublicKey: publicKey,
+            ttl: activeUntil,
+          },
+        };
+      }
+      if (input.Key?.SK === "ACCOUNT#META") {
+        return { Item: { username: "qa-user", createdAt: activeUntil - 3_600 } };
+      }
       return {};
     });
 
     const response = await invoke({
       method: "POST",
-      path: "/api/v1/device/account/recover",
-      body: { password: "New-Strong-Password-42!" },
+      path: "/api/v1/account/bootstrap/complete",
+      sub: tenantA,
+      issuedAt: Math.floor(Date.now() / 1_000),
+      body: { bootstrapToken: "existing-account-bootstrap" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const transaction = mocks.send.mock.calls
+      .map(([command]) => commandInput(command))
+      .find((input) => input.TransactItems);
+    expect(transaction).toBeDefined();
+    expect(transaction!.TransactItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        ConditionCheck: expect.objectContaining({
+          Key: { PK: `USER#${tenantA}`, SK: "ACCOUNT#META" },
+        }),
+      }),
+    ]));
+    const bootstrapUpdate = transaction!.TransactItems.find(
+      (item: {
+        Update?: {
+          Key?: { PK?: unknown; SK?: unknown };
+          ConditionExpression?: string;
+          ExpressionAttributeValues?: Record<string, unknown>;
+        };
+      }) => item.Update?.Key?.SK === "META" &&
+        String(item.Update?.Key?.PK).startsWith("ACCOUNT_BOOTSTRAP#"),
+    )?.Update;
+    expect(bootstrapUpdate?.ConditionExpression).toContain(":pending");
+    expect(bootstrapUpdate?.ExpressionAttributeValues?.[":pending"]).toBe("pending");
+    expect(JSON.stringify(transaction)).not.toContain('"recovery"');
+  });
+
+  it("finalizes a browser-side Cognito password change only after recent MFA login", async () => {
+    mocks.send.mockResolvedValue({});
+
+    const response = await invoke({
+      method: "POST",
+      path: "/api/v1/account/security/password-changed",
+      sub: tenantA,
+      issuedAt: Math.floor(Date.now() / 1_000),
     });
 
     expect(response.statusCode).toBe(204);
-    expect(mocks.cognitoSend).toHaveBeenCalledTimes(2);
-    const commands = mocks.cognitoSend.mock.calls.map(([command]) => command.constructor.name);
-    expect(commands).toEqual([
-      "AdminSetUserPasswordCommand",
-      "AdminUserGlobalSignOutCommand",
-    ]);
+    expect(mocks.cognitoSend).toHaveBeenCalledTimes(1);
+    expect(mocks.cognitoSend.mock.calls[0]?.[0].constructor.name)
+      .toBe("AdminUserGlobalSignOutCommand");
     const credentialUpdate = mocks.send.mock.calls
       .map(([command]) => commandInput(command))
       .find((input) => String(input.UpdateExpression).includes("credentialsChangedAt"));
@@ -215,6 +260,22 @@ describe("account control-plane tenant isolation", () => {
       Key: { PK: `USER#${tenantA}`, SK: "ACCOUNT#META" },
       ConditionExpression: "attribute_exists(PK) AND username = :username",
     });
+  });
+
+  it("rejects stale tokens for account security actions", async () => {
+    mocks.send.mockResolvedValue({});
+    const response = await invoke({
+      method: "POST",
+      path: "/api/v1/account/security/password-changed",
+      sub: tenantA,
+      issuedAt: Math.floor(Date.now() / 1_000) - 10 * 60,
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(JSON.parse(response.body ?? "{}").error).toBe(
+      "Recent account authentication required",
+    );
+    expect(mocks.cognitoSend).not.toHaveBeenCalled();
   });
 
   it("returns a stable revocation code when a deleted account Mac reconnects", async () => {
@@ -235,7 +296,7 @@ describe("account control-plane tenant isolation", () => {
     });
   });
 
-  it("rejects account API tokens issued before a Mac password change", async () => {
+  it("rejects account API tokens issued at or before a password change", async () => {
     mocks.send.mockImplementation(async (command: unknown) => {
       const input = commandInput(command);
       if (input.Key?.SK === "ACCOUNT#DELETED") return {};
@@ -249,7 +310,7 @@ describe("account control-plane tenant isolation", () => {
       method: "GET",
       path: "/api/v1/account/sessions",
       sub: tenantA,
-      issuedAt: 199,
+      issuedAt: 200,
     });
 
     expect(response.statusCode).toBe(401);
@@ -718,6 +779,7 @@ describe("account control-plane tenant isolation", () => {
       method: "DELETE",
       path: "/api/v1/account",
       sub: tenantA,
+      issuedAt: Math.floor(Date.now() / 1_000),
     });
 
     expect(response.statusCode).toBe(204);

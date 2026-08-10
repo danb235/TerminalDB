@@ -1104,15 +1104,8 @@ private final class RemoteAgent: @unchecked Sendable {
                     client.send(["type": "error", "message": "Remote web URL is required"])
                     return
                 }
-                self.beginAccountBootstrap(baseURL: baseURL)
-            case "resetAccountPassword":
-                guard let password = message["password"] as? String else {
-                    client.send(["type": "error", "message": "A new password is required"])
-                    return
-                }
-                self.resetAccountPassword(password)
-            case "deleteAccount":
-                self.deleteAccountFromMac()
+                let intent = message["intent"] as? String == "connect" ? "connect" : "create"
+                self.beginAccountBootstrap(baseURL: baseURL, intent: intent)
             case "refreshControllers":
                 self.refreshControllers()
             case "revokeController":
@@ -1389,60 +1382,6 @@ private final class RemoteAgent: @unchecked Sendable {
         }
     }
 
-    private func resetAccountPassword(_ password: String) {
-        guard state.deviceID != nil else {
-            broadcastError("Connect this Mac to a TerminalDB account first.")
-            return
-        }
-        Task {
-            do {
-                _ = try await request(
-                    method: "POST",
-                    path: "/api/v1/device/account/recover",
-                    body: ["password": password],
-                    authenticated: true
-                )
-                queue.async {
-                    self.broadcastStatus(
-                        self.lastStatus,
-                        detail: "Password changed. Sign in again with your existing authenticator-app TOTP."
-                    )
-                }
-            } catch {
-                queue.async { self.broadcastError(error.localizedDescription) }
-            }
-        }
-    }
-
-    private func deleteAccountFromMac() {
-        guard state.deviceID != nil else {
-            broadcastError("Connect this Mac to a TerminalDB account first.")
-            return
-        }
-        Task {
-            do {
-                _ = try await request(
-                    method: "DELETE",
-                    path: "/api/v1/device/account",
-                    body: [:],
-                    authenticated: true
-                )
-                queue.async {
-                    self.finishDisablingRemote(notifyServer: false)
-                    self.state.deviceID = nil
-                    self.state.accountOwned = false
-                    try? self.store.save(self.state)
-                    self.broadcastStatus(
-                        "disabled",
-                        detail: "TerminalDB account deleted. One-time links are still available."
-                    )
-                }
-            } catch {
-                queue.async { self.broadcastError(error.localizedDescription) }
-            }
-        }
-    }
-
     private func accountBootstrapProof() throws -> [String: Any] {
         let signingPublicKey = try identity.publicJWK()
         let agreementPublicKey = try identity.publicJWK()
@@ -1469,12 +1408,16 @@ private final class RemoteAgent: @unchecked Sendable {
         ]
     }
 
-    private func accountBootstrapURL(baseURL: String, token: String) throws -> String {
+    private func accountBootstrapURL(
+        baseURL: String,
+        token: String,
+        intent: String
+    ) throws -> String {
         guard var components = URLComponents(string: baseURL) else {
             throw AgentError.server("Invalid TerminalDB Remote URL")
         }
         components.queryItems = [
-            URLQueryItem(name: "account", value: "create"),
+            URLQueryItem(name: "account", value: intent == "connect" ? "connect" : "create"),
             URLQueryItem(name: "source", value: "desktop"),
         ]
         components.fragment = "account-bootstrap=\(token)"
@@ -1486,6 +1429,7 @@ private final class RemoteAgent: @unchecked Sendable {
 
     private func beginAccountBootstrap(
         baseURL: String,
+        intent: String = "create",
         controllerID: String? = nil,
         requestID: String? = nil
     ) {
@@ -1548,7 +1492,8 @@ private final class RemoteAgent: @unchecked Sendable {
                         )
                     } else if let url = try? self.accountBootstrapURL(
                         baseURL: normalized,
-                        token: token
+                        token: token,
+                        intent: intent
                     ) {
                         for client in self.clients.values where client.authenticated {
                             client.send(["type": "accountBootstrap", "url": url])
@@ -2281,6 +2226,7 @@ private final class RemoteAgent: @unchecked Sendable {
         case "account.bootstrap":
             beginAccountBootstrap(
                 baseURL: state.baseURL,
+                intent: "create",
                 controllerID: sourceID,
                 requestID: requestID
             )
