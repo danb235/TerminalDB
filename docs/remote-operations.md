@@ -12,6 +12,22 @@ npm run cdk:synth
 npm run cdk:deploy -- --profile stelao -c stage=dev -c region=us-west-2
 ```
 
+For a branded deployment, request an ACM certificate in `us-east-1`, add its
+DNS validation record, and pass both application and authentication domains:
+
+```sh
+npm run cdk:deploy -- \
+  -c domainName=app.example.com \
+  -c certificateArn=arn:aws:acm:us-east-1:... \
+  -c authDomainName=auth.example.com \
+  -c authCertificateArn=arn:aws:acm:us-east-1:...
+```
+
+The authentication domain's parent must already resolve with an A record.
+After deployment, point the application domain to `RemoteDistributionDomain`
+and the authentication domain to `CognitoDistributionDomain`. Keep the Cognito
+record DNS-only when using Cloudflare.
+
 CDK prints the web URL, control Lambda name, alert topic, and enrollment
 command. Before the first deploy, copy
 `infra/cdk/terminaldb-remote.local.example.json` to
@@ -64,21 +80,23 @@ The reference defaults are configurable through macOS preferences:
 
 Choose **Create Account** in TerminalDB's Remote Control panel, or choose
 **Create account with this Mac** from **Accounts** in an active one-time web
-terminal. Standalone browsers can sign in but cannot create an unapproved
-account. The Mac proves possession of its non-exportable P-256 key and receives
+terminal. Standalone browsers can sign in, while connecting a Mac still
+requires its one-time approval. The Mac proves possession of its non-exportable P-256 key and receives
 a random 20-minute signup grant. The grant remains in the URL fragment or the
 encrypted Mac/browser channel, never an HTTP URL or log.
 
-The browser submits username and password directly to Cognito with the one-time
-grant. A pre-signup Lambda atomically consumes it and auto-confirms the user;
-there is no email or phone attribute. Managed login then uses authorization
-code with PKCE and requires authenticator-app TOTP setup. Email, SMS, passkeys,
-and backup codes are not alternatives. The setup screen recommends enrolling a
-second secure or securely synced authenticator copy because losing every copy
-requires operator assistance. After login, the web app atomically binds the
-Cognito `sub` to the waiting Mac. The agent polls with the grant, replaces an
+The browser carries the grant in session storage and sends the entire
+username/password/TOTP ceremony through Cognito Managed Login. A pre-signup
+trigger auto-confirms the username without creating an email or phone
+attribute. Managed login uses authorization code with PKCE and requires
+authenticator-app TOTP setup. Email, SMS, passkeys, and backup codes are not
+alternatives. The setup screen recommends enrolling a second secure or
+securely synced authenticator copy because losing every copy requires operator
+assistance. After login, the web app atomically binds the Cognito `sub` to the
+waiting Mac and consumes the grant. The agent polls with the grant, replaces an
 active guest session if necessary, and starts the account-owned session without
-a copy/paste step.
+a copy/paste step. Canceling setup invalidates the unused grant immediately so
+the Mac can start over instead of waiting for expiry.
 
 From then on, every enrolled Mac appears under **Your Macs** after login on a
 phone or another browser. Online Macs show their available terminals; offline

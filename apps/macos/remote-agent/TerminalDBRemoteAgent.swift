@@ -1540,6 +1540,12 @@ private final class RemoteAgent: @unchecked Sendable {
                     queue.async { self.accountBootstrapInProgress = false }
                     return
                 }
+            } catch let error as AgentError {
+                if case .remoteHTTP(let statusCode, _, _) = error, statusCode == 410 {
+                    throw error
+                }
+                // Transient network failures are retried until the one-time
+                // approval expires. No account mutation is repeated.
             } catch {
                 // Transient network failures are retried until the one-time
                 // approval expires. No account mutation is repeated.

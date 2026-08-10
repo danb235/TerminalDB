@@ -136,6 +136,8 @@ lambdaReservedConcurrency=8
 budgetEmail=you@example.com
 domainName=remote.example.com
 certificateArn=arn:aws:acm:us-east-1:...
+authDomainName=auth.example.com
+authCertificateArn=arn:aws:acm:us-east-1:...
 ```
 
 The CloudFront Free flat-rate plan is selected operationally after deployment

@@ -101,6 +101,7 @@ test("allows account login when every enrolled Mac is offline", async ({ page })
 });
 
 test("prepares account creators for mandatory authenticator-app setup", async ({ page }) => {
+  let canceledBootstrap: string | undefined;
   await page.route("**/api/config", async (route) => {
     await route.fulfill({
       contentType: "application/json",
@@ -115,16 +116,24 @@ test("prepares account creators for mandatory authenticator-app setup", async ({
       }),
     });
   });
+  await page.route("**/api/v1/account-bootstrap", async (route) => {
+    const body = route.request().postDataJSON() as { bootstrapToken?: string };
+    canceledBootstrap = body.bootstrapToken;
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ canceled: true }) });
+  });
   await page.goto("/?unpaired&account=create#account-bootstrap=qa-approved-bootstrap");
 
   await expect(page.getByRole("heading", { name: "Create your TerminalDB account" }))
     .toBeVisible();
   await expect(page.getByText("Authenticator app required")).toBeVisible();
-  await expect(page.getByText(/Cognito will show a QR code/u)).toBeVisible();
+  await expect(page.getByText(/Cognito will ask you to create the account/u)).toBeVisible();
   await expect(page.getByText(/There is no email, SMS, passkey, or backup-code alternative/u))
     .toBeVisible();
-  await expect(page.getByRole("button", { name: "Create account & set up authenticator" }))
+  await expect(page.getByRole("button", { name: "Continue to secure account creation" }))
     .toBeVisible();
+  await page.getByRole("button", { name: "Cancel setup" }).click();
+  await expect(page.getByRole("heading", { name: "Sign in to TerminalDB" })).toBeVisible();
+  expect(canceledBootstrap).toBe("qa-approved-bootstrap");
 });
 
 test("connects an existing account from a Mac without an enrollment code", async ({ page }) => {

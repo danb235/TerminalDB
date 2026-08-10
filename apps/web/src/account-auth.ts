@@ -100,9 +100,17 @@ export async function beginAccountSignIn(
   await beginAccountAuthorization(configuration, "/oauth2/authorize", navigate, options);
 }
 
+export async function beginAccountSignUp(
+  configuration: AccountAuthConfiguration,
+  navigate: (url: URL) => void = (url) => location.assign(url),
+  options: AccountAuthorizationOptions = {},
+): Promise<void> {
+  await beginAccountAuthorization(configuration, "/signup", navigate, options);
+}
+
 async function beginAccountAuthorization(
   configuration: AccountAuthConfiguration,
-  path: "/oauth2/authorize",
+  path: "/oauth2/authorize" | "/signup",
   navigate: (url: URL) => void,
   options: AccountAuthorizationOptions,
 ): Promise<void> {
@@ -131,45 +139,6 @@ function cognitoApiEndpoint(configuration: AccountAuthConfiguration): string {
     throw new Error("Account signup is not configured correctly");
   }
   return issuer.origin;
-}
-
-export async function signUpWithBootstrap(input: {
-  readonly configuration: AccountAuthConfiguration;
-  readonly username: string;
-  readonly password: string;
-  readonly bootstrapToken: string;
-}): Promise<void> {
-  const response = await fetch(cognitoApiEndpoint(input.configuration), {
-    method: "POST",
-    headers: {
-      "content-type": "application/x-amz-json-1.1",
-      "x-amz-target": "AWSCognitoIdentityProviderService.SignUp",
-    },
-    body: JSON.stringify({
-      ClientId: input.configuration.clientId,
-      Username: input.username,
-      Password: input.password,
-      ClientMetadata: { bootstrapToken: input.bootstrapToken },
-    }),
-  });
-  if (response.ok) return;
-  const failure = await response.json().catch(() => ({})) as {
-    readonly __type?: string;
-    readonly message?: string;
-  };
-  const kind = failure.__type?.split("#").at(-1);
-  if (kind === "UsernameExistsException") {
-    throw new Error(
-      "That username already exists. Sign in to finish authenticator setup or access the account.",
-    );
-  }
-  if (kind === "InvalidPasswordException") {
-    throw new Error("Use at least 12 characters with upper and lowercase letters, a number, and a symbol.");
-  }
-  if (kind === "UserLambdaValidationException") {
-    throw new Error("This Mac approval expired. Start account creation again from TerminalDB.");
-  }
-  throw new Error(failure.message ?? `Account creation failed (${response.status})`);
 }
 
 export async function changeAccountPassword(input: {

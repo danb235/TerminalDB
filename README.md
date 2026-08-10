@@ -250,9 +250,11 @@ custom deployment or a Mac where automatic AWS enrollment is unavailable.
 The same deployment also supports optional TerminalDB accounts. Choose
 **Create Account** in the Mac's Remote Control panel, or open **Accounts**
 from an active one-time web terminal. The Mac signs a short-lived signup
-approval with its non-exportable Keychain identity; the password then goes
-directly from the browser to Cognito. No email address or verification email is
-required. After username/password sign-in and authenticator-app TOTP setup, the
+approval with its non-exportable Keychain identity. Cognito Managed Login owns
+the complete username, password, and authenticator ceremony so password
+managers see one consistent authentication domain and the password is entered
+only once. No email address or verification email is required. After
+username/password creation and authenticator-app TOTP setup, the
 waiting Mac connects to the new account automatically. TOTP
 is mandatory; email, SMS, passkeys, and backup codes are not offered. Set up a
 second secure or securely synced authenticator copy before relying on the
@@ -260,6 +262,8 @@ account, because losing every copy requires operator help. Additional Macs can
 be added later by choosing **Connect Account** in TerminalDB on that Mac and
 completing a fresh Cognito password-plus-TOTP sign-in. There is no enrollment
 code to copy.
+Canceling account setup invalidates the unused approval immediately and returns
+the Mac to a retryable state.
 Every enrolled Mac then appears after login on a phone or browser without
 sending a pairing link, including offline Macs with their last-seen time.
 Online Macs expose their active terminal windows and tabs; if every Mac is

@@ -46,6 +46,8 @@ export interface TerminalDBRemoteStackProps extends StackProps {
   readonly cloudfrontPlan: "FREE" | "PAYG";
   readonly domainName?: string;
   readonly certificateArn?: string;
+  readonly authDomainName?: string;
+  readonly authCertificateArn?: string;
 }
 
 export class TerminalDBRemoteStack extends Stack {
@@ -56,8 +58,14 @@ export class TerminalDBRemoteStack extends Stack {
     if (Boolean(props.domainName) !== Boolean(props.certificateArn)) {
       throw new Error("domainName and certificateArn must be supplied together");
     }
+    if (Boolean(props.authDomainName) !== Boolean(props.authCertificateArn)) {
+      throw new Error("authDomainName and authCertificateArn must be supplied together");
+    }
     if (isProduction && (!props.domainName || !props.certificateArn)) {
       throw new Error("Production requires a custom domain and us-east-1 ACM certificate");
+    }
+    if (isProduction && (!props.authDomainName || !props.authCertificateArn)) {
+      throw new Error("Production requires a custom Cognito domain and us-east-1 ACM certificate");
     }
     const removalPolicy = isProduction ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY;
     const table = new dynamodb.Table(this, "RemoteState", {
@@ -97,9 +105,22 @@ export class TerminalDBRemoteStack extends Stack {
     });
     const userPoolDomain = userPool.addDomain("UserPoolDomainV2", {
       managedLoginVersion: cognito.ManagedLoginVersion.NEWER_MANAGED_LOGIN,
-      cognitoDomain: {
-        domainPrefix: `terminaldb-v2-${props.stage}-${this.account}-${this.region}`,
-      },
+      ...(props.authDomainName && props.authCertificateArn
+        ? {
+            customDomain: {
+              domainName: props.authDomainName,
+              certificate: acm.Certificate.fromCertificateArn(
+                this,
+                "CognitoCertificate",
+                props.authCertificateArn,
+              ),
+            },
+          }
+        : {
+            cognitoDomain: {
+              domainPrefix: `terminaldb-v2-${props.stage}-${this.account}-${this.region}`,
+            },
+          }),
     });
     const cognitoDomainUrl = userPoolDomain.baseUrl();
 
@@ -176,7 +197,6 @@ export class TerminalDBRemoteStack extends Stack {
     table.grantReadWriteData(controlFunction);
     table.grantReadWriteData(connectionFunction);
     table.grantReadWriteData(relayFunction);
-    table.grant(preSignupFunction, "dynamodb:UpdateItem");
 
     const relayIntegration = new apigatewayv2Integrations.WebSocketLambdaIntegration(
       "RelayIntegration",
@@ -657,6 +677,15 @@ export class TerminalDBRemoteStack extends Stack {
     new CfnOutput(this, "RemoteUrl", {
       value: props.domainName ? `https://${props.domainName}` : `https://${distribution.distributionDomainName}`,
     });
+    new CfnOutput(this, "RemoteDistributionDomain", {
+      value: distribution.distributionDomainName,
+    });
+    new CfnOutput(this, "CognitoDomain", { value: cognitoDomainUrl });
+    if (props.authDomainName) {
+      new CfnOutput(this, "CognitoDistributionDomain", {
+        value: userPoolDomain.cloudFrontEndpoint,
+      });
+    }
     new CfnOutput(this, "ControlFunctionName", { value: controlFunction.functionName });
     new CfnOutput(this, "EnrollmentCommand", {
       value: `npm run remote:enrollment -- --profile stelao --function-name ${controlFunction.functionName}`,

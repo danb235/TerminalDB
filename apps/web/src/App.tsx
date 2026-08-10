@@ -21,6 +21,7 @@ import { clearControllerSession, loadControllerSession } from "./identity";
 import {
   accountAccessToken,
   beginAccountSignIn,
+  beginAccountSignUp,
   changeAccountPassword,
   clearAccountCredentials,
   clearPendingAccountBootstrap,
@@ -28,7 +29,6 @@ import {
   hasRecentAccountAuthentication,
   pendingAccountBootstrap,
   savePendingAccountBootstrap,
-  signUpWithBootstrap,
   signOutAccount,
 } from "./account-auth";
 import { accounts as mockAccounts, mockInventory, terminalFixture } from "./mock-data";
@@ -36,6 +36,7 @@ import { AcknowledgedInputQueue } from "./ordered-input";
 import type { SequencedInputBatch } from "./ordered-input";
 import {
   controllerDeviceName,
+  cancelAccountBootstrap,
   completeAccountBootstrap,
   deleteTerminalDBAccount,
   listAccountDevices,
@@ -368,10 +369,6 @@ function AccountAccess({
   const [nextPasswordConfirmation, setNextPasswordConfirmation] = useState("");
   const [accountActionBusy, setAccountActionBusy] = useState(false);
   const [bootstrapRequestBusy, setBootstrapRequestBusy] = useState(false);
-  const [signupBusy, setSignupBusy] = useState(false);
-  const [signupUsername, setSignupUsername] = useState("");
-  const [signupPassword, setSignupPassword] = useState("");
-  const [signupPasswordConfirmation, setSignupPasswordConfirmation] = useState("");
   const [bootstrapComplete, setBootstrapComplete] = useState(false);
   const bootstrapCompletionRequestedRef = useRef(false);
   const bootstrapReauthenticationRequestedRef = useRef(false);
@@ -472,38 +469,31 @@ function AccountAccess({
   }, [accessToken, configuration, loading, securityAction]);
 
   const createAccount = async () => {
-    const username = signupUsername.trim();
-    if (username.length < 3 || username.length > 64 || /\s/u.test(username)) {
-      setError("Choose a username between 3 and 64 characters with no spaces.");
-      return;
-    }
-    if (signupPassword !== signupPasswordConfirmation) {
-      setError("The passwords do not match.");
-      return;
-    }
     if (!bootstrapToken) {
       setError("Start account creation again from TerminalDB on your Mac.");
       return;
     }
-    setSignupBusy(true);
+    setError(undefined);
+    savePendingAccountBootstrap(bootstrapToken);
+    await beginAccountSignUp(configuration, undefined, {
+      returnTo: "/?account=finish&intent=create",
+      forceReauthentication: true,
+    });
+  };
+
+  const cancelAccountSetup = async () => {
+    if (!bootstrapToken) return;
+    setAccountActionBusy(true);
     setError(undefined);
     try {
-      await signUpWithBootstrap({
-        configuration,
-        username,
-        password: signupPassword,
-        bootstrapToken,
-      });
-      savePendingAccountBootstrap(bootstrapToken);
-      setSignupPassword("");
-      setSignupPasswordConfirmation("");
-      await beginAccountSignIn(configuration, undefined, {
-        returnTo: "/?account=finish",
-        loginHint: username,
-      });
-    } catch (signupError) {
-      setError(signupError instanceof Error ? signupError.message : "The account could not be created.");
-      setSignupBusy(false);
+      await cancelAccountBootstrap(bootstrapToken);
+      clearPendingAccountBootstrap();
+      onBootstrapConsumed?.();
+    } catch (cancelError) {
+      setError(cancelError instanceof Error
+        ? cancelError.message
+        : "Account setup could not be canceled.");
+      setAccountActionBusy(false);
     }
   };
 
@@ -621,7 +611,7 @@ function AccountAccess({
               <p>TerminalDB receives only the verified account identity needed to bind this Mac's non-exportable key. It never receives your password or authenticator secret.</p>
             </div>
             <button
-              disabled={loading}
+              disabled={loading || accountActionBusy}
               onClick={() => {
                 savePendingAccountBootstrap(bootstrapToken);
                 void beginAccountSignIn(configuration, undefined, {
@@ -632,6 +622,13 @@ function AccountAccess({
             >
               Sign in & connect this Mac
             </button>
+            <button
+              className="text-button"
+              disabled={accountActionBusy}
+              onClick={() => void cancelAccountSetup()}
+            >
+              Cancel setup
+            </button>
             <small>Need a new account instead? Return to TerminalDB and choose Create Account.</small>
             {error ? <small role="alert">{error}</small> : null}
           </section>
@@ -641,61 +638,24 @@ function AccountAccess({
         <section className="account-access account-signup">
           <span>MAC APPROVED · NO EMAIL REQUIRED</span>
           <h2>Create your TerminalDB account</h2>
-          <p>This one-time approval connects the Mac that opened this page. Your password goes directly to AWS Cognito and is never sent to TerminalDB.</p>
+          <p>This one-time approval connects the Mac that opened this page. Cognito handles your username, password, and authenticator setup together so your password manager can save and reuse one credential.</p>
           <div className="account-security-notice">
             <strong>Authenticator app required</strong>
-            <p>After creating the account, Cognito will show a QR code. Scan it with a TOTP authenticator app, then enter the current six-digit code to finish.</p>
+            <p>Cognito will ask you to create the account, then show a QR code. Scan it with a TOTP authenticator app and enter the current six-digit code to finish.</p>
             <ul>
               <li>Have the authenticator app ready before continuing.</li>
+              <li>Save the suggested password when your password manager offers it. Future sign-ins use the same TerminalDB authentication domain.</li>
               <li>For recovery, keep the TOTP in a securely synced authenticator or add it to a second device during setup.</li>
               <li>There is no email, SMS, passkey, or backup-code alternative. Losing every copy of the authenticator locks sign-in.</li>
             </ul>
           </div>
-          <form onSubmit={(event) => {
-            event.preventDefault();
-            void createAccount();
-          }}>
-            <label htmlFor="account-signup-username">Username</label>
-            <input
-              id="account-signup-username"
-              autoCapitalize="none"
-              autoComplete="username"
-              spellCheck={false}
-              value={signupUsername}
-              onChange={(event) => setSignupUsername(event.target.value)}
-              disabled={signupBusy}
-              required
-            />
-            <label htmlFor="account-signup-password">Password</label>
-            <input
-              id="account-signup-password"
-              type="password"
-              autoComplete="new-password"
-              value={signupPassword}
-              onChange={(event) => setSignupPassword(event.target.value)}
-              disabled={signupBusy}
-              minLength={12}
-              required
-            />
-            <small>At least 12 characters with upper and lowercase letters, a number, and a symbol.</small>
-            <label htmlFor="account-signup-confirmation">Confirm password</label>
-            <input
-              id="account-signup-confirmation"
-              type="password"
-              autoComplete="new-password"
-              value={signupPasswordConfirmation}
-              onChange={(event) => setSignupPasswordConfirmation(event.target.value)}
-              disabled={signupBusy}
-              minLength={12}
-              required
-            />
-            <button disabled={signupBusy} type="submit">
-              {signupBusy ? "Creating…" : "Create account & set up authenticator"}
-            </button>
-          </form>
+          <button disabled={loading || accountActionBusy} onClick={() => void createAccount()}>
+            Continue to secure account creation
+          </button>
+          <small>You will stay on TerminalDB's branded authentication site until account creation and authenticator enrollment are complete.</small>
           <button
             className="text-button"
-            disabled={signupBusy}
+            disabled={loading || accountActionBusy}
             onClick={() => {
               savePendingAccountBootstrap(bootstrapToken);
               void beginAccountSignIn(configuration, undefined, {
@@ -705,6 +665,13 @@ function AccountAccess({
             }}
           >
             Already have an account? Sign in & connect this Mac
+          </button>
+          <button
+            className="text-button"
+            disabled={accountActionBusy}
+            onClick={() => void cancelAccountSetup()}
+          >
+            Cancel setup
           </button>
           {error ? <small role="alert">{error}</small> : null}
         </section>

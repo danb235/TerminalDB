@@ -1,28 +1,19 @@
 import type { PreSignUpTriggerEvent } from "aws-lambda";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
-const mocks = vi.hoisted(() => ({ send: vi.fn() }));
-
-vi.mock("../lambdas/common.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../lambdas/common.js")>();
-  return { ...actual, dynamo: { send: mocks.send }, tableName: "RemoteState" };
-});
-
-import { sha256 } from "../lambdas/common.js";
 import { handler } from "../lambdas/pre-signup.js";
 
-function signupEvent(token?: string): PreSignUpTriggerEvent {
+function signupEvent(clientId = "web-client"): PreSignUpTriggerEvent {
   return {
     version: "1",
     region: "us-west-2",
     userPoolId: "us-west-2_pool",
     userName: "qa-user",
-    callerContext: { awsSdkVersion: "3", clientId: "web-client" },
+    callerContext: { awsSdkVersion: "3", clientId },
     triggerSource: "PreSignUp_SignUp",
     request: {
       userAttributes: {},
       validationData: {},
-      ...(token ? { clientMetadata: { bootstrapToken: token } } : {}),
     },
     response: {
       autoConfirmUser: false,
@@ -32,33 +23,21 @@ function signupEvent(token?: string): PreSignUpTriggerEvent {
   };
 }
 
-describe("Mac-approved Cognito signup", () => {
-  beforeEach(() => mocks.send.mockReset());
-
-  it("atomically consumes the one-time Mac grant and auto-confirms without email", async () => {
-    mocks.send.mockResolvedValue({});
-    const result = await handler(signupEvent("approved-token"), {} as never, () => undefined);
+describe("TerminalDB Cognito signup", () => {
+  it("auto-confirms managed-login signup without email", async () => {
+    const result = await handler(signupEvent(), {} as never, () => undefined);
 
     expect(result.response).toMatchObject({
       autoConfirmUser: true,
       autoVerifyEmail: false,
       autoVerifyPhone: false,
     });
-    const input = mocks.send.mock.calls[0]?.[0].input;
-    expect(input.Key).toEqual({
-      PK: `ACCOUNT_BOOTSTRAP#${sha256("approved-token")}`,
-      SK: "META",
-    });
-    expect(input.ConditionExpression).toContain("#status = :pending");
-    expect(input.ExpressionAttributeValues).toMatchObject({
-      ":client": "web-client",
-      ":username": "qa-user",
-    });
   });
 
-  it("rejects direct public signup without a Mac grant", async () => {
-    await expect(handler(signupEvent(), {} as never, () => undefined))
-      .rejects.toThrow("Open TerminalDB on a Mac");
-    expect(mocks.send).not.toHaveBeenCalled();
+  it("rejects non-self-service trigger sources", async () => {
+    const event = signupEvent();
+    event.triggerSource = "PreSignUp_AdminCreateUser";
+    await expect(handler(event, {} as never, () => undefined))
+      .rejects.toThrow("secure Cognito flow");
   });
 });

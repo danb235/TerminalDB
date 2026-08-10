@@ -246,7 +246,7 @@ describe("TerminalDB Remote infrastructure", () => {
     });
   });
 
-  it("refuses production without a custom domain and certificate but requires no email sender", () => {
+  it("requires branded application and Cognito domains in production but no email sender", () => {
     const prodApp = new App();
     const baseProps = {
       env: { account: "111111111111", region: "us-west-2" },
@@ -268,6 +268,9 @@ describe("TerminalDB Remote infrastructure", () => {
       domainName: "remote.example.invalid",
       certificateArn:
         "arn:aws:acm:us-east-1:111111111111:certificate/00000000-0000-4000-8000-000000000000",
+      authDomainName: "auth.example.invalid",
+      authCertificateArn:
+        "arn:aws:acm:us-east-1:111111111111:certificate/00000000-0000-4000-8000-000000000000",
     })).not.toThrow();
   });
 
@@ -285,6 +288,9 @@ describe("TerminalDB Remote infrastructure", () => {
       cloudfrontPlan: "PAYG",
       domainName: "remote.example.invalid",
       certificateArn:
+        "arn:aws:acm:us-east-1:111111111111:certificate/00000000-0000-4000-8000-000000000000",
+      authDomainName: "auth.example.invalid",
+      authCertificateArn:
         "arn:aws:acm:us-east-1:111111111111:certificate/00000000-0000-4000-8000-000000000000",
     });
     const prodTemplate = Template.fromStack(prodStack);

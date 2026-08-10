@@ -8,6 +8,8 @@
 static NSString *const TerminalRemoteErrorDomain =
     @"com.terminaldb.remote";
 static NSString *const TerminalRemoteDefaultBaseURL =
+    @"https://app.terminaldb.app";
+static NSString *const TerminalRemoteLegacyBaseURL =
     @"https://dwi1gx38gzrsl.cloudfront.net";
 static NSString *const TerminalRemoteDefaultAWSProfile = @"stelao";
 static NSString *const TerminalRemoteDefaultAWSRegion = @"us-west-2";
@@ -1131,6 +1133,11 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
     configured = [configured
         stringByTrimmingCharactersInSet:
             NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if ([key isEqualToString:@"TerminalDBRemoteBaseURL"] &&
+        [configured isEqualToString:TerminalRemoteLegacyBaseURL]) {
+        configured = defaultValue;
+        [NSUserDefaults.standardUserDefaults setObject:configured forKey:key];
+    }
     return configured.length > 0 ? configured : defaultValue;
 }
 

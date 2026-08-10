@@ -1,3 +1,7 @@
 {
-  "budgetEmail": "alerts@example.com"
+  "budgetEmail": "alerts@example.com",
+  "domainName": "app.example.com",
+  "certificateArn": "arn:aws:acm:us-east-1:111111111111:certificate/00000000-0000-4000-8000-000000000000",
+  "authDomainName": "auth.example.com",
+  "authCertificateArn": "arn:aws:acm:us-east-1:111111111111:certificate/00000000-0000-4000-8000-000000000000"
 }

@@ -31,8 +31,14 @@ const remote = new TerminalDBRemoteStack(app, `TerminalDBRemote-${stage}`, {
   lambdaReservedConcurrency: Number(app.node.tryGetContext("lambdaReservedConcurrency") ?? 8),
   budgetEmail: (app.node.tryGetContext("budgetEmail") as string | undefined) ?? localConfig.budgetEmail,
   cloudfrontPlan: String(app.node.tryGetContext("cloudfrontPlan") ?? "FREE") === "PAYG" ? "PAYG" : "FREE",
-  domainName: app.node.tryGetContext("domainName") as string | undefined,
-  certificateArn: app.node.tryGetContext("certificateArn") as string | undefined,
+  domainName: (app.node.tryGetContext("domainName") as string | undefined) ?? localConfig.domainName,
+  certificateArn:
+    (app.node.tryGetContext("certificateArn") as string | undefined) ?? localConfig.certificateArn,
+  authDomainName:
+    (app.node.tryGetContext("authDomainName") as string | undefined) ?? localConfig.authDomainName,
+  authCertificateArn:
+    (app.node.tryGetContext("authCertificateArn") as string | undefined) ??
+    localConfig.authCertificateArn,
 });
 remote.addStackDependency(edge);
 for (const stack of [edge, remote]) {

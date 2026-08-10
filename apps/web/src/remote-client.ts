@@ -275,6 +275,17 @@ export async function completeAccountBootstrap(input: {
   return (await response.json()) as { completed: true; deviceId: string };
 }
 
+export async function cancelAccountBootstrap(bootstrapToken: string): Promise<void> {
+  const response = await fetch("/api/v1/account-bootstrap", {
+    method: "DELETE",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ bootstrapToken }),
+  });
+  if (response.ok || response.status === 409 || response.status === 410) return;
+  const failure = await response.json().catch(() => ({})) as { error?: string };
+  throw new Error(failure.error ?? `Account setup could not be canceled (${response.status})`);
+}
+
 export async function deleteTerminalDBAccount(accessToken: string): Promise<void> {
   const response = await fetch("/api/v1/account", {
     method: "DELETE",
