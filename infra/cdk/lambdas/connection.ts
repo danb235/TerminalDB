@@ -3,6 +3,7 @@ import {
   GetCommand,
   PutCommand,
   TransactWriteCommand,
+  UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type {
   APIGatewayAuthorizerResult,
@@ -124,6 +125,11 @@ async function connect(event: WebSocketEvent): Promise<APIGatewayProxyResultV2> 
   ) {
     return { statusCode: 403 };
   }
+  const sessionOwnerSub = typeof session.Item.ownerSub === "string"
+    ? session.Item.ownerSub
+    : undefined;
+  const connectionOwnerSub = role === "mac" ? sessionOwnerSub : ticketOwnerSub || undefined;
+  const connectedAt = nowSeconds();
   const ttl = nowSeconds() + 3 * 60 * 60;
   await dynamo.send(
     new TransactWriteCommand({
@@ -139,8 +145,8 @@ async function connect(event: WebSocketEvent): Promise<APIGatewayProxyResultV2> 
               role,
               clientId,
               generation,
-              ...(ticketOwnerSub ? { ownerSub: ticketOwnerSub } : {}),
-              connectedAt: nowSeconds(),
+              ...(connectionOwnerSub ? { ownerSub: connectionOwnerSub } : {}),
+              connectedAt,
               ttl,
             },
           },
@@ -155,12 +161,30 @@ async function connect(event: WebSocketEvent): Promise<APIGatewayProxyResultV2> 
               role,
               clientId,
               generation,
-              ...(ticketOwnerSub ? { ownerSub: ticketOwnerSub } : {}),
-              connectedAt: nowSeconds(),
+              ...(connectionOwnerSub ? { ownerSub: connectionOwnerSub } : {}),
+              connectedAt,
               ttl,
             },
           },
         },
+        ...(role === "mac" && sessionOwnerSub
+          ? [{
+              Update: {
+                TableName: tableName,
+                Key: { PK: `USER#${sessionOwnerSub}`, SK: `DEVICE#${clientId}` },
+                UpdateExpression:
+                  "SET #status = :online, lastSeenAt = :now, activeSessionId = :session, activeConnectionId = :connection",
+                ConditionExpression: "attribute_exists(PK)",
+                ExpressionAttributeNames: { "#status": "status" },
+                ExpressionAttributeValues: {
+                  ":online": "online",
+                  ":now": connectedAt,
+                  ":session": sessionId,
+                  ":connection": connectionId,
+                },
+              },
+            }]
+          : []),
       ],
     }),
   );
@@ -177,7 +201,7 @@ async function disconnect(event: WebSocketEvent): Promise<APIGatewayProxyResultV
   );
   if (source.Item) {
     try {
-      await dynamo.send(
+      const socket = await dynamo.send(
         new DeleteCommand({
           TableName: tableName,
           Key: {
@@ -186,8 +210,37 @@ async function disconnect(event: WebSocketEvent): Promise<APIGatewayProxyResultV
           },
           ConditionExpression: "connectionId = :connectionId",
           ExpressionAttributeValues: { ":connectionId": connectionId },
+          ReturnValues: "ALL_OLD",
         }),
       );
+      if (
+        socket.Attributes &&
+        source.Item.role === "mac" &&
+        typeof source.Item.ownerSub === "string"
+      ) {
+        try {
+          await dynamo.send(
+            new UpdateCommand({
+              TableName: tableName,
+              Key: {
+                PK: `USER#${source.Item.ownerSub}`,
+                SK: `DEVICE#${String(source.Item.clientId)}`,
+              },
+              UpdateExpression:
+                "SET #status = :offline, lastSeenAt = :now REMOVE activeSessionId, activeConnectionId, sessionStartedAt",
+              ConditionExpression: "activeConnectionId = :connection",
+              ExpressionAttributeNames: { "#status": "status" },
+              ExpressionAttributeValues: {
+                ":offline": "offline",
+                ":now": nowSeconds(),
+                ":connection": connectionId,
+              },
+            }),
+          );
+        } catch {
+          // A replacement Mac connection is already online.
+        }
+      }
     } catch {
       // A newer make-before-break socket already owns the current mapping.
     }

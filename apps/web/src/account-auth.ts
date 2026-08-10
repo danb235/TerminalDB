@@ -157,7 +157,9 @@ export async function signUpWithBootstrap(input: {
   };
   const kind = failure.__type?.split("#").at(-1);
   if (kind === "UsernameExistsException") {
-    throw new Error("That username is already in use.");
+    throw new Error(
+      "That username already exists. Sign in to finish authenticator setup or access the account.",
+    );
   }
   if (kind === "InvalidPasswordException") {
     throw new Error("Use at least 12 characters with upper and lowercase letters, a number, and a symbol.");

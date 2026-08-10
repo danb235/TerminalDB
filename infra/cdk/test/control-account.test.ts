@@ -217,6 +217,24 @@ describe("account control-plane tenant isolation", () => {
     });
   });
 
+  it("returns a stable revocation code when a deleted account Mac reconnects", async () => {
+    mocks.verifyAuthenticatedRequest.mockRejectedValue(
+      new Error("Unknown or revoked principal"),
+    );
+
+    const response = await invoke({
+      method: "POST",
+      path: "/api/v1/sessions",
+      body: { protocolVersion: 1 },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(JSON.parse(response.body ?? "{}")).toEqual({
+      error: "Unknown or revoked principal",
+      code: "PRINCIPAL_REVOKED",
+    });
+  });
+
   it("rejects account API tokens issued before a Mac password change", async () => {
     mocks.send.mockImplementation(async (command: unknown) => {
       const input = commandInput(command);
@@ -264,6 +282,102 @@ describe("account control-plane tenant isolation", () => {
     expect(query?.ExpressionAttributeValues[":pk"])
       .toBe(`USER#${tenantA}`);
     expect(response.body).toContain("session-a");
+  });
+
+  it("keeps every enrolled Mac visible and distinguishes online, connecting, and offline", async () => {
+    mocks.send.mockImplementation(async (command: unknown) => {
+      const input = commandInput(command);
+      if (input.Key?.SK === "ACCOUNT#DELETED") return {};
+      if (input.ExpressionAttributeValues?.[":prefix"] === "DEVICE#") {
+        return {
+          Items: [
+            {
+              deviceId: "mac-offline",
+              name: "Office iMac",
+              registeredAt: 1_700_000_000,
+              lastSeenAt: 1_700_000_500,
+              status: "offline",
+            },
+            {
+              deviceId: "mac-online",
+              name: "MacBook Pro",
+              registeredAt: 1_700_000_100,
+              lastSeenAt: 1_700_000_600,
+              status: "online",
+            },
+            {
+              deviceId: "mac-connecting",
+              name: "Mac Studio",
+              registeredAt: 1_700_000_200,
+              lastSeenAt: 1_700_000_700,
+              status: "connecting",
+            },
+          ],
+        };
+      }
+      if (input.ExpressionAttributeValues?.[":prefix"] === "SESSION#") {
+        return {
+          Items: [
+            {
+              sessionId: "session-online",
+              deviceId: "mac-online",
+              status: "active",
+              createdAt: 1_700_000_800,
+              ttl: activeUntil,
+            },
+            {
+              sessionId: "session-connecting",
+              deviceId: "mac-connecting",
+              status: "active",
+              createdAt: 1_700_000_900,
+              ttl: activeUntil,
+            },
+            {
+              sessionId: "stale-session",
+              deviceId: "mac-offline",
+              status: "active",
+              createdAt: 1_700_001_000,
+              ttl: activeUntil,
+            },
+          ],
+        };
+      }
+      return {};
+    });
+
+    const response = await invoke({
+      method: "GET",
+      path: "/api/v1/account/devices",
+      sub: tenantA,
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body ?? "{}") as {
+      devices: Array<Record<string, unknown>>;
+    };
+    expect(body.devices).toEqual([
+      expect.objectContaining({
+        deviceId: "mac-online",
+        state: "online",
+        sessionId: "session-online",
+      }),
+      expect.objectContaining({
+        deviceId: "mac-connecting",
+        state: "connecting",
+      }),
+      expect.objectContaining({
+        deviceId: "mac-offline",
+        state: "offline",
+      }),
+    ]);
+    expect(body.devices[1]).not.toHaveProperty("sessionId");
+    expect(body.devices[2]).not.toHaveProperty("sessionId");
+    const accountQueries = mocks.send.mock.calls
+      .map(([command]) => commandInput(command))
+      .filter((input) => input.KeyConditionExpression);
+    expect(accountQueries).toHaveLength(2);
+    expect(accountQueries.every((input) =>
+      input.ExpressionAttributeValues[":pk"] === `USER#${tenantA}`)).toBe(true);
   });
 
   it("does not reveal a different tenant's session during controller registration", async () => {

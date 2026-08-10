@@ -85,9 +85,10 @@ There is intentionally no email or SMS recovery channel. Password changes and
 desktop account deletion require an enrolled Mac request plus Touch ID or the
 Mac login password. A password change revokes account controllers and
 pre-change API tokens, but it does not remove a registered TOTP secret or
-passkey. A user who loses every MFA factor cannot self-recover; Cognito exposes
-no safe administrator operation for deleting a user's TOTP secret. A
-compromised macOS user account is already in the trust boundary and can manage
+provide an alternate factor. A user who loses every authenticator copy cannot
+self-recover; Cognito exposes no safe administrator operation for deleting a
+user's TOTP secret. A compromised macOS user account is already in the trust
+boundary and can manage
 the TerminalDB account, matching its ability to access the local terminal
 sessions.
 

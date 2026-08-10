@@ -765,12 +765,12 @@ static BOOL TerminalDBWriteAll(int descriptor,
     } else {
         [self newTerminalWindow:nil];
         if (!visualQA) {
-            // Join an already-enabled per-user Remote Control session without
-            // launching an agent when Remote Control is off. This makes every
-            // subsequently opened TerminalDB instance appear automatically.
+            // Start the per-user agent so an account-enrolled Mac can restore
+            // its remote session whenever TerminalDB is open. The agent stays
+            // disabled for Macs that have never opted into Remote Control.
             self.remoteBridge =
                 [[TerminalRemoteBridge alloc] initWithDelegate:self];
-            [self.remoteBridge attachToRunningAgent];
+            [self.remoteBridge start];
         }
         if (visualQA) {
             AppDelegate *controller = self.windowControllers.lastObject;

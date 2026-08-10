@@ -1763,7 +1763,7 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
     NSAlert *alert = [[NSAlert alloc] init];
     alert.messageText = @"Change TerminalDB account password";
     alert.informativeText =
-        @"This changes the Cognito password and signs out every account browser. Your existing authenticator and passkeys remain required.";
+        @"This changes the Cognito password and signs out every account browser. Your existing authenticator-app TOTP remains required.";
     [alert addButtonWithTitle:@"Authenticate and Change"];
     [alert addButtonWithTitle:@"Cancel"];
     NSSecureTextField *password = [[NSSecureTextField alloc] init];
