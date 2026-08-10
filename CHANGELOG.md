@@ -25,6 +25,9 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Cognito's sign-in, account-creation, password, and authenticator-app screens
+  now use TerminalDB's Graphite Ledger palette, application mark, focus states,
+  and semantic success, warning, and error colors.
 - Cognito remains the sole password and MFA authority. Password changes and
   account deletion require a fresh password-plus-TOTP sign-in, passwords go
   directly from the browser to Cognito, and TerminalDB globally revokes account

@@ -77,10 +77,50 @@ describe("TerminalDB Remote infrastructure", () => {
       GenerateSecret: false,
     });
     template.hasResourceProperties("AWS::Cognito::ManagedLoginBranding", {
+      Assets: Match.arrayWith([
+        Match.objectLike({
+          Category: "FORM_LOGO",
+          ColorMode: "DARK",
+          Extension: "SVG",
+        }),
+        Match.objectLike({
+          Category: "FAVICON_SVG",
+          ColorMode: "DARK",
+          Extension: "SVG",
+        }),
+      ]),
       ClientId: Match.anyValue(),
+      Settings: Match.objectLike({
+        categories: Match.objectLike({
+          global: Match.objectLike({ colorSchemeMode: "DARK" }),
+        }),
+        components: Match.objectLike({
+          form: Match.objectLike({
+            darkMode: {
+              backgroundColor: "1c1c20ff",
+              borderColor: "3b3b43ff",
+            },
+          }),
+          pageBackground: Match.objectLike({
+            darkMode: { color: "101013ff" },
+            image: { enabled: false },
+          }),
+          primaryButton: Match.objectLike({
+            darkMode: Match.objectLike({
+              defaults: Match.objectLike({ backgroundColor: "52d0ddff" }),
+            }),
+          }),
+        }),
+      }),
       UserPoolId: Match.anyValue(),
-      UseCognitoProvidedValues: true,
     });
+    const brandingResources = Object.values(
+      template.findResources("AWS::Cognito::ManagedLoginBranding"),
+    );
+    expect(brandingResources).toHaveLength(1);
+    expect(JSON.stringify(brandingResources[0])).not.toContain(
+      "UseCognitoProvidedValues",
+    );
     template.hasResourceProperties("AWS::ApiGatewayV2::Authorizer", {
       AuthorizerType: "JWT",
       IdentitySource: ["$request.header.Authorization"],
