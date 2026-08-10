@@ -37,12 +37,12 @@ import {
   completeAccountBootstrap,
   createAccountEnrollment,
   deleteTerminalDBAccount,
-  listAccountSessions,
+  listAccountDevices,
   loadPublicConfiguration,
   openAccountSession,
   redeemPairing,
   RemoteClient,
-  type AccountSessionSummary,
+  type AccountDeviceSummary,
 } from "./remote-client";
 import {
   canAcceptTerminalInput,
@@ -315,6 +315,18 @@ function Dashboard({
   );
 }
 
+export function accountDeviceActivityLabel(
+  lastSeenAt: number,
+  now = Date.now(),
+): string {
+  if (!Number.isFinite(lastSeenAt) || lastSeenAt <= 0) return "Never online";
+  const seconds = Math.max(0, Math.floor(now / 1_000) - lastSeenAt);
+  if (seconds < 60) return "Last seen just now";
+  if (seconds < 60 * 60) return `Last seen ${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 24 * 60 * 60) return `Last seen ${Math.floor(seconds / (60 * 60))}h ago`;
+  return `Last seen ${Math.floor(seconds / (24 * 60 * 60))}d ago`;
+}
+
 function AccountAccess({
   configuration,
   onSessionReady,
@@ -335,7 +347,7 @@ function AccountAccess({
   readonly onBootstrapConsumed?: () => void;
 }) {
   const [accessToken, setAccessToken] = useState<string>();
-  const [sessions, setSessions] = useState<readonly AccountSessionSummary[]>([]);
+  const [devices, setDevices] = useState<readonly AccountDeviceSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [enrollment, setEnrollment] = useState<{
@@ -361,15 +373,15 @@ function AccountAccess({
     try {
       const token = await accountAccessToken(configuration);
       setAccessToken(token);
-      setSessions(token ? await listAccountSessions(token) : []);
+      setDevices(token ? await listAccountDevices(token) : []);
     } catch (refreshError) {
       const message = refreshError instanceof Error
         ? refreshError.message
-        : "Account sessions could not be loaded.";
+        : "Your Macs could not be loaded.";
       if (/\(401\)$/u.test(message)) {
         clearAccountCredentials();
         setAccessToken(undefined);
-        setSessions([]);
+        setDevices([]);
         setError("Account access changed. Sign in again.");
       } else {
         setError(message);
@@ -390,17 +402,17 @@ function AccountAccess({
       void (async () => {
         const token = await accountAccessToken(configuration);
         if (!token) return;
-        const discovered = await listAccountSessions(token);
+        const discovered = await listAccountDevices(token);
         if (!cancelled) {
           setAccessToken(token);
-          setSessions(discovered);
+          setDevices(discovered);
         }
       })().catch((refreshError: unknown) => {
         const message = refreshError instanceof Error ? refreshError.message : "";
         if (/\(401\)$/u.test(message)) {
           clearAccountCredentials();
           setAccessToken(undefined);
-          setSessions([]);
+          setDevices([]);
           setError("Account access changed. Sign in again.");
         }
       });
@@ -537,6 +549,15 @@ function AccountAccess({
           <span>MAC APPROVED · NO EMAIL REQUIRED</span>
           <h2>Create your TerminalDB account</h2>
           <p>This one-time approval connects the Mac that opened this page. Your password goes directly to AWS Cognito and is never sent to TerminalDB.</p>
+          <div className="account-security-notice">
+            <strong>Authenticator app required</strong>
+            <p>After creating the account, Cognito will show a QR code. Scan it with a TOTP authenticator app, then enter the current six-digit code to finish.</p>
+            <ul>
+              <li>Have the authenticator app ready before continuing.</li>
+              <li>For recovery, keep the TOTP in a securely synced authenticator or add it to a second device during setup.</li>
+              <li>There is no email, SMS, passkey, or backup-code alternative. Losing every copy of the authenticator locks sign-in.</li>
+            </ul>
+          </div>
           <form onSubmit={(event) => {
             event.preventDefault();
             void createAccount();
@@ -576,7 +597,7 @@ function AccountAccess({
               required
             />
             <button disabled={signupBusy} type="submit">
-              {signupBusy ? "Creating…" : "Create account"}
+              {signupBusy ? "Creating…" : "Create account & set up authenticator"}
             </button>
           </form>
           <button
@@ -599,6 +620,7 @@ function AccountAccess({
             ? "Sign in with an existing account. Creating a new account requires an updated TerminalDB app on this Mac."
             : "Sign in, or create an account with this Mac's one-time approval. Your current secure-link session stays active while you decide."
           : "Sign in to see every Mac connected to your account. To create an account, start from TerminalDB on a Mac or from an open one-time session."}</p>
+        <small className="account-mfa-note">Every sign-in requires a six-digit code from your authenticator app.</small>
         <div className="account-auth-actions">
           <button
             disabled={loading}
@@ -647,7 +669,7 @@ function AccountAccess({
   return (
     <section className="account-access account-access-signed-in">
       <header>
-        <div><span>YOUR TERMINALDB ACCOUNT</span><h2>Terminal sessions</h2></div>
+        <div><span>YOUR TERMINALDB ACCOUNT</span><h2>Your Macs</h2></div>
         <button
           className="text-button"
           disabled={accountActionBusy}
@@ -657,22 +679,51 @@ function AccountAccess({
         </button>
       </header>
       {bootstrapComplete ? (
-        <p className="account-success">Mac connected. Its terminal sessions will appear here in a moment.</p>
+        <p className="account-success">Mac enrolled. It will appear online as soon as its encrypted session connects.</p>
       ) : null}
-      {sessions.length > 0 ? (
-        <div className="account-session-list">
-          {sessions.map((session) => (
-            <button key={session.sessionId} disabled={loading} onClick={() => void openSession(session.sessionId)}>
-              <span><b>{session.deviceName}</b><small>Started {new Date(session.createdAt * 1_000).toLocaleString()}</small></span>
-              <strong>Open</strong>
-            </button>
-          ))}
+      {devices.length > 0 && devices.every((device) => device.state === "offline") ? (
+        <div className="account-offline-notice" role="status">
+          <strong>You’re signed in. No Macs are online.</strong>
+          <span>Open TerminalDB on an enrolled Mac. It will reconnect automatically and its terminals will become available here.</span>
+        </div>
+      ) : null}
+      {devices.length > 0 ? (
+        <div className="account-device-list">
+          {devices.map((device) => {
+            const online = device.state === "online" && Boolean(device.sessionId);
+            const content = (
+              <>
+                <span className={`device-state device-state-${device.state}`} aria-hidden="true" />
+                <span className="account-device-details">
+                  <b>{device.deviceName}</b>
+                  <small>{device.state === "online"
+                    ? `Online · Session started ${new Date((device.sessionCreatedAt ?? 0) * 1_000).toLocaleString()}`
+                    : device.state === "connecting"
+                      ? "Connecting securely…"
+                      : `Offline · ${accountDeviceActivityLabel(device.lastSeenAt)}`}</small>
+                </span>
+                <strong>{online ? "Open" : device.state === "connecting" ? "Connecting" : "Offline"}</strong>
+              </>
+            );
+            return online ? (
+              <button
+                key={device.deviceId}
+                disabled={loading}
+                onClick={() => void openSession(device.sessionId!)}
+              >
+                {content}
+              </button>
+            ) : (
+              <article key={device.deviceId}>{content}</article>
+            );
+          })}
         </div>
       ) : (
-        <p>No active Macs yet. Enroll TerminalDB once, then its sessions appear here automatically.</p>
+        <p>No Macs are enrolled yet. Add a Mac to make its live terminal sessions available to this account.</p>
       )}
+      <small className="account-privacy-detail">Terminal names and counts remain end-to-end encrypted and appear only after you open an online Mac.</small>
       <div className="account-actions">
-        <button disabled={loading} onClick={() => void refresh()}>Refresh sessions</button>
+        <button disabled={loading} onClick={() => void refresh()}>Refresh Macs</button>
         <button disabled={loading} onClick={() => void createEnrollment()}>Add a Mac</button>
       </div>
       {enrollment ? (

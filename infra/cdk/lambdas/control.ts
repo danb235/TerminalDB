@@ -395,6 +395,8 @@ async function completeAccountBootstrap(
               deviceId,
               name: deviceRecord.name,
               registeredAt: completedAt,
+              lastSeenAt: completedAt,
+              status: "offline",
             },
             ConditionExpression: "attribute_not_exists(PK)",
           },
@@ -836,6 +838,8 @@ async function redeemEnrollment(
               deviceId,
               name: deviceName,
               registeredAt,
+              lastSeenAt: registeredAt,
+              status: "offline",
             },
             ConditionExpression: "attribute_not_exists(PK)",
           },
@@ -936,6 +940,8 @@ async function claimDeviceForAccount(
               deviceId: principalId,
               name: String(principal.name ?? "Mac"),
               registeredAt: Number(principal.registeredAt ?? nowSeconds()),
+              lastSeenAt: nowSeconds(),
+              status: "offline",
             },
           },
         },
@@ -1015,7 +1021,24 @@ async function createSession(
                   ttl,
                 },
               },
-            }]
+            },
+              {
+                Update: {
+                  TableName: tableName,
+                  Key: { PK: `USER#${ownerSub}`, SK: `DEVICE#${principalId}` },
+                  UpdateExpression:
+                    "SET #status = :connecting, lastSeenAt = :now, activeSessionId = :session, sessionStartedAt = :now, #name = :name",
+                  ConditionExpression: "attribute_exists(PK)",
+                  ExpressionAttributeNames: { "#status": "status", "#name": "name" },
+                  ExpressionAttributeValues: {
+                    ":connecting": "connecting",
+                    ":now": createdAt,
+                    ":session": sessionId,
+                    ":name": deviceName,
+                  },
+                },
+              },
+            ]
           : []),
         ...accountActiveCondition(ownerSub),
       ],
@@ -1255,6 +1278,80 @@ async function listAccountSessions(
       }))
       .sort((left, right) => right.createdAt - left.createdAt),
   });
+}
+
+async function accountRecords(
+  ownerSub: string,
+  prefix: "DEVICE#" | "SESSION#",
+): Promise<Record<string, unknown>[]> {
+  const items: Record<string, unknown>[] = [];
+  let exclusiveStartKey: Record<string, unknown> | undefined;
+  do {
+    const result = await dynamo.send(
+      new QueryCommand({
+        TableName: tableName,
+        KeyConditionExpression: "PK = :pk AND begins_with(SK, :prefix)",
+        ExpressionAttributeValues: {
+          ":pk": `USER#${ownerSub}`,
+          ":prefix": prefix,
+        },
+        ConsistentRead: true,
+        ...(exclusiveStartKey ? { ExclusiveStartKey: exclusiveStartKey } : {}),
+      }),
+    );
+    items.push(...(result.Items ?? []));
+    exclusiveStartKey = result.LastEvaluatedKey;
+  } while (exclusiveStartKey);
+  return items;
+}
+
+async function listAccountDevices(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
+  const ownerSub = accountSubject(event);
+  const [deviceItems, sessionItems] = await Promise.all([
+    accountRecords(ownerSub, "DEVICE#"),
+    accountRecords(ownerSub, "SESSION#"),
+  ]);
+  const now = nowSeconds();
+  const activeSessions = new Map<string, Record<string, unknown>>();
+  for (const session of sessionItems) {
+    if (session.status !== "active" || Number(session.ttl) <= now) continue;
+    const deviceId = String(session.deviceId ?? "");
+    const previous = activeSessions.get(deviceId);
+    if (!previous || Number(session.createdAt) > Number(previous.createdAt)) {
+      activeSessions.set(deviceId, session);
+    }
+  }
+  const devices = deviceItems.map((device) => {
+    const deviceId = String(device.deviceId);
+    const activeSession = activeSessions.get(deviceId);
+    const recordedStatus = String(device.status ?? "legacy");
+    const state = !activeSession || recordedStatus === "offline"
+      ? "offline"
+      : recordedStatus === "connecting"
+        ? "connecting"
+        : "online";
+    return {
+      deviceId,
+      deviceName: String(device.name ?? "Mac"),
+      registeredAt: Number(device.registeredAt ?? 0),
+      lastSeenAt: Number(device.lastSeenAt ?? device.registeredAt ?? 0),
+      state,
+      ...(state === "online" && activeSession
+        ? {
+            sessionId: String(activeSession.sessionId),
+            sessionCreatedAt: Number(activeSession.createdAt),
+          }
+        : {}),
+    };
+  }).sort((left, right) => {
+    const rank: Record<string, number> = { online: 0, connecting: 1, offline: 2 };
+    return (rank[left.state] ?? 3) - (rank[right.state] ?? 3) ||
+      right.lastSeenAt - left.lastSeenAt ||
+      left.deviceName.localeCompare(right.deviceName);
+  });
+  return json(200, { devices });
 }
 
 async function createAccountController(
@@ -1699,6 +1796,26 @@ async function endSession(
         },
       }),
     );
+    try {
+      await dynamo.send(
+        new UpdateCommand({
+          TableName: tableName,
+          Key: { PK: `USER#${principal.ownerSub}`, SK: `DEVICE#${principalId}` },
+          UpdateExpression:
+            "SET #status = :offline, lastSeenAt = :now REMOVE activeSessionId, activeConnectionId, sessionStartedAt",
+          ConditionExpression:
+            "attribute_not_exists(activeSessionId) OR activeSessionId = :session",
+          ExpressionAttributeNames: { "#status": "status" },
+          ExpressionAttributeValues: {
+            ":offline": "offline",
+            ":now": endedAt,
+            ":session": sessionId,
+          },
+        }),
+      );
+    } catch {
+      // A replacement session already owns the Mac's online indicator.
+    }
   }
   const [controllers, sockets] = await Promise.all([
     dynamo.send(
@@ -1940,6 +2057,7 @@ async function handleHttp(
   }
   if (method === "GET") {
     if (path === "/api/v1/account/sessions") return listAccountSessions(event);
+    if (path === "/api/v1/account/devices") return listAccountDevices(event);
     const controllerListMatch = path.match(
       /^\/api\/v1\/sessions\/([^/]+)\/controllers$/u,
     );
@@ -1999,12 +2117,18 @@ export const handler: APIGatewayProxyHandlerV2 = async (
     }
     return await handleHttp(event as APIGatewayProxyEventV2);
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Request failed";
     const statusCode =
       error instanceof SyntaxError || error instanceof TypeError
         ? 400
-        : error instanceof Error && /auth|signature|principal|replay|stale|account has been deleted|credentials changed/iu.test(error.message)
+        : /auth|signature|principal|replay|stale|account has been deleted|credentials changed/iu.test(message)
           ? 401
           : 409;
-    return json(statusCode, { error: error instanceof Error ? error.message : "Request failed" });
+    return json(statusCode, {
+      error: message,
+      ...(message === "Unknown or revoked principal"
+        ? { code: "PRINCIPAL_REVOKED" }
+        : {}),
+    });
   }
 };

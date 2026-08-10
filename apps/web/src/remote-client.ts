@@ -47,6 +47,18 @@ export interface AccountSessionSummary {
   readonly createdAt: number;
 }
 
+export type AccountDeviceState = "online" | "connecting" | "offline";
+
+export interface AccountDeviceSummary {
+  readonly deviceId: string;
+  readonly deviceName: string;
+  readonly registeredAt: number;
+  readonly lastSeenAt: number;
+  readonly state: AccountDeviceState;
+  readonly sessionId?: string;
+  readonly sessionCreatedAt?: number;
+}
+
 interface TicketResponse {
   readonly ticket: string;
   readonly websocketUrl: string;
@@ -230,6 +242,18 @@ export async function listAccountSessions(
   if (!response.ok) throw new Error(`Session discovery failed (${response.status})`);
   const body = (await response.json()) as { sessions?: AccountSessionSummary[] };
   return body.sessions ?? [];
+}
+
+export async function listAccountDevices(
+  accessToken: string,
+): Promise<readonly AccountDeviceSummary[]> {
+  const response = await fetch("/api/v1/account/devices", {
+    headers: bearerHeaders(accessToken),
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error(`Mac discovery failed (${response.status})`);
+  const body = (await response.json()) as { devices?: AccountDeviceSummary[] };
+  return body.devices ?? [];
 }
 
 export async function createAccountEnrollment(

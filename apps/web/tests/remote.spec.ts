@@ -885,7 +885,7 @@ test("requires a Mac approval for account creation and keeps sign-in available",
   await page.getByLabel("Username").fill("qa-user");
   await page.getByLabel("Password", { exact: true }).fill("Strong-Test-Password-42!");
   await page.getByLabel("Confirm password").fill("Strong-Test-Password-42!");
-  await page.getByRole("button", { name: "Create account", exact: true }).click();
+  await page.getByRole("button", { name: "Create account & set up authenticator", exact: true }).click();
   await expect.poll(() => signupBody).toBeTruthy();
   expect(signupBody).toMatchObject({
     ClientId: "web-client",
@@ -975,17 +975,19 @@ test("discovers tenant sessions and creates a Mac enrollment from an account", a
       }),
     });
   });
-  await page.route("**/api/v1/account/sessions", async (route) => {
+  await page.route("**/api/v1/account/devices", async (route) => {
     expect(route.request().headers().authorization).toBe("Bearer account-access-token");
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
-        sessions: [{
-          sessionId: "account-session-1234567890",
+        devices: [{
           deviceId: "mac-one",
           deviceName: "Studio Mac",
+          state: "online",
+          lastSeenAt: 1_700_000_000,
+          sessionId: "account-session-1234567890",
           generation: 1,
-          createdAt: 1_700_000_000,
+          sessionCreatedAt: 1_700_000_000,
         }],
       }),
     });
@@ -1025,7 +1027,7 @@ test("discovers tenant sessions and creates a Mac enrollment from an account", a
   });
 
   await page.goto("/?unpaired=1&account=connect&source=desktop");
-  await expect(page.getByRole("heading", { name: "Terminal sessions" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Your Macs" })).toBeVisible();
   await expect(page.getByText("Studio Mac")).toBeVisible();
   await expect(page.getByText("enroll-once")).toBeVisible();
   await expect(page.getByRole("button", { name: "Copy code" })).toBeVisible();
@@ -1085,7 +1087,7 @@ test("returns to sign-in when native account management revokes browser access",
       }),
     });
   });
-  await page.route("**/api/v1/account/sessions", async (route) => {
+  await page.route("**/api/v1/account/devices", async (route) => {
     await route.fulfill({
       status: 401,
       contentType: "application/json",
@@ -1140,16 +1142,18 @@ test("completes Mac binding after Cognito login and discovers its account sessio
       body: JSON.stringify({ completed: true, deviceId: "new-mac" }),
     });
   });
-  await page.route("**/api/v1/account/sessions", async (route) => {
+  await page.route("**/api/v1/account/devices", async (route) => {
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
-        sessions: completed ? [{
-          sessionId: "new-account-session",
+        devices: completed ? [{
           deviceId: "new-mac",
           deviceName: "Approved Mac",
+          state: "online",
+          lastSeenAt: 1_800_000_000,
+          sessionId: "new-account-session",
           generation: 1,
-          createdAt: 1_800_000_000,
+          sessionCreatedAt: 1_800_000_000,
         }] : [],
       }),
     });
@@ -1157,7 +1161,7 @@ test("completes Mac binding after Cognito login and discovers its account sessio
 
   await page.goto("/?unpaired=1&account=finish");
   await expect.poll(() => completed).toBe(true);
-  await expect(page.getByText("Mac connected. Its terminal sessions will appear here in a moment.")).toBeVisible();
+  await expect(page.getByText("Mac enrolled. It will appear online as soon as its encrypted session connects.")).toBeVisible();
   await expect(page.getByText("Approved Mac")).toBeVisible({ timeout: 5_000 });
   await expect.poll(() => page.evaluate(() =>
     sessionStorage.getItem("terminaldb.account.bootstrap.v1"))).toBeNull();
@@ -1190,10 +1194,10 @@ test("logs out after explicitly confirmed account deletion", async ({ page }) =>
       }),
     });
   });
-  await page.route("**/api/v1/account/sessions", async (route) => {
+  await page.route("**/api/v1/account/devices", async (route) => {
     await route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ sessions: [] }),
+      body: JSON.stringify({ devices: [] }),
     });
   });
   await page.route("**/api/v1/account", async (route) => {

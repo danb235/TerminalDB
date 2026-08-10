@@ -55,15 +55,17 @@ describe("TerminalDB Remote infrastructure", () => {
       AccountRecoverySetting: {
         RecoveryMechanisms: [{ Name: "admin_only", Priority: 1 }],
       },
-      WebAuthnUserVerification: "required",
-      WebAuthnFactorConfiguration: "MULTI_FACTOR_WITH_USER_VERIFICATION",
       Policies: {
         PasswordPolicy: Match.objectLike({ MinimumLength: 12 }),
         SignInPolicy: {
-          AllowedFirstAuthFactors: Match.arrayWith(["PASSWORD", "WEB_AUTHN"]),
+          AllowedFirstAuthFactors: ["PASSWORD"],
         },
       },
     });
+    const userPools = Object.values(template.findResources("AWS::Cognito::UserPool"));
+    expect(userPools).toHaveLength(1);
+    expect(JSON.stringify(userPools[0])).not.toContain("WEB_AUTHN");
+    expect(JSON.stringify(userPools[0])).not.toContain("WebAuthn");
     template.hasResourceProperties("AWS::Cognito::UserPoolClient", {
       AllowedOAuthFlows: ["code"],
       PreventUserExistenceErrors: "ENABLED",
@@ -115,9 +117,8 @@ describe("TerminalDB Remote infrastructure", () => {
     template.hasResourceProperties("AWS::Lambda::Function", {
       FunctionName: "terminaldb-remote-dev-pre-signup",
     });
-    const pools = Object.values(template.findResources("AWS::Cognito::UserPool"));
-    expect(pools.every((pool) => !JSON.stringify(pool).includes("AutoVerifiedAttributes"))).toBe(true);
-    expect(pools.every((pool) => !JSON.stringify(pool).includes("EmailConfiguration"))).toBe(true);
+    expect(userPools.every((pool) => !JSON.stringify(pool).includes("AutoVerifiedAttributes"))).toBe(true);
+    expect(userPools.every((pool) => !JSON.stringify(pool).includes("EmailConfiguration"))).toBe(true);
   });
 
   it("keeps the web bucket private and relays WebSockets through CloudFront", () => {

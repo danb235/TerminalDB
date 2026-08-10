@@ -81,9 +81,8 @@ export class TerminalDBRemoteStack extends Stack {
       mfa: cognito.Mfa.REQUIRED,
       mfaSecondFactor: { sms: false, otp: true },
       signInPolicy: {
-        allowedFirstAuthFactors: { password: true, passkey: true },
+        allowedFirstAuthFactors: { password: true },
       },
-      passkeyUserVerification: cognito.PasskeyUserVerification.REQUIRED,
       featurePlan: cognito.FeaturePlan.PLUS,
       standardThreatProtectionMode:
         cognito.StandardThreatProtectionMode.FULL_FUNCTION,
@@ -91,12 +90,6 @@ export class TerminalDBRemoteStack extends Stack {
       deletionProtection: isProduction,
       removalPolicy,
     });
-    // Required-MFA pools cannot use Cognito's default single-factor WebAuthn
-    // mode. In this mode, a user-verified passkey satisfies the MFA requirement
-    // as one phishing-resistant ceremony.
-    const cfnUserPool = userPool.node.defaultChild as cognito.CfnUserPool;
-    cfnUserPool.webAuthnFactorConfiguration =
-      "MULTI_FACTOR_WITH_USER_VERIFICATION";
     const userPoolDomain = userPool.addDomain("UserPoolDomainV2", {
       managedLoginVersion: cognito.ManagedLoginVersion.NEWER_MANAGED_LOGIN,
       cognitoDomain: {

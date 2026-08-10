@@ -32,9 +32,9 @@ AWS-held key.
   issuance, WebSocket connect, Mac key lookup, and relay routing.
 - Cognito stores no required email or phone attribute. Signup is auto-confirmed
   only after a one-time Mac proof, uses a 12-character strong password policy,
-  suppresses user-existence errors, requires TOTP or a user-verified passkey,
-  disables self-service email/SMS recovery, and enables threat protection in
-  enforced mode.
+  suppresses user-existence errors, requires authenticator-app TOTP after the
+  password, offers no email, SMS, passkey, or backup-code alternative, disables
+  self-service recovery, and enables threat protection in enforced mode.
 - Desktop password changes and account deletion require both the enrolled Mac
   key and Touch ID or the Mac login password. Password changes revoke account
   controllers and pre-change tokens but do not bypass or remove registered MFA.
@@ -74,6 +74,7 @@ npm run build
 npm test
 npm run test:web:e2e
 npm run test:cost
+npm run live:totp -w @terminaldb/test-harness -- --profile stelao --region us-west-2 --stage dev
 npm audit --omit=dev --audit-level=high
 npm run cdk:synth
 make test-ci

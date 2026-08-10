@@ -10,9 +10,12 @@
     "live:mac": "node scripts/live-mac.mjs",
     "live:browser": "node scripts/verify-live-browser.mjs",
     "live:socket": "node scripts/probe-websocket.mjs",
-    "live:session": "node scripts/verify-live-session.mjs"
+    "live:session": "node scripts/verify-live-session.mjs",
+    "live:totp": "node scripts/verify-live-totp.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-cognito-identity-provider": "3.1095.0",
+    "@aws-sdk/client-dynamodb": "3.1095.0",
     "@terminaldb/protocol": "0.1.0"
   },
   "devDependencies": {

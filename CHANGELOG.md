@@ -7,6 +7,25 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- The signed-in web dashboard now keeps every enrolled Mac visible with an
+  online, connecting, or offline state and a last-seen time. Account login and
+  device inventory continue to work when every Mac is offline.
+- Enrolled Macs reconnect their account session automatically when TerminalDB
+  starts, so multiple Macs can become remotely available without creating new
+  links or manually reopening Remote Control.
+- A disposable live Cognito QA exercise covers mandatory TOTP enrollment,
+  password-only rejection, invalid and valid authenticator codes, returning
+  sign-in, and cleanup without printing credentials or TOTP secrets.
+
+### Changed
+
+- Every account now requires password plus authenticator-app TOTP. Email, SMS,
+  passkeys, and backup codes are not offered as authentication or recovery
+  alternatives. Signup warns users to keep a second secure authenticator copy
+  because losing every copy requires operator-assisted recovery.
+
 ### Fixed
 
 - Account creation now brings the macOS Keychain approval forward when a
@@ -14,6 +33,9 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   non-exportable identity. The native window explains the approval instead of
   appearing to hang, and cancellation returns actionable guidance rather than
   a raw OSStatus error.
+- Deleting an account from the web now causes enrolled Macs to discard the
+  revoked account binding on their next live reconnect, return to one-time-link
+  mode, and stop retrying a permanently deleted principal.
 
 ## [0.3.0] - 2026-08-08
 

@@ -71,17 +71,22 @@ encrypted Mac/browser channel, never an HTTP URL or log.
 The browser submits username and password directly to Cognito with the one-time
 grant. A pre-signup Lambda atomically consumes it and auto-confirms the user;
 there is no email or phone attribute. Managed login then uses authorization
-code with PKCE and requires TOTP setup, while WebAuthn passkeys are enabled as
-an MFA-capable first factor. After login, the web app atomically binds the
+code with PKCE and requires authenticator-app TOTP setup. Email, SMS, passkeys,
+and backup codes are not alternatives. The setup screen recommends enrolling a
+second secure or securely synced authenticator copy because losing every copy
+requires operator assistance. After login, the web app atomically binds the
 Cognito `sub` to the waiting Mac. The agent polls with the grant, replaces an
 active guest session if necessary, and starts the account-owned session without
 a copy/paste step.
 
-From then on, every active remote session from that Mac appears under
-**Terminal sessions** after login on a phone or another browser. Selecting a
-session registers that browser's own non-exportable controller keys and opens
-the encrypted terminal. **Add a Mac** remains available in the signed-in web
-account for enrolling additional Macs.
+From then on, every enrolled Mac appears under **Your Macs** after login on a
+phone or another browser. Online Macs show their available terminals; offline
+Macs stay in the inventory with a last-seen time. Account authentication is
+hosted by Cognito, so the user can still sign in and see the offline inventory
+when no TerminalDB app is running. Starting TerminalDB automatically reconnects
+an enrolled Mac. Selecting an online session registers that browser's own
+non-exportable controller keys and opens the encrypted terminal. **Add a Mac**
+remains available for enrolling additional Macs.
 
 Creating an account does not remove the link workflow. **Open Remote Web App**
 and **Pair a Phone** continue to create a session-scoped, single-use guest link,
@@ -98,8 +103,8 @@ independent.
 On an enrolled Mac, **Change Password…** requires Touch ID or the Mac login
 password, sets a new Cognito password, rejects pre-change API tokens, revokes
 account controllers, and globally signs out Cognito sessions. The existing
-TOTP authenticator and passkeys remain registered and are still required at the
-next sign-in. **Delete Account…** requires the same local authentication plus
+TOTP authenticator remains registered and is still required at the next
+sign-in. **Delete Account…** requires the same local authentication plus
 the exact word `DELETE`, then performs the same tenant-scoped cleanup as web
 deletion. If every MFA factor is lost, the account is intentionally
 unrecoverable without operator action; Cognito has no safe administrator API

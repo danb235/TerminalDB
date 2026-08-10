@@ -1453,16 +1453,56 @@ p {
   font-size: 11px;
 }
 
-.account-session-list {
+.account-security-notice,
+.account-offline-notice {
+  display: grid;
+  gap: 7px;
+  padding: 11px 12px;
+  border: 1px solid rgb(82 208 221 / 34%);
+  border-radius: 5px;
+  background: rgb(82 208 221 / 7%);
+}
+
+.account-security-notice strong,
+.account-offline-notice strong {
+  color: var(--tdb-cyan);
+  font-size: 12px;
+}
+
+.account-security-notice p,
+.account-security-notice ul,
+.account-offline-notice span {
+  margin: 0;
+  color: var(--tdb-muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.account-security-notice ul {
+  display: grid;
+  gap: 4px;
+  padding-left: 18px;
+}
+
+.account-mfa-note,
+.account-privacy-detail {
+  color: var(--tdb-muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.account-device-list {
   display: grid;
   gap: 7px;
 }
 
-.account-session-list > button {
-  display: flex;
+.account-device-list > button,
+.account-device-list > article {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
   min-height: 55px;
   align-items: center;
-  justify-content: space-between;
+  gap: 10px;
   padding: 10px 12px;
   border: 1px solid var(--tdb-border);
   border-radius: 5px;
@@ -1470,23 +1510,52 @@ p {
   text-align: left;
 }
 
-.account-session-list span {
+.account-device-list > article {
+  opacity: 0.82;
+}
+
+.account-device-details {
   display: grid;
   gap: 5px;
+  min-width: 0;
 }
 
-.account-session-list b {
+.account-device-list b {
+  overflow: hidden;
   font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.account-session-list small {
+.account-device-list small {
   color: var(--tdb-muted);
   font-size: 9px;
 }
 
-.account-session-list strong {
+.account-device-list strong {
   color: var(--tdb-cyan);
   font-size: 11px;
+}
+
+.account-device-list > article strong {
+  color: var(--tdb-quiet);
+}
+
+.device-state {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tdb-quiet);
+}
+
+.device-state-online {
+  background: var(--tdb-lime);
+  box-shadow: 0 0 0 3px rgb(180 227 77 / 10%);
+}
+
+.device-state-connecting {
+  background: var(--tdb-amber);
+  box-shadow: 0 0 0 3px rgb(239 181 78 / 10%);
 }
 
 .account-actions {

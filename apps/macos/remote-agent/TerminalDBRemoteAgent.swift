@@ -93,6 +93,7 @@ private enum AgentError: Error, LocalizedError {
     case invalidPublicKey
     case invalidResponse
     case server(String)
+    case remoteHTTP(statusCode: Int, code: String?, message: String)
     case notEnrolled
     case sessionUnavailable
     case socket(String)
@@ -104,11 +105,17 @@ private enum AgentError: Error, LocalizedError {
         case .invalidPublicKey: return "The remote public key is invalid."
         case .invalidResponse: return "The remote service returned an invalid response."
         case .server(let value): return value
+        case .remoteHTTP(_, _, let message): return message
         case .notEnrolled: return "This Mac is not enrolled for TerminalDB Remote."
         case .sessionUnavailable: return "The remote session is not available."
         case .socket(let value): return "Local remote-agent socket failed: \(value)"
         case .cryptography(let value): return "Remote encryption failed: \(value)"
         }
+    }
+
+    var revokesAccountEnrollment: Bool {
+        guard case .remoteHTTP(let statusCode, let code, _) = self else { return false }
+        return statusCode == 401 && code == "PRINCIPAL_REVOKED"
     }
 }
 
@@ -910,6 +917,7 @@ private final class RemoteAgent: @unchecked Sendable {
     private var activePairingExpiresAt: Int?
     private var trustedControllers: [[String: Any]] = []
     private var accountBootstrapInProgress = false
+    private var accountResumeInProgress = false
 
     private var rotationDelaySeconds: Double {
         let environment = ProcessInfo.processInfo.environment
@@ -969,6 +977,7 @@ private final class RemoteAgent: @unchecked Sendable {
                         self.state.sessionID = nil
                         self.state.generation = nil
                         try? self.store.save(self.state)
+                        self.resumeAccountRemoteIfReady()
                     }
                 }
             }
@@ -1075,6 +1084,7 @@ private final class RemoteAgent: @unchecked Sendable {
                 self.shutdownWork?.cancel()
                 self.shutdownWork = nil
                 client.send(self.statusMessage())
+                self.resumeAccountRemoteIfReady()
                 return
             }
             switch type {
@@ -1395,7 +1405,7 @@ private final class RemoteAgent: @unchecked Sendable {
                 queue.async {
                     self.broadcastStatus(
                         self.lastStatus,
-                        detail: "Password changed. Sign in again with your existing authenticator or passkey."
+                        detail: "Password changed. Sign in again with your existing authenticator-app TOTP."
                     )
                 }
             } catch {
@@ -1633,6 +1643,76 @@ private final class RemoteAgent: @unchecked Sendable {
             )
         }
         try await openCloudSocket()
+    }
+
+    private func resumeAccountRemoteIfReady() {
+        guard !accountResumeInProgress,
+              state.accountOwned == true,
+              !state.enabled,
+              state.sessionID == nil,
+              state.deviceID != nil,
+              !state.baseURL.isEmpty,
+              clients.values.contains(where: { $0.authenticated }) else {
+            return
+        }
+        accountResumeInProgress = true
+        broadcastStatus(
+            "connecting",
+            detail: "Reconnecting this enrolled Mac to your TerminalDB account…"
+        )
+        Task {
+            do {
+                let session = try await request(
+                    method: "POST",
+                    path: "/api/v1/sessions",
+                    body: ["protocolVersion": protocolVersion],
+                    authenticated: true
+                )
+                guard let sessionID = session["sessionId"] as? String,
+                      let generation = session["generation"] as? Int else {
+                    throw AgentError.invalidResponse
+                }
+                queue.sync {
+                    self.state.sessionID = sessionID
+                    self.state.generation = generation
+                    self.state.enabled = true
+                    self.accountResumeInProgress = false
+                    try? self.store.save(self.state)
+                }
+                try await openCloudSocket()
+            } catch {
+                queue.async {
+                    self.accountResumeInProgress = false
+                    if self.clearRevokedAccountEnrollmentIfNeeded(error) { return }
+                    if self.state.enabled {
+                        self.cloudFailed(error.localizedDescription)
+                    } else {
+                        self.broadcastError(
+                            "This enrolled Mac could not reconnect: \(error.localizedDescription)"
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    @discardableResult
+    private func clearRevokedAccountEnrollmentIfNeeded(_ error: Error) -> Bool {
+        guard let agentError = error as? AgentError,
+              agentError.revokesAccountEnrollment,
+              state.accountOwned == true else {
+            return false
+        }
+        finishDisablingRemote(notifyServer: false)
+        state.deviceID = nil
+        state.accountOwned = false
+        accountResumeInProgress = false
+        try? store.save(state)
+        broadcastStatus(
+            "disabled",
+            detail: "This Mac's TerminalDB account was deleted or its access was revoked. One-time links are still available."
+        )
+        return true
     }
 
     private func createPairing() {
@@ -1889,7 +1969,12 @@ private final class RemoteAgent: @unchecked Sendable {
             self.reconnectWork = nil
             Task {
                 do { try await self.openCloudSocket() }
-                catch { self.cloudFailed(error.localizedDescription) }
+                catch {
+                    self.queue.async {
+                        if self.clearRevokedAccountEnrollmentIfNeeded(error) { return }
+                        self.cloudFailed(error.localizedDescription)
+                    }
+                }
             }
         }
         reconnectWork = work
@@ -1908,6 +1993,7 @@ private final class RemoteAgent: @unchecked Sendable {
                     try await self.openCloudSocket()
                 } catch {
                     self.queue.async {
+                        if self.clearRevokedAccountEnrollmentIfNeeded(error) { return }
                         if self.cloud === previous,
                            previous?.isOpen == true {
                             self.rotationPreviousCloud = nil
@@ -2544,8 +2630,11 @@ private final class RemoteAgent: @unchecked Sendable {
         guard let http = response as? HTTPURLResponse else { throw AgentError.invalidResponse }
         let parsed = (try? jsonObject(data)) ?? [:]
         guard (200..<300).contains(http.statusCode) else {
-            throw AgentError.server(
-                parsed["error"] as? String ?? "Remote service returned HTTP \(http.statusCode)"
+            throw AgentError.remoteHTTP(
+                statusCode: http.statusCode,
+                code: parsed["code"] as? String,
+                message: parsed["error"] as? String ??
+                    "Remote service returned HTTP \(http.statusCode)"
             )
         }
         return parsed
@@ -2666,6 +2755,20 @@ private struct TerminalDBRemoteAgentMain {
                       localAgentCapabilities.contains(accountBootstrapCapability) else {
                     throw AgentError.server(
                         "Account bootstrap capability was not advertised"
+                    )
+                }
+                guard AgentError.remoteHTTP(
+                    statusCode: 401,
+                    code: "PRINCIPAL_REVOKED",
+                    message: "revoked"
+                ).revokesAccountEnrollment,
+                !AgentError.remoteHTTP(
+                    statusCode: 401,
+                    code: nil,
+                    message: "signature failed"
+                ).revokesAccountEnrollment else {
+                    throw AgentError.server(
+                        "Revoked account enrollment classification failed"
                     )
                 }
                 let expected = Data(

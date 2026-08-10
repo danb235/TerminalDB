@@ -21,15 +21,17 @@ function connectEvent(input: {
   readonly clientId: string;
   readonly sessionId?: string;
   readonly ownerSub?: string;
+  readonly role?: "mac" | "controller";
+  readonly connectionId?: string;
 }) {
   return {
     requestContext: {
-      connectionId: "connection-1",
+      connectionId: input.connectionId ?? "connection-1",
       eventType: "CONNECT",
       routeKey: "$connect",
       authorizer: {
         sessionId: input.sessionId ?? "session-a",
-        role: "controller",
+        role: input.role ?? "controller",
         clientId: input.clientId,
         generation: 1,
         ownerSub: input.ownerSub ?? "",
@@ -164,5 +166,73 @@ describe("WebSocket connection tenant boundary", () => {
     const deletion = commandInput(mocks.send.mock.calls[0]?.[0]);
     expect(deletion.ReturnValues).toBe("ALL_OLD");
     expect(deletion.Key.PK).toMatch(/^TICKET#/u);
+  });
+
+  it("marks an enrolled Mac online only after its authenticated socket connects", async () => {
+    mocks.send
+      .mockResolvedValueOnce({
+        Item: {
+          sessionId: "session-a",
+          deviceId: "mac-a",
+          ownerSub: tenantA,
+          status: "active",
+          generation: 1,
+          ttl: activeUntil,
+        },
+      })
+      .mockResolvedValueOnce({
+        Item: { deviceId: "mac-a", ownerSub: tenantA },
+      })
+      .mockResolvedValueOnce({});
+
+    const response = await handler(connectEvent({
+      clientId: "mac-a",
+      role: "mac",
+    }) as never);
+
+    expect(response).toMatchObject({ statusCode: 200 });
+    const transaction = commandInput(mocks.send.mock.calls[2]?.[0]);
+    expect(transaction.TransactItems).toHaveLength(3);
+    expect(transaction.TransactItems[0].Put.Item.ownerSub).toBe(tenantA);
+    expect(transaction.TransactItems[2].Update).toMatchObject({
+      Key: { PK: `USER#${tenantA}`, SK: "DEVICE#mac-a" },
+      ConditionExpression: "attribute_exists(PK)",
+    });
+    expect(transaction.TransactItems[2].Update.ExpressionAttributeValues)
+      .toMatchObject({ ":online": "online", ":connection": "connection-1" });
+  });
+
+  it("marks the Mac offline on disconnect without racing a replacement socket", async () => {
+    mocks.send
+      .mockResolvedValueOnce({
+        Item: {
+          connectionId: "connection-1",
+          sessionId: "session-a",
+          role: "mac",
+          clientId: "mac-a",
+          ownerSub: tenantA,
+        },
+      })
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ Attributes: { connectionId: "connection-1" } })
+      .mockResolvedValueOnce({});
+
+    const response = await handler({
+      requestContext: {
+        connectionId: "connection-1",
+        eventType: "DISCONNECT",
+        routeKey: "$disconnect",
+      },
+    } as never);
+
+    expect(response).toMatchObject({ statusCode: 200 });
+    const socketDelete = commandInput(mocks.send.mock.calls[2]?.[0]);
+    expect(socketDelete.ReturnValues).toBe("ALL_OLD");
+    const offline = commandInput(mocks.send.mock.calls[3]?.[0]);
+    expect(offline).toMatchObject({
+      Key: { PK: `USER#${tenantA}`, SK: "DEVICE#mac-a" },
+      ConditionExpression: "activeConnectionId = :connection",
+    });
+    expect(offline.ExpressionAttributeValues[":offline"]).toBe("offline");
   });
 });

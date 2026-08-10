@@ -12,7 +12,15 @@ guest regression, encryption check, or production security gate fails.
   hash, is single-use, and is never placed in an HTTP URL or log.
 - Submit username/password directly to Cognito, consume the grant in the
   pre-signup trigger, auto-confirm without email/phone, and complete required
-  TOTP or user-verified passkey setup.
+  authenticator-app TOTP setup. Confirm the QR and manual setup key are usable,
+  an incorrect or expired six-digit code is rejected, cancellation can restart
+  safely, and the next password sign-in requires a fresh TOTP code.
+- Confirm password is the only allowed first factor and authenticator-app TOTP
+  is the only MFA setup choice. Email, SMS, passkeys, and backup codes must not
+  appear as authentication or recovery alternatives.
+- Confirm setup recommends a second secure or securely synced authenticator
+  copy and clearly warns that losing every copy requires operator assistance.
+  Exercise ordinary clock skew, code reuse, throttling, and interrupted setup.
 - Prove OAuth uses authorization code with PKCE and rejects a mismatched state.
 - Reject an external post-authentication return URL and never place the PKCE
   verifier, access token, or enrollment code in the authorization URL.
@@ -47,7 +55,7 @@ guest regression, encryption check, or production security gate fails.
   guest link explicitly afterward must still work.
 - Require Touch ID or the Mac login password for desktop password changes and
   account deletion. Verify a change rejects the old password, accepts the new
-  password only with the existing MFA factor, rejects pre-change API tokens,
+  password only with the existing TOTP factor, rejects pre-change API tokens,
   and disconnects existing account controllers.
 - Verify the native Remote Control panel opens inside the terminal, keeps
   Create Account visible, dismisses with its X and Escape, enables account
@@ -68,14 +76,21 @@ guest regression, encryption check, or production security gate fails.
 
 ## 5. Web experience
 
-- Sign in on a browser with no saved controller and list every active enrolled
-  Mac session.
-- Add a Mac, observe automatic session discovery, open it, switch to another
-  session, sign out, and verify account tickets stop immediately.
+- Sign in on a browser with no saved controller and list every enrolled Mac,
+  including online, connecting, and offline status plus last-seen time.
+- Add multiple Macs, observe automatic device discovery, and confirm each
+  online Mac exposes all of its TerminalDB windows and tabs. Open one, switch
+  to another session, sign out, and verify account tickets stop immediately.
 - Sign back in after logout and confirm the same active account session remains
   discoverable. Delete a disposable account only after the exact `DELETE`
   confirmation, then verify its credentials and previously issued token fail,
-  its owned remote records are gone, and an unrelated one-time link still works.
+  its owned remote records are gone, each Mac clears the revoked account
+  binding, and an unrelated one-time link still works.
+- Quit TerminalDB on every enrolled Mac. Confirm account password plus TOTP
+  sign-in still succeeds, the dashboard stays signed in, every Mac remains
+  visible as offline, and the page provides a friendly “open TerminalDB” next
+  step rather than an authentication error. Reopen one Mac and confirm it
+  automatically transitions through connecting to online with its sessions.
 - Exercise phone, tablet, and desktop viewports, keyboard input, accessibility,
   offline/reconnect, controller rotation, and stale-session handling.
 - Open Accounts through a one-time session from a pre-account Mac build and
@@ -89,8 +104,9 @@ guest regression, encryption check, or production security gate fails.
 - Build and test all workspaces, compile/sign the macOS app, synthesize both CDK
   stacks with `cdk-nag`, and run the production dependency audit.
 - Inspect the synthesized account route for JWT authorization, access-token
-  scope, Cognito Plus threat protection, required TOTP, private origins, WAF,
-  no-payload logs, DynamoDB TTL/recovery, and production deletion protection.
+  scope, Cognito Plus threat protection, required app-only TOTP, password-only
+  first factor, private origins, WAF, no-payload logs, DynamoDB TTL/recovery,
+  and production deletion protection.
 - Verify the pool has no required email/phone attributes, uses `admin_only`
   recovery, and rejects direct signup without the pre-signup grant. Exercise
   alarms, budgets, emergency pairing disablement, controller revocation, and
@@ -107,6 +123,15 @@ it in the process list: save the code in a mode-`0600` temporary file and pass
 its path to `npm run live:mac -w @terminaldb/test-harness --
 --enrollment-code-file /path/to/code`. Remove the file when the fixture stops.
 
+Before the multi-tenant matrix, exercise the real Cognito pool with a
+disposable account. The command prints only named pass/fail checks and deletes
+the temporary user and bootstrap record in a `finally` block:
+
+```sh
+npm run live:totp -w @terminaldb/test-harness -- \
+  --profile stelao --region us-west-2 --stage dev
+```
+
 1. User A enrolls Mac A; user B enrolls Mac B.
 2. Both users open their own sessions from a second browser and a phone.
 3. Attempt every A-to-B session-ID substitution at HTTP, ticket, WebSocket, and
@@ -115,8 +140,9 @@ its path to `npm run live:mac -w @terminaldb/test-harness --
 5. Revoke A's browser, sign out, change A's password through the approved Mac
    flow, and verify old tickets, API tokens, controllers, and refresh tokens no
    longer work while the existing MFA factor remains required.
-6. Disable both Macs and confirm session indexes disappear immediately and TTL
-   cleanup retains no terminal content.
+6. Disable both Macs and confirm the devices remain visible as offline, active
+   session access disappears immediately, login remains usable, and TTL cleanup
+   retains no terminal content. Reopen one Mac and confirm automatic recovery.
 
 Record CloudFormation stack IDs, test-user IDs, timestamps, and pass/fail only.
 Never record pairing URLs, enrollment codes, OAuth tokens, or terminal output.
