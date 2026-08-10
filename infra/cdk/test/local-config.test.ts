@@ -32,10 +32,27 @@ describe("local CDK configuration", () => {
     });
   });
 
+  it("persists branded application and authentication domains", () => {
+    expect(readLocalConfig(fixture(JSON.stringify({
+      domainName: "app.example.com",
+      certificateArn:
+        "arn:aws:acm:us-east-1:111111111111:certificate/00000000-0000-4000-8000-000000000000",
+      authDomainName: "auth.example.com",
+      authCertificateArn:
+        "arn:aws:acm:us-east-1:111111111111:certificate/00000000-0000-4000-8000-000000000000",
+    })))).toMatchObject({
+      domainName: "app.example.com",
+      authDomainName: "auth.example.com",
+    });
+  });
+
   it("rejects malformed or invalid configuration", () => {
     expect(() => readLocalConfig(fixture("[]"))).toThrow(/must be a JSON object/u);
     expect(() => readLocalConfig(fixture('{"budgetEmail":"not-an-email"}'))).toThrow(
       /must be a valid email address/u,
+    );
+    expect(() => readLocalConfig(fixture('{"authDomainName":"HTTPS://EXAMPLE"}'))).toThrow(
+      /valid lowercase DNS name/u,
     );
   });
 });

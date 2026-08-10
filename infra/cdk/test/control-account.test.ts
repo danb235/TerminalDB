@@ -142,6 +142,82 @@ describe("account control-plane tenant isolation", () => {
     expect(JSON.stringify(transaction)).not.toContain(responseBody.bootstrapToken);
   });
 
+  it("lets the holder of an unused one-time grant cancel account setup", async () => {
+    mocks.send.mockImplementation(async (command: unknown) => {
+      const input = commandInput(command);
+      return input.ReturnValues === "ALL_OLD"
+        ? { Attributes: { status: "pending", ttl: activeUntil } }
+        : {};
+    });
+
+    const response = await invoke({
+      method: "DELETE",
+      path: "/api/v1/account-bootstrap",
+      body: { bootstrapToken: "cancel-this-bootstrap" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body ?? "{}")).toEqual({ canceled: true });
+    const deletion = mocks.send.mock.calls
+      .map(([command]) => commandInput(command))
+      .find((input) => input.ConditionExpression);
+    expect(deletion).toBeDefined();
+    expect(deletion!.Key.PK).toBe(`ACCOUNT_BOOTSTRAP#${sha256("cancel-this-bootstrap")}`);
+    expect(deletion!.ConditionExpression).toContain("#status <> :complete");
+    expect(JSON.stringify(deletion)).not.toContain("cancel-this-bootstrap");
+  });
+
+  it("removes an incomplete legacy Cognito user when its signup is canceled", async () => {
+    mocks.send.mockImplementation(async (command: unknown) => {
+      const input = commandInput(command);
+      return input.ReturnValues === "ALL_OLD"
+        ? {
+            Attributes: {
+              status: "signup-confirmed",
+              cognitoUsername: "unfinished-user",
+              ttl: activeUntil,
+            },
+          }
+        : {};
+    });
+
+    const response = await invoke({
+      method: "DELETE",
+      path: "/api/v1/account-bootstrap",
+      body: { bootstrapToken: "legacy-bootstrap" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const cognitoRequest = commandInput(mocks.cognitoSend.mock.calls[0]?.[0]);
+    expect(cognitoRequest).toEqual({
+      UserPoolId: "us-west-2_testpool",
+      Username: "unfinished-user",
+    });
+  });
+
+  it("never deletes a Cognito user after account completion wins the cancellation race", async () => {
+    mocks.send.mockImplementation(async (command: unknown) => {
+      const input = commandInput(command);
+      if (input.ReturnValues === "ALL_OLD") {
+        throw Object.assign(new Error("completion won"), {
+          name: "ConditionalCheckFailedException",
+        });
+      }
+      return input.ConsistentRead
+        ? { Item: { status: "complete", ttl: activeUntil } }
+        : {};
+    });
+
+    const response = await invoke({
+      method: "DELETE",
+      path: "/api/v1/account-bootstrap",
+      body: { bootstrapToken: "completed-bootstrap" },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(mocks.cognitoSend).not.toHaveBeenCalled();
+  });
+
   it("atomically binds the approved Cognito subject to the waiting Mac", async () => {
     mocks.send.mockImplementation(async (command: unknown) => {
       const input = commandInput(command);
@@ -182,6 +258,43 @@ describe("account control-plane tenant isolation", () => {
     expect(serialized).toContain('"#temporary":"temporary"');
     expect(serialized).toContain("REMOVE #ttl, #temporary");
     expect(serialized).not.toContain("approved-bootstrap");
+  });
+
+  it("creates the TerminalDB account after Cognito managed signup and binds the waiting Mac", async () => {
+    mocks.send.mockImplementation(async (command: unknown) => {
+      const input = commandInput(command);
+      if (String(input.Key?.PK).startsWith("ACCOUNT_BOOTSTRAP#")) {
+        return {
+          Item: {
+            PK: input.Key.PK,
+            SK: "META",
+            status: "pending",
+            deviceName: "QA Mac",
+            signingPublicKey: publicKey,
+            agreementPublicKey: publicKey,
+            ttl: activeUntil,
+          },
+        };
+      }
+      return {};
+    });
+
+    const response = await invoke({
+      method: "POST",
+      path: "/api/v1/account/bootstrap/complete",
+      sub: tenantA,
+      issuedAt: Math.floor(Date.now() / 1_000),
+      body: { bootstrapToken: "managed-login-bootstrap" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const transaction = mocks.send.mock.calls
+      .map(([command]) => commandInput(command))
+      .find((input) => input.TransactItems);
+    const serialized = JSON.stringify(transaction);
+    expect(serialized).toContain('"#status = :pending AND #ttl > :now"');
+    expect(serialized).toContain(`"PK":"USER#${tenantA}","SK":"ACCOUNT#META"`);
+    expect(serialized).toContain('"recovery":"authenticator-app-only"');
   });
 
   it("connects another Mac only after a fresh login to an existing account", async () => {

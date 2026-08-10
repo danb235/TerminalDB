@@ -4,11 +4,11 @@ import {
   accountAccessToken,
   accountTokenIssuedAt,
   beginAccountSignIn,
+  beginAccountSignUp,
   changeAccountPassword,
   clearAccountCredentials,
   completeAccountSignIn,
   hasRecentAccountAuthentication,
-  signUpWithBootstrap,
   signOutAccount,
   type AccountAuthConfiguration,
 } from "./account-auth";
@@ -89,32 +89,20 @@ describe("Cognito account OAuth", () => {
       .toBe("/?account=password&source=desktop");
   });
 
-  it("sends a Mac-approved signup directly to Cognito without email", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ UserConfirmed: true }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-    );
+  it("keeps account creation inside Cognito's managed signup ceremony", async () => {
+    const navigate = vi.fn();
 
-    await signUpWithBootstrap({
-      configuration: {
-        ...configuration,
-        issuer: "https://cognito-idp.us-west-2.amazonaws.com/us-west-2_pool",
-      },
-      username: "qa-user",
-      password: "Strong-Test-Password-42!",
-      bootstrapToken: "mac-approved-token",
+    await beginAccountSignUp(configuration, navigate, {
+      returnTo: "/?account=finish&intent=create",
+      forceReauthentication: true,
     });
 
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://cognito-idp.us-west-2.amazonaws.com");
-    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as Record<string, any>;
-    expect(body).toMatchObject({
-      ClientId: "web-client",
-      Username: "qa-user",
-      ClientMetadata: { bootstrapToken: "mac-approved-token" },
-    });
-    expect(body).not.toHaveProperty("UserAttributes");
+    const url = navigate.mock.calls[0]?.[0] as URL;
+    expect(url.pathname).toBe("/signup");
+    expect(url.searchParams.get("prompt")).toBe("login");
+    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(sessionStorage.getItem("terminaldb.account.return-to.v1"))
+      .toBe("/?account=finish&intent=create");
   });
 
   it("changes the password directly with Cognito instead of the TerminalDB API", async () => {

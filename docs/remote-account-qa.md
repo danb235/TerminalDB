@@ -50,6 +50,11 @@ guest regression, encryption check, or production security gate fails.
 - Reject an expired, replayed, differently signed, or cross-account Mac
   bootstrap. Require local Mac approval before account enrollment. If a guest session is
   active, end it before claiming the Mac and starting the account session.
+- Create a password with the browser password manager and confirm Cognito does
+  not ask for it a second time during the same signup. Sign out and verify the
+  saved credential is offered from the same TerminalDB authentication domain.
+- Cancel before leaving the account introduction and verify the Mac exits its
+  setting-up state promptly and can issue a fresh approval.
 - Claim an existing link-only Mac without rotating its Keychain identity.
 - Reject attempts to transfer an already-owned Mac to a different subject.
 - Derive identical Mac/browser ECDH material from an account controller salt;

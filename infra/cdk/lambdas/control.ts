@@ -305,12 +305,61 @@ async function accountBootstrapStatus(
     }),
   );
   if (!result.Item || Number(result.Item.ttl) <= nowSeconds()) {
-    return json(410, { error: "Account setup expired. Start again from TerminalDB." });
+    return json(410, { error: "Account setup ended. Start again when you are ready." });
   }
   if (result.Item.status === "complete" && result.Item.deviceId) {
     return json(200, { status: "complete", deviceId: result.Item.deviceId });
   }
   return json(200, { status: "pending" });
+}
+
+async function cancelAccountBootstrap(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
+  const body = parseBody(event);
+  const token = stringField(body, "bootstrapToken", 256);
+  const key = { PK: `ACCOUNT_BOOTSTRAP#${sha256(token)}`, SK: "META" };
+  let bootstrap: Record<string, unknown> | undefined;
+  try {
+    const deleted = await dynamo.send(new DeleteCommand({
+      TableName: tableName,
+      Key: key,
+      ConditionExpression: "#status <> :complete AND #ttl > :now",
+      ExpressionAttributeNames: { "#status": "status", "#ttl": "ttl" },
+      ExpressionAttributeValues: { ":complete": "complete", ":now": nowSeconds() },
+      ReturnValues: "ALL_OLD",
+    }));
+    bootstrap = deleted.Attributes;
+  } catch (error) {
+    if ((error as { name?: string }).name === "ConditionalCheckFailedException") {
+      const current = await dynamo.send(new GetCommand({
+        TableName: tableName,
+        Key: key,
+        ConsistentRead: true,
+      }));
+      if (current.Item?.status === "complete") {
+        return json(409, { error: "Account setup already completed" });
+      }
+      return json(410, { error: "Account setup already ended" });
+    }
+    throw error;
+  }
+  if (!bootstrap) return json(410, { error: "Account setup already ended" });
+  if (
+    bootstrap.status === "signup-confirmed" &&
+    typeof bootstrap.cognitoUsername === "string" &&
+    cognitoUserPoolId
+  ) {
+    try {
+      await cognito.send(new AdminDeleteUserCommand({
+        UserPoolId: cognitoUserPoolId,
+        Username: bootstrap.cognitoUsername,
+      }));
+    } catch (error) {
+      if ((error as { name?: string }).name !== "UserNotFoundException") throw error;
+    }
+  }
+  return json(200, { canceled: true });
 }
 
 async function completeAccountBootstrap(
@@ -334,27 +383,29 @@ async function completeAccountBootstrap(
     }
     return json(200, { completed: true, deviceId: bootstrap.deviceId });
   }
-  const existingAccountConnection = bootstrap.status === "pending";
-  if (!existingAccountConnection && (
+  const pendingManagedLoginCompletion = bootstrap.status === "pending";
+  if (!pendingManagedLoginCompletion && (
     bootstrap.status !== "signup-confirmed" ||
     typeof bootstrap.cognitoUsername !== "string" ||
     !constantEqual(bootstrap.cognitoUsername, username)
   )) {
     return json(403, { error: "Complete the approved Cognito signup before connecting this Mac" });
   }
-  if (existingAccountConnection) {
+  let existingAccountConnection = false;
+  if (pendingManagedLoginCompletion) {
     recentAccountIdentity(event);
     const account = await dynamo.send(new GetCommand({
       TableName: tableName,
       Key: { PK: `USER#${ownerSub}`, SK: "ACCOUNT#META" },
       ConsistentRead: true,
     }));
-    if (!account.Item || !constantEqual(String(account.Item.username ?? ""), username)) {
-      return json(403, {
-        error: "Create the account from TerminalDB before connecting another Mac",
-      });
+    if (account.Item) {
+      if (!constantEqual(String(account.Item.username ?? ""), username)) {
+        return json(403, { error: "This account identity does not match its TerminalDB record" });
+      }
+      existingAccountConnection = true;
+      await assertAccountActive(ownerSub);
     }
-    await assertAccountActive(ownerSub);
   }
   const deviceId = typeof bootstrap.previousDeviceId === "string"
     ? bootstrap.previousDeviceId
@@ -403,7 +454,7 @@ async function completeAccountBootstrap(
             Key: key,
             UpdateExpression:
               "SET #status = :complete, ownerSub = :owner, deviceId = :device, completedAt = :now, #ttl = :ttl",
-            ConditionExpression: existingAccountConnection
+            ConditionExpression: pendingManagedLoginCompletion
               ? "#status = :pending AND #ttl > :now"
               : "#status = :confirmed AND cognitoUsername = :username AND #ttl > :now",
             ExpressionAttributeNames: { "#status": "status", "#ttl": "ttl" },
@@ -413,7 +464,7 @@ async function completeAccountBootstrap(
               ":device": deviceId,
               ":now": completedAt,
               ":ttl": completedAt + 5 * 60,
-              ...(existingAccountConnection
+              ...(pendingManagedLoginCompletion
                 ? { ":pending": "pending" }
                 : {
                     ":confirmed": "signup-confirmed",
@@ -2043,6 +2094,9 @@ async function handleHttp(
   }
   if (method === "POST" && path === "/api/v1/account-bootstrap/status") {
     return accountBootstrapStatus(event);
+  }
+  if (method === "DELETE" && path === "/api/v1/account-bootstrap") {
+    return cancelAccountBootstrap(event);
   }
   if (path.startsWith("/api/v1/account/") && !(method === "DELETE" && path === "/api/v1/account")) {
     const identity = accountIdentity(event);

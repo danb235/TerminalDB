@@ -850,7 +850,6 @@ test("keeps the unpaired gate within every target viewport", async ({ page }) =>
 });
 
 test("requires a Mac approval for account creation and keeps sign-in available", async ({ page }) => {
-  let signupBody: Record<string, unknown> | undefined;
   await page.route("**/api/config", async (route) => {
     await route.fulfill({
       contentType: "application/json",
@@ -870,14 +869,6 @@ test("requires a Mac approval for account creation and keeps sign-in available",
       }),
     });
   });
-  await page.route("https://cognito-idp.us-west-2.amazonaws.com/", async (route) => {
-    signupBody = route.request().postDataJSON() as Record<string, unknown>;
-    await route.fulfill({
-      status: 200,
-      contentType: "application/x-amz-json-1.1",
-      body: JSON.stringify({ UserConfirmed: true }),
-    });
-  });
   await page.route("https://login.example.invalid/**", async (route) => {
     await route.fulfill({ status: 200, contentType: "text/html", body: "Cognito login" });
   });
@@ -890,19 +881,15 @@ test("requires a Mac approval for account creation and keeps sign-in available",
   await page.goto("/?unpaired=1&account=create#account-bootstrap=approved-mac-token");
   await expect(page.getByRole("heading", { name: "Create your TerminalDB account" })).toBeVisible();
   await expect.poll(() => page.url()).not.toContain("approved-mac-token");
-  await page.getByLabel("Username").fill("qa-user");
-  await page.getByLabel("Password", { exact: true }).fill("Strong-Test-Password-42!");
-  await page.getByLabel("Confirm password").fill("Strong-Test-Password-42!");
-  await page.getByRole("button", { name: "Create account & set up authenticator", exact: true }).click();
-  await expect.poll(() => signupBody).toBeTruthy();
-  expect(signupBody).toMatchObject({
-    ClientId: "web-client",
-    Username: "qa-user",
-    ClientMetadata: { bootstrapToken: "approved-mac-token" },
-  });
-  expect(signupBody).not.toHaveProperty("UserAttributes");
-
+  await page.getByRole("button", { name: "Continue to secure account creation" }).click();
   await page.waitForURL("https://login.example.invalid/**");
+  const signupUrl = new URL(page.url());
+  expect(signupUrl.pathname).toBe("/signup");
+  expect(signupUrl.searchParams.get("client_id")).toBe("web-client");
+  expect(signupUrl.searchParams.get("response_type")).toBe("code");
+  expect(signupUrl.searchParams.get("code_challenge_method")).toBe("S256");
+  expect(signupUrl.searchParams.get("code_challenge")).toBeTruthy();
+  expect(page.url()).not.toContain("approved-mac-token");
   await page.goto("/");
   await page.evaluate(() => sessionStorage.removeItem("terminaldb.account.bootstrap.v1"));
   await page.reload();
