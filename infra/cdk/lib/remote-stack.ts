@@ -447,6 +447,7 @@ export class TerminalDBRemoteStack extends Stack {
         scopes: [
           cognito.OAuthScope.OPENID,
           cognito.OAuthScope.PROFILE,
+          cognito.OAuthScope.COGNITO_ADMIN,
         ],
         callbackUrls: [`${applicationOrigin}/auth/callback`],
         logoutUrls: [applicationOrigin],
@@ -494,7 +495,6 @@ export class TerminalDBRemoteStack extends Stack {
     controlFunction.addToRolePolicy(new iam.PolicyStatement({
       actions: [
         "cognito-idp:AdminDeleteUser",
-        "cognito-idp:AdminSetUserPassword",
         "cognito-idp:AdminUserGlobalSignOut",
       ],
       resources: [userPool.userPoolArn],

@@ -7,6 +7,14 @@ const accountConfiguration = {
   callbackPath: "/auth/callback",
 };
 
+function freshAccessToken(label: string): string {
+  const claims = btoa(JSON.stringify({ iat: Math.floor(Date.now() / 1_000) }))
+    .replace(/\+/gu, "-")
+    .replace(/\//gu, "_")
+    .replace(/=+$/gu, "");
+  return `${label}.${claims}.signature`;
+}
+
 async function mockAccountPage(
   page: Page,
   devices: readonly Record<string, unknown>[],
@@ -88,7 +96,8 @@ test("allows account login when every enrolled Mac is offline", async ({ page })
   await expect(page.getByText("You’re signed in. No Macs are online.")).toBeVisible();
   await expect(page.getByText(/Open TerminalDB on an enrolled Mac/u)).toBeVisible();
   await expect(page.getByRole("button", { name: "Log out" })).toBeEnabled();
-  await expect(page.getByRole("button", { name: "Add a Mac" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Change password" })).toBeEnabled();
+  await expect(page.getByText(/choose Connect Account/u)).toBeVisible();
 });
 
 test("prepares account creators for mandatory authenticator-app setup", async ({ page }) => {
@@ -116,4 +125,95 @@ test("prepares account creators for mandatory authenticator-app setup", async ({
     .toBeVisible();
   await expect(page.getByRole("button", { name: "Create account & set up authenticator" }))
     .toBeVisible();
+});
+
+test("connects an existing account from a Mac without an enrollment code", async ({ page }) => {
+  await page.route("**/api/config", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        apiBaseUrl: "",
+        websocketUrl: "/socket",
+        protocolVersion: 1,
+        region: "us-west-2",
+        pairingEnabled: true,
+        accountAuth: accountConfiguration,
+        mockMode: false,
+      }),
+    });
+  });
+  await page.goto("/?unpaired&account=connect#account-bootstrap=qa-connect-bootstrap");
+
+  await expect(page.getByRole("heading", { name: "Connect this Mac" })).toBeVisible();
+  await expect(page.getByText(/one-time Mac approval expires automatically/u)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sign in & connect this Mac" }))
+    .toBeVisible();
+  await expect(page.getByText(/enrollment code/u)).toHaveCount(0);
+});
+
+test("changes the password through Cognito after recent account authentication", async ({ page }) => {
+  const accessToken = freshAccessToken("password-access");
+  let passwordRequest: Record<string, unknown> | undefined;
+  let finalizedWith: string | undefined;
+  await page.addInitScript((token) => {
+    localStorage.setItem("terminaldb.account.tokens.v1", JSON.stringify({
+      accessToken: token,
+      refreshToken: "qa-refresh-token",
+      expiresAt: Date.now() + 60 * 60 * 1_000,
+    }));
+  }, accessToken);
+  await page.route("**/api/config", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        apiBaseUrl: "",
+        websocketUrl: "/socket",
+        protocolVersion: 1,
+        region: "us-west-2",
+        pairingEnabled: true,
+        accountAuth: accountConfiguration,
+        mockMode: false,
+      }),
+    });
+  });
+  await page.route("**/api/v1/account/devices", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ devices: [] }) });
+  });
+  await page.route("https://cognito-idp.us-west-2.amazonaws.com/**", async (route) => {
+    passwordRequest = route.request().postDataJSON() as Record<string, unknown>;
+    expect(route.request().headers()["x-amz-target"])
+      .toBe("AWSCognitoIdentityProviderService.ChangePassword");
+    await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+  });
+  await page.route("**/api/v1/account/security/password-changed", async (route) => {
+    finalizedWith = route.request().headers().authorization;
+    await route.fulfill({ status: 204, body: "" });
+  });
+  await page.route("https://auth.example.invalid/oauth2/revoke", async (route) => {
+    await route.fulfill({ status: 200, body: "" });
+  });
+  await page.route("https://auth.example.invalid/logout?**", async (route) => {
+    await route.fulfill({ status: 200, contentType: "text/html", body: "Signed out" });
+  });
+
+  await page.goto("/?unpaired");
+  await page.getByRole("button", { name: "Change password" }).click();
+  await expect(page.getByRole("heading", { name: "Change your password" })).toBeVisible();
+  const currentPassword = ["Current", "Strong", "42!"].join("-");
+  const nextPassword = ["Next", "Strong", "84!"].join("-");
+  await page.getByLabel("Current password").fill(currentPassword);
+  await page.getByLabel("New password", { exact: true }).fill(nextPassword);
+  await page.getByLabel("Confirm new password").fill(nextPassword);
+  const logoutRequest = page.waitForRequest((request) =>
+    request.url().startsWith("https://auth.example.invalid/logout?"),
+  );
+  await page.getByRole("button", { name: "Change password & sign out browsers" }).click();
+  await logoutRequest;
+
+  expect(passwordRequest).toMatchObject({
+    AccessToken: accessToken,
+    PreviousPassword: currentPassword,
+    ProposedPassword: nextPassword,
+  });
+  expect(finalizedWith).toBe(`Bearer ${accessToken}`);
 });

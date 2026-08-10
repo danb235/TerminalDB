@@ -4,7 +4,6 @@ import {
 } from "@aws-sdk/client-apigatewaymanagementapi";
 import {
   AdminDeleteUserCommand,
-  AdminSetUserPasswordCommand,
   AdminUserGlobalSignOutCommand,
   CognitoIdentityProviderClient,
 } from "@aws-sdk/client-cognito-identity-provider";
@@ -50,6 +49,7 @@ const ACTIVE_SESSION_TTL_SECONDS = 24 * 60 * 60;
 const ENDED_RECORD_TTL_SECONDS = 7 * 24 * 60 * 60;
 const ACCOUNT_DELETION_TTL_SECONDS = 2 * 60 * 60;
 const ACCOUNT_BOOTSTRAP_TTL_SECONDS = 20 * 60;
+const RECENT_ACCOUNT_AUTH_SECONDS = 5 * 60;
 const publicRegion = process.env.AWS_REGION ?? "us-west-2";
 const stage = process.env.STAGE ?? "dev";
 const publicWebSocketUrl = process.env.PUBLIC_WEBSOCKET_URL ?? "";
@@ -110,6 +110,23 @@ function accountSubject(event: APIGatewayProxyEventV2): string {
   return accountIdentity(event).sub;
 }
 
+function recentAccountIdentity(event: APIGatewayProxyEventV2): {
+  readonly sub: string;
+  readonly username?: string;
+  readonly issuedAt: number;
+} {
+  const identity = accountIdentity(event);
+  const now = nowSeconds();
+  if (
+    identity.issuedAt === undefined ||
+    identity.issuedAt > now + 60 ||
+    identity.issuedAt < now - RECENT_ACCOUNT_AUTH_SECONDS
+  ) {
+    throw new Error("Recent account authentication required");
+  }
+  return { ...identity, issuedAt: identity.issuedAt };
+}
+
 async function assertAccountActive(ownerSub: string, issuedAt?: number): Promise<void> {
   const [deletion, account] = await Promise.all([
     dynamo.send(new GetCommand({
@@ -128,7 +145,7 @@ async function assertAccountActive(ownerSub: string, issuedAt?: number): Promise
   if (deletion.Item) throw new Error("Account has been deleted");
   if (
     issuedAt !== undefined &&
-    Number(account.Item?.credentialsChangedAt ?? 0) > issuedAt
+    Number(account.Item?.credentialsChangedAt ?? 0) >= issuedAt
   ) {
     throw new Error("Account credentials changed. Sign in again.");
   }
@@ -317,12 +334,27 @@ async function completeAccountBootstrap(
     }
     return json(200, { completed: true, deviceId: bootstrap.deviceId });
   }
-  if (
+  const existingAccountConnection = bootstrap.status === "pending";
+  if (!existingAccountConnection && (
     bootstrap.status !== "signup-confirmed" ||
     typeof bootstrap.cognitoUsername !== "string" ||
     !constantEqual(bootstrap.cognitoUsername, username)
-  ) {
+  )) {
     return json(403, { error: "Complete the approved Cognito signup before connecting this Mac" });
+  }
+  if (existingAccountConnection) {
+    recentAccountIdentity(event);
+    const account = await dynamo.send(new GetCommand({
+      TableName: tableName,
+      Key: { PK: `USER#${ownerSub}`, SK: "ACCOUNT#META" },
+      ConsistentRead: true,
+    }));
+    if (!account.Item || !constantEqual(String(account.Item.username ?? ""), username)) {
+      return json(403, {
+        error: "Create the account from TerminalDB before connecting another Mac",
+      });
+    }
+    await assertAccountActive(ownerSub);
   }
   const deviceId = typeof bootstrap.previousDeviceId === "string"
     ? bootstrap.previousDeviceId
@@ -371,17 +403,22 @@ async function completeAccountBootstrap(
             Key: key,
             UpdateExpression:
               "SET #status = :complete, ownerSub = :owner, deviceId = :device, completedAt = :now, #ttl = :ttl",
-            ConditionExpression:
-              "#status = :confirmed AND cognitoUsername = :username AND #ttl > :now",
+            ConditionExpression: existingAccountConnection
+              ? "#status = :pending AND #ttl > :now"
+              : "#status = :confirmed AND cognitoUsername = :username AND #ttl > :now",
             ExpressionAttributeNames: { "#status": "status", "#ttl": "ttl" },
             ExpressionAttributeValues: {
               ":complete": "complete",
-              ":confirmed": "signup-confirmed",
               ":owner": ownerSub,
               ":device": deviceId,
-              ":username": username,
               ":now": completedAt,
               ":ttl": completedAt + 5 * 60,
+              ...(existingAccountConnection
+                ? { ":pending": "pending" }
+                : {
+                    ":confirmed": "signup-confirmed",
+                    ":username": username,
+                  }),
             },
           },
         },
@@ -402,17 +439,28 @@ async function completeAccountBootstrap(
           },
         },
         {
-          Put: {
-            TableName: tableName,
-            Item: {
-              PK: `USER#${ownerSub}`,
-              SK: "ACCOUNT#META",
-              username,
-              createdAt: completedAt,
-              recovery: "trusted-mac",
-            },
-            ConditionExpression: "attribute_not_exists(PK)",
-          },
+          ...(existingAccountConnection
+            ? {
+                ConditionCheck: {
+                  TableName: tableName,
+                  Key: { PK: `USER#${ownerSub}`, SK: "ACCOUNT#META" },
+                  ConditionExpression: "attribute_exists(PK) AND username = :username",
+                  ExpressionAttributeValues: { ":username": username },
+                },
+              }
+            : {
+                Put: {
+                  TableName: tableName,
+                  Item: {
+                    PK: `USER#${ownerSub}`,
+                    SK: "ACCOUNT#META",
+                    username,
+                    createdAt: completedAt,
+                    recovery: "authenticator-app-only",
+                  },
+                  ConditionExpression: "attribute_not_exists(PK)",
+                },
+              }),
         },
         ...accountActiveCondition(ownerSub),
       ],
@@ -668,57 +716,18 @@ async function deleteAccountData(
 async function deleteAccount(
   event: APIGatewayProxyEventV2,
 ): Promise<APIGatewayProxyStructuredResultV2> {
-  const { sub: ownerSub, username } = accountIdentity(event);
+  const { sub: ownerSub, username } = recentAccountIdentity(event);
   if (!username) throw new Error("Account username claim is missing");
   return deleteAccountData(ownerSub, username);
 }
 
-async function deviceAccountIdentity(
-  event: APIGatewayProxyEventV2,
-): Promise<{ readonly ownerSub: string; readonly username: string }> {
-  const { principalId, principal } = await verifyAuthenticatedRequest(event);
-  if (principal.deviceId !== principalId || typeof principal.ownerSub !== "string") {
-    throw new Error("A connected TerminalDB Mac is required");
-  }
-  const ownerSub = principal.ownerSub;
-  await assertAccountActive(ownerSub);
-  const account = await dynamo.send(
-    new GetCommand({
-      TableName: tableName,
-      Key: { PK: `USER#${ownerSub}`, SK: "ACCOUNT#META" },
-      ConsistentRead: true,
-    }),
-  );
-  if (!account.Item || typeof account.Item.username !== "string") {
-    throw new Error("This Mac has no recoverable TerminalDB account");
-  }
-  return { ownerSub, username: account.Item.username };
-}
-
-async function recoverAccountFromDevice(
+async function recordAccountPasswordChanged(
   event: APIGatewayProxyEventV2,
 ): Promise<APIGatewayProxyStructuredResultV2> {
-  if (!cognitoUserPoolId) throw new Error("Account recovery is not configured");
-  const { ownerSub, username } = await deviceAccountIdentity(event);
-  const body = parseBody(event);
-  const password = stringField(body, "password", 256);
-  if (
-    password.length < 12 ||
-    !/[a-z]/u.test(password) ||
-    !/[A-Z]/u.test(password) ||
-    !/\d/u.test(password) ||
-    !/[^\p{L}\p{N}]/u.test(password)
-  ) {
-    throw new TypeError(
-      "Password must contain at least 12 characters, upper and lowercase letters, a number, and a symbol",
-    );
-  }
-  await cognito.send(new AdminSetUserPasswordCommand({
-    UserPoolId: cognitoUserPoolId,
-    Username: username,
-    Password: password,
-    Permanent: true,
-  }));
+  if (!cognitoUserPoolId) throw new Error("Account security is not configured");
+  const { sub: ownerSub, username } = recentAccountIdentity(event);
+  if (!username) throw new Error("Account username claim is missing");
+  await assertAccountActive(ownerSub);
   await cognito.send(new AdminUserGlobalSignOutCommand({
     UserPoolId: cognitoUserPoolId,
     Username: username,
@@ -736,13 +745,6 @@ async function recoverAccountFromDevice(
   }));
   await revokeAccountControllers(ownerSub);
   return { statusCode: 204 };
-}
-
-async function deleteAccountFromDevice(
-  event: APIGatewayProxyEventV2,
-): Promise<APIGatewayProxyStructuredResultV2> {
-  const { ownerSub, username } = await deviceAccountIdentity(event);
-  return deleteAccountData(ownerSub, username);
 }
 
 async function redeemEnrollment(
@@ -2042,12 +2044,6 @@ async function handleHttp(
   if (method === "POST" && path === "/api/v1/account-bootstrap/status") {
     return accountBootstrapStatus(event);
   }
-  if (method === "POST" && path === "/api/v1/device/account/recover") {
-    return recoverAccountFromDevice(event);
-  }
-  if (method === "DELETE" && path === "/api/v1/device/account") {
-    return deleteAccountFromDevice(event);
-  }
   if (path.startsWith("/api/v1/account/") && !(method === "DELETE" && path === "/api/v1/account")) {
     const identity = accountIdentity(event);
     await assertAccountActive(identity.sub, identity.issuedAt);
@@ -2079,11 +2075,11 @@ async function handleHttp(
     }
   }
   if (method !== "POST") return json(405, { error: "Method not allowed" });
-  if (path === "/api/v1/account/enrollments") {
-    return json(201, await createEnrollment(accountSubject(event)));
-  }
   if (path === "/api/v1/account/bootstrap/complete") {
     return completeAccountBootstrap(event);
+  }
+  if (path === "/api/v1/account/security/password-changed") {
+    return recordAccountPasswordChanged(event);
   }
   if (path === "/api/v1/account/tickets") {
     return createTicket(event, accountSubject(event));

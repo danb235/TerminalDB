@@ -5,8 +5,9 @@
 - AWS is an untrusted ciphertext router.
 - Cognito authenticates optional user accounts; API Gateway validates account
   JWTs before account routes reach the Lambda.
-- IAM can mint operator enrollment codes. A signed-in Cognito user can mint a
-  short-lived enrollment code bound to that user's immutable `sub` claim.
+- IAM can mint operator enrollment codes for custom deployment setup. Account
+  Macs instead connect through a signed short-lived bootstrap completed by a
+  freshly authenticated Cognito user.
 - New accounts require a short-lived proof signed by a Mac's non-exportable
   P-256 key. Cognito's pre-signup trigger consumes that proof exactly once.
 - Registered Macs and paired controllers sign control requests with P-256.
@@ -35,10 +36,10 @@ AWS-held key.
   suppresses user-existence errors, requires authenticator-app TOTP after the
   password, offers no email, SMS, passkey, or backup-code alternative, disables
   self-service recovery, and enables threat protection in enforced mode.
-- Desktop password changes and account deletion require both the enrolled Mac
-  key and Touch ID or the Mac login password. Password changes revoke account
-  controllers and pre-change tokens but do not bypass or remove registered MFA.
-- At most five active account enrollment codes per user.
+- Password changes and account deletion require a Cognito access token issued
+  by a password-plus-TOTP sign-in within the preceding five minutes. Password
+  changes go directly from the browser to Cognito; TerminalDB then revokes
+  account controllers and pre-change tokens but cannot bypass or remove MFA.
 - At most three active pairing links and five trusted controllers per Mac
   session.
 - Ten-minute pairing TTL and sixty-second ticket TTL.

@@ -2,9 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   accountAccessToken,
+  accountTokenIssuedAt,
   beginAccountSignIn,
+  changeAccountPassword,
   clearAccountCredentials,
   completeAccountSignIn,
+  hasRecentAccountAuthentication,
   signUpWithBootstrap,
   signOutAccount,
   type AccountAuthConfiguration,
@@ -59,7 +62,9 @@ describe("Cognito account OAuth", () => {
     const url = navigate.mock.calls[0]?.[0] as URL;
     expect(url.pathname).toBe("/oauth2/authorize");
     expect(url.searchParams.get("response_type")).toBe("code");
-    expect(url.searchParams.get("scope")).toBe("openid profile");
+    expect(url.searchParams.get("scope")).toBe(
+      "openid profile aws.cognito.signin.user.admin",
+    );
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
     expect(url.searchParams.get("code_challenge")).toMatch(/^[\w-]{40,}$/u);
     expect(url.searchParams.get("state")).toBe(
@@ -68,6 +73,20 @@ describe("Cognito account OAuth", () => {
     expect(sessionStorage.getItem("terminaldb.account.pkce-verifier.v1"))
       .toMatch(/^[\w-]{40,}$/u);
     expect(url.searchParams.has("code_verifier")).toBe(false);
+  });
+
+  it("forces a fresh Cognito ceremony for security-sensitive actions", async () => {
+    const navigate = vi.fn();
+
+    await beginAccountSignIn(configuration, navigate, {
+      returnTo: "/?account=password&source=desktop",
+      forceReauthentication: true,
+    });
+
+    const url = navigate.mock.calls[0]?.[0] as URL;
+    expect(url.searchParams.get("prompt")).toBe("login");
+    expect(sessionStorage.getItem("terminaldb.account.return-to.v1"))
+      .toBe("/?account=password&source=desktop");
   });
 
   it("sends a Mac-approved signup directly to Cognito without email", async () => {
@@ -96,6 +115,46 @@ describe("Cognito account OAuth", () => {
       ClientMetadata: { bootstrapToken: "mac-approved-token" },
     });
     expect(body).not.toHaveProperty("UserAttributes");
+  });
+
+  it("changes the password directly with Cognito instead of the TerminalDB API", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("{}", { status: 200 }),
+    );
+
+    await changeAccountPassword({
+      configuration: {
+        ...configuration,
+        issuer: "https://cognito-idp.us-west-2.amazonaws.com/us-west-2_pool",
+      },
+      accessToken: "access-token",
+      currentPassword: "Old-Strong-Password-42!",
+      newPassword: "New-Strong-Password-42!",
+    });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://cognito-idp.us-west-2.amazonaws.com");
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
+      "x-amz-target": "AWSCognitoIdentityProviderService.ChangePassword",
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      AccessToken: "access-token",
+      PreviousPassword: "Old-Strong-Password-42!",
+      ProposedPassword: "New-Strong-Password-42!",
+    });
+  });
+
+  it("recognizes only a freshly issued access token for sensitive actions", () => {
+    const issuedAt = 1_700_000_000;
+    const claims = btoa(JSON.stringify({ iat: issuedAt }))
+      .replace(/\+/gu, "-")
+      .replace(/\//gu, "_")
+      .replace(/=+$/gu, "");
+    const token = `header.${claims}.signature`;
+
+    expect(accountTokenIssuedAt(token)).toBe(issuedAt);
+    expect(hasRecentAccountAuthentication(token, 300, issuedAt + 299)).toBe(true);
+    expect(hasRecentAccountAuthentication(token, 300, issuedAt + 301)).toBe(false);
+    expect(hasRecentAccountAuthentication("not-a-token", 300, issuedAt)).toBe(false);
   });
 
   it("never restores an external post-authentication URL", async () => {

@@ -81,16 +81,15 @@ The backend derives tenant identity only from a verified Cognito `sub` and
 never from client-supplied IDs. Terminal payloads remain end-to-end encrypted
 with separate Mac/browser keys.
 
-There is intentionally no email or SMS recovery channel. Password changes and
-desktop account deletion require an enrolled Mac request plus Touch ID or the
-Mac login password. A password change revokes account controllers and
-pre-change API tokens, but it does not remove a registered TOTP secret or
-provide an alternate factor. A user who loses every authenticator copy cannot
-self-recover; Cognito exposes no safe administrator operation for deleting a
-user's TOTP secret. A compromised macOS user account is already in the trust
-boundary and can manage
-the TerminalDB account, matching its ability to access the local terminal
-sessions.
+There is intentionally no email or SMS recovery channel. The desktop app can
+initiate a password change or account deletion, but the browser must complete a
+fresh Cognito password-plus-TOTP sign-in and the server rejects authentication
+older than five minutes. Passwords go directly to Cognito. A password change
+revokes account controllers and pre-change API tokens, but it does not remove a
+registered TOTP secret or provide an alternate factor. A user who loses every
+authenticator copy cannot self-recover; Cognito exposes no safe administrator
+operation for deleting a user's TOTP secret. Possession of a Mac identity is
+therefore not an authentication or MFA bypass.
 
 ## Privacy controls
 

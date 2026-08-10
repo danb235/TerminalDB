@@ -1,6 +1,14 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 
+function freshAccessToken(label: string): string {
+  const claims = btoa(JSON.stringify({ iat: Math.floor(Date.now() / 1_000) }))
+    .replace(/\+/gu, "-")
+    .replace(/\//gu, "_")
+    .replace(/=+$/gu, "");
+  return `${label}.${claims}.signature`;
+}
+
 async function openTerminal(page: Page): Promise<void> {
   await page.goto("/");
   await expect(page.locator(".terminal-stage")).toBeVisible();
@@ -948,7 +956,7 @@ test("explains the required Mac update instead of waiting on an unsupported acco
   await expect(page.locator(".terminal-stage")).toBeVisible();
 });
 
-test("discovers tenant sessions and creates a Mac enrollment from an account", async ({ page }) => {
+test("discovers tenant sessions without exposing legacy enrollment codes", async ({ page }) => {
   let controllerRegistration: Record<string, unknown> | undefined;
   await page.addInitScript(() => {
     localStorage.setItem("terminaldb.account.tokens.v1", JSON.stringify({
@@ -992,14 +1000,6 @@ test("discovers tenant sessions and creates a Mac enrollment from an account", a
       }),
     });
   });
-  await page.route("**/api/v1/account/enrollments", async (route) => {
-    expect(route.request().headers().authorization).toBe("Bearer account-access-token");
-    await route.fulfill({
-      status: 201,
-      contentType: "application/json",
-      body: JSON.stringify({ enrollmentCode: "enroll-once", expiresAt: 1_800_000_000 }),
-    });
-  });
   await page.route("**/api/v1/account/sessions/account-session-1234567890/controllers", async (route) => {
     expect(route.request().headers().authorization).toBe("Bearer account-access-token");
     controllerRegistration = route.request().postDataJSON() as Record<string, unknown>;
@@ -1026,12 +1026,10 @@ test("discovers tenant sessions and creates a Mac enrollment from an account", a
     });
   });
 
-  await page.goto("/?unpaired=1&account=connect&source=desktop");
+  await page.goto("/?unpaired=1");
   await expect(page.getByRole("heading", { name: "Your Macs" })).toBeVisible();
   await expect(page.getByText("Studio Mac")).toBeVisible();
-  await expect(page.getByText("enroll-once")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Copy code" })).toBeVisible();
-  await expect.poll(() => new URL(page.url()).search).toBe("");
+  await expect(page.getByRole("button", { name: "Copy code" })).toHaveCount(0);
   await page.getByRole("button", { name: /Studio Mac.*Open/u }).click();
   await expect.poll(() => controllerRegistration).toBeTruthy();
   expect(controllerRegistration?.browserId).toBeTruthy();
@@ -1105,14 +1103,15 @@ test("returns to sign-in when native account management revokes browser access",
 
 test("completes Mac binding after Cognito login and discovers its account session", async ({ page }) => {
   let completed = false;
-  await page.addInitScript(() => {
+  const bootstrapAccessToken = freshAccessToken("bootstrap-access-token");
+  await page.addInitScript((accessToken) => {
     localStorage.setItem("terminaldb.account.tokens.v1", JSON.stringify({
-      accessToken: "bootstrap-access-token",
+      accessToken,
       refreshToken: "bootstrap-refresh-token",
       expiresAt: Date.now() + 3_600_000,
     }));
     sessionStorage.setItem("terminaldb.account.bootstrap.v1", "approved-bootstrap-token");
-  });
+  }, bootstrapAccessToken);
   await page.route("**/api/config", async (route) => {
     await route.fulfill({
       contentType: "application/json",
@@ -1132,7 +1131,7 @@ test("completes Mac binding after Cognito login and discovers its account sessio
     });
   });
   await page.route("**/api/v1/account/bootstrap/complete", async (route) => {
-    expect(route.request().headers().authorization).toBe("Bearer bootstrap-access-token");
+    expect(route.request().headers().authorization).toBe(`Bearer ${bootstrapAccessToken}`);
     expect(route.request().postDataJSON()).toEqual({
       bootstrapToken: "approved-bootstrap-token",
     });
@@ -1169,13 +1168,14 @@ test("completes Mac binding after Cognito login and discovers its account sessio
 
 test("logs out after explicitly confirmed account deletion", async ({ page }) => {
   let deletedWithAuthorization: string | undefined;
-  await page.addInitScript(() => {
+  const deleteAccessToken = freshAccessToken("delete-account-access-token");
+  await page.addInitScript((accessToken) => {
     localStorage.setItem("terminaldb.account.tokens.v1", JSON.stringify({
-      accessToken: "delete-account-access-token",
+      accessToken,
       refreshToken: "delete-account-refresh-token",
       expiresAt: Date.now() + 3_600_000,
     }));
-  });
+  }, deleteAccessToken);
   await page.route("**/api/config", async (route) => {
     await route.fulfill({
       contentType: "application/json",
@@ -1226,5 +1226,5 @@ test("logs out after explicitly confirmed account deletion", async ({ page }) =>
   await finalDelete.click();
   await logoutRequest;
 
-  expect(deletedWithAuthorization).toBe("Bearer delete-account-access-token");
+  expect(deletedWithAuthorization).toBe(`Bearer ${deleteAccessToken}`);
 });

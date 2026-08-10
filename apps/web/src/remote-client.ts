@@ -256,24 +256,6 @@ export async function listAccountDevices(
   return body.devices ?? [];
 }
 
-export async function createAccountEnrollment(
-  accessToken: string,
-): Promise<{ readonly enrollmentCode: string; readonly expiresAt: number }> {
-  const response = await fetch("/api/v1/account/enrollments", {
-    method: "POST",
-    headers: {
-      ...bearerHeaders(accessToken),
-      "content-type": "application/json",
-    },
-    body: "{}",
-  });
-  if (!response.ok) throw new Error(`Mac enrollment failed (${response.status})`);
-  return (await response.json()) as {
-    enrollmentCode: string;
-    expiresAt: number;
-  };
-}
-
 export async function completeAccountBootstrap(input: {
   readonly accessToken: string;
   readonly bootstrapToken: string;
@@ -301,6 +283,17 @@ export async function deleteTerminalDBAccount(accessToken: string): Promise<void
   if (!response.ok) {
     const failure = await response.json().catch(() => ({})) as { error?: string };
     throw new Error(failure.error ?? `Account deletion failed (${response.status})`);
+  }
+}
+
+export async function recordAccountPasswordChanged(accessToken: string): Promise<void> {
+  const response = await fetch("/api/v1/account/security/password-changed", {
+    method: "POST",
+    headers: bearerHeaders(accessToken),
+  });
+  if (!response.ok) {
+    const failure = await response.json().catch(() => ({})) as { error?: string };
+    throw new Error(failure.error ?? `Password-change finalization failed (${response.status})`);
   }
 }
 

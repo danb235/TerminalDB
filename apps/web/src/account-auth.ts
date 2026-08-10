@@ -28,6 +28,7 @@ const BOOTSTRAP_KEY = "terminaldb.account.bootstrap.v1";
 export interface AccountAuthorizationOptions {
   readonly returnTo?: string;
   readonly loginHint?: string;
+  readonly forceReauthentication?: boolean;
 }
 
 function trimSlash(value: string): string {
@@ -114,12 +115,13 @@ async function beginAccountAuthorization(
   const url = new URL(`${trimSlash(configuration.domain)}${path}`);
   url.searchParams.set("client_id", configuration.clientId);
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", "openid profile");
+  url.searchParams.set("scope", "openid profile aws.cognito.signin.user.admin");
   url.searchParams.set("redirect_uri", callbackUrl(configuration));
   url.searchParams.set("state", state);
   url.searchParams.set("code_challenge_method", "S256");
   url.searchParams.set("code_challenge", await challenge(verifier));
   if (options.loginHint) url.searchParams.set("login_hint", options.loginHint);
+  if (options.forceReauthentication) url.searchParams.set("prompt", "login");
   navigate(url);
 }
 
@@ -168,6 +170,64 @@ export async function signUpWithBootstrap(input: {
     throw new Error("This Mac approval expired. Start account creation again from TerminalDB.");
   }
   throw new Error(failure.message ?? `Account creation failed (${response.status})`);
+}
+
+export async function changeAccountPassword(input: {
+  readonly configuration: AccountAuthConfiguration;
+  readonly accessToken: string;
+  readonly currentPassword: string;
+  readonly newPassword: string;
+}): Promise<void> {
+  const response = await fetch(cognitoApiEndpoint(input.configuration), {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-amz-json-1.1",
+      "x-amz-target": "AWSCognitoIdentityProviderService.ChangePassword",
+    },
+    body: JSON.stringify({
+      AccessToken: input.accessToken,
+      PreviousPassword: input.currentPassword,
+      ProposedPassword: input.newPassword,
+    }),
+  });
+  if (response.ok) return;
+  const failure = await response.json().catch(() => ({})) as {
+    readonly __type?: string;
+    readonly message?: string;
+  };
+  const kind = failure.__type?.split("#").at(-1);
+  if (kind === "NotAuthorizedException") {
+    throw new Error("The current password was not accepted. Sign in again and retry.");
+  }
+  if (kind === "InvalidPasswordException") {
+    throw new Error("Use at least 12 characters with upper and lowercase letters, a number, and a symbol.");
+  }
+  throw new Error(failure.message ?? `Password change failed (${response.status})`);
+}
+
+export function accountTokenIssuedAt(accessToken: string): number | undefined {
+  const encoded = accessToken.split(".")[1];
+  if (!encoded) return undefined;
+  try {
+    const normalized = encoded.replace(/-/gu, "+").replace(/_/gu, "/");
+    const padding = "=".repeat((4 - (normalized.length % 4)) % 4);
+    const claims = JSON.parse(atob(`${normalized}${padding}`)) as { readonly iat?: unknown };
+    return typeof claims.iat === "number" && Number.isSafeInteger(claims.iat)
+      ? claims.iat
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function hasRecentAccountAuthentication(
+  accessToken: string,
+  maximumAgeSeconds = 5 * 60,
+  nowSeconds = Math.floor(Date.now() / 1_000),
+): boolean {
+  const issuedAt = accountTokenIssuedAt(accessToken);
+  return issuedAt !== undefined && issuedAt <= nowSeconds + 60 &&
+    issuedAt >= nowSeconds - maximumAgeSeconds;
 }
 
 export function savePendingAccountBootstrap(token: string): void {

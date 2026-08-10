@@ -9,6 +9,10 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Account setup and security actions now start in TerminalDB's in-window
+  Remote Control panel. Connecting another Mac uses a signed, short-lived Mac
+  bootstrap and Cognito sign-in; users no longer copy enrollment codes between
+  the web app and desktop app.
 - The signed-in web dashboard now keeps every enrolled Mac visible with an
   online, connecting, or offline state and a last-seen time. Account login and
   device inventory continue to work when every Mac is offline.
@@ -21,6 +25,13 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Cognito remains the sole password and MFA authority. Password changes and
+  account deletion require a fresh password-plus-TOTP sign-in, passwords go
+  directly from the browser to Cognito, and TerminalDB globally revokes account
+  browsers and controllers after either security-sensitive action.
+- The signed-in web app is now deliberately limited to terminal access and
+  essential account-safety actions. New Mac connections and account-management
+  entry points live in the desktop Remote Control panel.
 - Every account now requires password plus authenticator-app TOTP. Email, SMS,
   passkeys, and backup codes are not offered as authentication or recovery
   alternatives. Signup warns users to keep a second secure authenticator copy

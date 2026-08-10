@@ -257,7 +257,9 @@ waiting Mac connects to the new account automatically. TOTP
 is mandatory; email, SMS, passkeys, and backup codes are not offered. Set up a
 second secure or securely synced authenticator copy before relying on the
 account, because losing every copy requires operator help. Additional Macs can
-be added later with a one-time code from the signed-in web app.
+be added later by choosing **Connect Account** in TerminalDB on that Mac and
+completing a fresh Cognito password-plus-TOTP sign-in. There is no enrollment
+code to copy.
 Every enrolled Mac then appears after login on a phone or browser without
 sending a pairing link, including offline Macs with their last-seen time.
 Online Macs expose their active terminal windows and tabs; if every Mac is
@@ -265,8 +267,10 @@ offline, account login and device inventory still work, and TerminalDB explains
 how to bring a Mac back online. This is additive: account-enrolled Macs
 can still create one-time guest links whenever temporary access is more
 convenient. **Change Password…** and **Delete Account…** in the Mac app require
-Touch ID or the Mac login password. Changing the password immediately revokes
-account browsers but deliberately keeps the existing TOTP authenticator;
+fresh Cognito password-plus-TOTP authentication in the browser. Passwords are
+sent directly to Cognito and never pass through the Mac or TerminalDB backend.
+Changing the password immediately revokes account browsers but deliberately
+keeps the existing TOTP authenticator;
 Cognito does not provide an administrator API that safely removes a user's
 registered TOTP secret.
 

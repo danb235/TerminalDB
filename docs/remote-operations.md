@@ -33,10 +33,11 @@ The stack always creates the encrypted SNS alert topic and both budgets. Without
 `budgetEmail`, no human subscriber receives those notifications.
 
 TerminalDB accounts do not use email or SMS. Cognito recovery is set to
-`admin_only`; a trusted Mac is the authority for password changes and account
-deletion. It is not a bypass for a lost required MFA factor. The stack has no
-Cognito sender configuration or SES dependency. `budgetEmail` remains only
-for operator cost alerts.
+`admin_only`; Cognito is the authority for password and authenticator-app TOTP
+verification. A Mac can initiate account security actions, but changing a
+password or deleting an account requires a fresh Cognito password-plus-TOTP
+sign-in. The stack has no Cognito sender configuration or SES dependency.
+`budgetEmail` remains only for operator cost alerts.
 
 ## Open the remote app
 
@@ -85,8 +86,11 @@ Macs stay in the inventory with a last-seen time. Account authentication is
 hosted by Cognito, so the user can still sign in and see the offline inventory
 when no TerminalDB app is running. Starting TerminalDB automatically reconnects
 an enrolled Mac. Selecting an online session registers that browser's own
-non-exportable controller keys and opens the encrypted terminal. **Add a Mac**
-remains available for enrolling additional Macs.
+non-exportable controller keys and opens the encrypted terminal. Adding a Mac
+is intentionally a desktop action: choose **Connect Account** in TerminalDB on
+the additional Mac, then complete a fresh Cognito sign-in in the browser. The
+Mac's signed, short-lived bootstrap binds it directly to the authenticated
+account, with no enrollment code to copy or expose.
 
 Creating an account does not remove the link workflow. **Open Remote Web App**
 and **Pair a Phone** continue to create a session-scoped, single-use guest link,
@@ -100,11 +104,13 @@ and trusted account browsers, globally signs out the Cognito user, and deletes
 the login. A one-time session that was never connected to the account remains
 independent.
 
-On an enrolled Mac, **Change Password…** requires Touch ID or the Mac login
-password, sets a new Cognito password, rejects pre-change API tokens, revokes
-account controllers, and globally signs out Cognito sessions. The existing
-TOTP authenticator remains registered and is still required at the next
-sign-in. **Delete Account…** requires the same local authentication plus
+On an enrolled Mac, **Change Password…** and **Delete Account…** open their
+security flows in the browser and require a new Cognito password-plus-TOTP
+sign-in no more than five minutes before the action. A password change sends
+the current and proposed passwords directly from that browser to Cognito,
+rejects pre-change API tokens, revokes account controllers, and globally signs
+out Cognito sessions. The existing TOTP authenticator remains registered and
+is still required at the next sign-in. Account deletion additionally requires
 the exact word `DELETE`, then performs the same tenant-scoped cleanup as web
 deletion. If every MFA factor is lost, the account is intentionally
 unrecoverable without operator action; Cognito has no safe administrator API

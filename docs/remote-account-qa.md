@@ -44,8 +44,11 @@ guest regression, encryption check, or production security gate fails.
 
 ## 3. Mac enrollment, recovery, and encryption
 
-- Redeem a new account-bound enrollment code once; reject replay and expiry.
-- Require local Mac approval before account enrollment. If a guest session is
+- Start **Connect Account** on another Mac, complete a fresh Cognito
+  password-plus-TOTP sign-in, and confirm the signed short-lived Mac bootstrap
+  binds to the correct immutable subject without any copied enrollment code.
+- Reject an expired, replayed, differently signed, or cross-account Mac
+  bootstrap. Require local Mac approval before account enrollment. If a guest session is
   active, end it before claiming the Mac and starting the account session.
 - Claim an existing link-only Mac without rotating its Keychain identity.
 - Reject attempts to transfer an already-owned Mac to a different subject.
@@ -53,8 +56,11 @@ guest regression, encryption check, or production security gate fails.
   prove AWS stores no private key or terminal plaintext.
 - Confirm account enrollment creates no unsolicited guest link. Creating a
   guest link explicitly afterward must still work.
-- Require Touch ID or the Mac login password for desktop password changes and
-  account deletion. Verify a change rejects the old password, accepts the new
+- Start password change and account deletion from the desktop panel and confirm
+  both open in the normal browser flow. Require a fresh Cognito
+  password-plus-TOTP sign-in, reject a token more than five minutes old, and
+  confirm possession of the Mac key alone cannot authorize either operation.
+  Verify password change rejects the wrong current password, accepts the new
   password only with the existing TOTP factor, rejects pre-change API tokens,
   and disconnects existing account controllers.
 - Verify the native Remote Control panel opens inside the terminal, keeps
@@ -78,7 +84,9 @@ guest regression, encryption check, or production security gate fails.
 
 - Sign in on a browser with no saved controller and list every enrolled Mac,
   including online, connecting, and offline status plus last-seen time.
-- Add multiple Macs, observe automatic device discovery, and confirm each
+- Add multiple Macs from each Mac's **Connect Account** action, observe
+  automatic device discovery, confirm no web enrollment-code UI is offered,
+  and confirm each
   online Mac exposes all of its TerminalDB windows and tabs. Open one, switch
   to another session, sign out, and verify account tickets stop immediately.
 - Sign back in after logout and confirm the same active account session remains
@@ -106,11 +114,12 @@ guest regression, encryption check, or production security gate fails.
 - Inspect the synthesized account route for JWT authorization, access-token
   scope, Cognito Plus threat protection, required app-only TOTP, password-only
   first factor, private origins, WAF, no-payload logs, DynamoDB TTL/recovery,
-  and production deletion protection.
+  fresh-authentication enforcement, direct Cognito password change, and
+  production deletion protection.
 - Verify the pool has no required email/phone attributes, uses `admin_only`
   recovery, and rejects direct signup without the pre-signup grant. Exercise
   alarms, budgets, emergency pairing disablement, controller revocation, and
-  trusted-Mac recovery.
+  operator-only recovery.
 
 ## Deployed smoke matrix
 
@@ -124,8 +133,10 @@ its path to `npm run live:mac -w @terminaldb/test-harness --
 --enrollment-code-file /path/to/code`. Remove the file when the fixture stops.
 
 Before the multi-tenant matrix, exercise the real Cognito pool with a
-disposable account. The command prints only named pass/fail checks and deletes
-the temporary user and bootstrap record in a `finally` block:
+disposable account. The command covers mandatory TOTP, initial and additional
+Mac binding, direct Cognito password change, pre-change token revocation, and
+fresh-auth account deletion. It prints only named pass/fail checks and deletes
+the temporary user and bootstrap records in a `finally` block:
 
 ```sh
 npm run live:totp -w @terminaldb/test-harness -- \
@@ -146,6 +157,30 @@ npm run live:totp -w @terminaldb/test-harness -- \
 
 Record CloudFormation stack IDs, test-user IDs, timestamps, and pass/fail only.
 Never record pairing URLs, enrollment codes, OAuth tokens, or terminal output.
+
+## Desktop-first account execution record — 2026-08-10
+
+Status: **local, deployed, and visible-product gates passed**.
+
+- Opened Remote Control inside the installed TerminalDB window, verified the
+  visible close control, and confirmed Create Account and Connect Account are
+  available before enrollment while Change Password and Delete Account are
+  available only after enrollment.
+- Opened a fresh one-time link from the Mac in Codex's isolated in-app browser,
+  used the visible Accounts sheet to request Mac approval, created a disposable
+  Cognito account, and completed mandatory authenticator-app TOTP enrollment.
+- Opened the enrolled Mac's live session, logged out, then signed back in
+  without a link using username, password, and the existing TOTP factor.
+- Quit TerminalDB and its agent, refreshed the signed-in dashboard, and saw the
+  enrolled Mac remain visible as offline with the instruction to open
+  TerminalDB. Logged out and completed password-plus-TOTP sign-in again while
+  every Mac was offline.
+- Deleted the disposable account through the visible exact-confirmation flow.
+  No password, TOTP secret, pairing link, token, terminal content, or enrollment
+  code was retained in screenshots, logs, or the repository.
+- Ran the deployed live MFA qualification against the same stack. It covered
+  initial and additional Mac binding, direct Cognito password change,
+  pre-change token rejection, retained TOTP, fresh-auth deletion, and cleanup.
 
 ## Local execution record — 2026-08-08
 
