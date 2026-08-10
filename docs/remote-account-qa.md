@@ -158,6 +158,28 @@ npm run live:totp -w @terminaldb/test-harness -- \
 Record CloudFormation stack IDs, test-user IDs, timestamps, and pass/fail only.
 Never record pairing URLs, enrollment codes, OAuth tokens, or terminal output.
 
+## Managed-login branding execution record — 2026-08-10
+
+Status: **deployed and visible-product gates passed**.
+
+- Updated only the existing Cognito managed-login branding resource. The user
+  pool, app client, domain, accounts, and deployed relay throttle values were
+  unchanged.
+- Opened the account flow in Codex's isolated in-app browser and verified the
+  live sign-in, account-creation, and password screens use the TerminalDB mark,
+  graphite canvas and form surfaces, cyan actions and focus states, and the
+  coral error treatment.
+- Submitted a nonexistent account through the visible sign-in form and
+  confirmed Cognito retained its non-enumerating error while applying the
+  branded error treatment.
+- Used a disposable Mac-approved Cognito account to reach the real mandatory
+  authenticator-app enrollment screen and its invalid-code state. The QR code
+  and TOTP secret were not captured or logged.
+- Deleted the disposable Cognito user and bootstrap record after the browser
+  pass. Cognito returned to zero branding-QA users.
+- Infrastructure tests, repository tests, production build, cost guards,
+  dependency audit, CDK synthesis, and patch-hygiene checks passed.
+
 ## Desktop-first account execution record — 2026-08-10
 
 Status: **local, deployed, and visible-product gates passed**.

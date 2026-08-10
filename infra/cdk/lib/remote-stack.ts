@@ -30,6 +30,11 @@ import * as subscriptions from "aws-cdk-lib/aws-sns-subscriptions";
 import { NagSuppressions } from "cdk-nag";
 import type { Construct } from "constructs";
 
+import {
+  terminalDBManagedLoginAssets,
+  terminalDBManagedLoginSettings,
+} from "./managed-login-branding.js";
+
 export interface TerminalDBRemoteStackProps extends StackProps {
   readonly stage: "dev" | "prod";
   readonly webAclArn: string;
@@ -460,7 +465,8 @@ export class TerminalDBRemoteStack extends Stack {
       {
         userPoolId: userPool.userPoolId,
         clientId: userPoolClient.userPoolClientId,
-        useCognitoProvidedValues: true,
+        assets: terminalDBManagedLoginAssets,
+        settings: terminalDBManagedLoginSettings,
       },
     );
     const userPoolDomainResource = userPoolDomain.node.defaultChild;
