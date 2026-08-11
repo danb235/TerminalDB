@@ -313,6 +313,23 @@ describe("Cognito account OAuth", () => {
     expect(logout.searchParams.get("client_id")).toBe("web-client");
   });
 
+  it("returns direct-signup sessions to TerminalDB without opening hosted logout", async () => {
+    localStorage.setItem("terminaldb.account.tokens.v1", JSON.stringify({
+      accessToken: "direct-access-token",
+      refreshToken: "direct-refresh-token",
+      expiresAt: Date.now() + 3_600_000,
+      refreshMode: "cognito",
+    }));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status: 200 }));
+    const navigate = vi.fn();
+
+    await signOutAccount(configuration, navigate);
+
+    const destination = navigate.mock.calls[0]?.[0] as URL;
+    expect(destination.origin).toBe(location.origin);
+    expect(destination.pathname).toBe("/");
+  });
+
   it("discards cached credentials after the account access policy changes", () => {
     localStorage.setItem("terminaldb.account.tokens.v1", JSON.stringify({
       accessToken: "revoked-access-token",

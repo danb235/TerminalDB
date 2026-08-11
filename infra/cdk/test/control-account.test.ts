@@ -260,6 +260,41 @@ describe("account control-plane tenant isolation", () => {
     expect(serialized).not.toContain("approved-bootstrap");
   });
 
+  it("resumes an approved account whose TOTP setup was interrupted", async () => {
+    mocks.send.mockImplementation(async (command: unknown) => {
+      const input = commandInput(command);
+      if (String(input.Key?.PK).startsWith("ACCOUNT_BOOTSTRAP#")) {
+        return {
+          Item: {
+            PK: input.Key.PK,
+            SK: "META",
+            status: "signup-prepared",
+            cognitoUsername: "qa-user",
+            deviceName: "QA Mac",
+            signingPublicKey: publicKey,
+            agreementPublicKey: publicKey,
+            ttl: activeUntil,
+          },
+        };
+      }
+      return {};
+    });
+
+    const response = await invoke({
+      method: "POST",
+      path: "/api/v1/account/bootstrap/complete",
+      sub: tenantA,
+      body: { bootstrapToken: "resumed-bootstrap" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const transaction = mocks.send.mock.calls
+      .map(([command]) => commandInput(command))
+      .find((input) => input.TransactItems);
+    expect(JSON.stringify(transaction)).toContain(":prepared");
+    expect(JSON.stringify(transaction)).toContain("signup-prepared");
+  });
+
   it("creates the TerminalDB account after Cognito managed signup and binds the waiting Mac", async () => {
     mocks.send.mockImplementation(async (command: unknown) => {
       const input = commandInput(command);

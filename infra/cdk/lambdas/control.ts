@@ -384,11 +384,12 @@ async function completeAccountBootstrap(
     return json(200, { completed: true, deviceId: bootstrap.deviceId });
   }
   const pendingManagedLoginCompletion = bootstrap.status === "pending";
-  if (!pendingManagedLoginCompletion && (
-    bootstrap.status !== "signup-confirmed" ||
-    typeof bootstrap.cognitoUsername !== "string" ||
-    !constantEqual(bootstrap.cognitoUsername, username)
-  )) {
+  const approvedSignupCompletion = (
+    (bootstrap.status === "signup-prepared" || bootstrap.status === "signup-confirmed") &&
+    typeof bootstrap.cognitoUsername === "string" &&
+    constantEqual(bootstrap.cognitoUsername, username)
+  );
+  if (!pendingManagedLoginCompletion && !approvedSignupCompletion) {
     return json(403, { error: "Complete the approved Cognito signup before connecting this Mac" });
   }
   let existingAccountConnection = false;
@@ -456,7 +457,7 @@ async function completeAccountBootstrap(
               "SET #status = :complete, ownerSub = :owner, deviceId = :device, completedAt = :now, #ttl = :ttl",
             ConditionExpression: pendingManagedLoginCompletion
               ? "#status = :pending AND #ttl > :now"
-              : "#status = :confirmed AND cognitoUsername = :username AND #ttl > :now",
+              : "(#status = :prepared OR #status = :confirmed) AND cognitoUsername = :username AND #ttl > :now",
             ExpressionAttributeNames: { "#status": "status", "#ttl": "ttl" },
             ExpressionAttributeValues: {
               ":complete": "complete",
@@ -467,6 +468,7 @@ async function completeAccountBootstrap(
               ...(pendingManagedLoginCompletion
                 ? { ":pending": "pending" }
                 : {
+                    ":prepared": "signup-prepared",
                     ":confirmed": "signup-confirmed",
                     ":username": username,
                   }),

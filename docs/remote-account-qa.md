@@ -183,6 +183,29 @@ Status: **deployed and visible-product gates passed**.
 - No password, authenticator secret, pairing link, token, terminal content, or
   enrollment code was retained in screenshots, logs, or the repository.
 
+## Hosted-signup route guard execution record — 2026-08-10
+
+Status: **deployed and visible-product gates passed**.
+
+- Reproduced a previously started account on Cognito's managed MFA setup page.
+  Confirmed this was the hosted fallback at `auth.terminaldb.app`, not the
+  first-party enrollment UI deployed at the TerminalDB application origin.
+- Required Cognito pre-signup to reserve a live, unexpired Mac approval bound
+  to the intended username and app client. Missing, expired, wrong-client,
+  cross-username, and replayed grants are rejected before MFA enrollment.
+- Added post-confirmation state and idempotent interrupted-signup recovery so a
+  user can restart first-party enrollment without making an existing account
+  eligible for cancellation cleanup.
+- Verified against the deployed pool that a signup without Mac approval is
+  rejected before MFA and that approved signup still completes mandatory TOTP.
+- Through the visible in-app browser flow, opened a live one-time terminal,
+  requested Mac approval, reached the TerminalDB QR and manual-key screen,
+  copied the setup key, completed enrollment, and removed the disposable
+  account and tenant records afterward.
+- Corrected direct-session logout to return to TerminalDB instead of entering
+  Cognito managed logout, and cleared the busy state after canceled enrollment
+  so the next attempt remains interactive.
+
 ## Managed-login branding execution record — 2026-08-10
 
 Status: **deployed and visible-product gates passed**.

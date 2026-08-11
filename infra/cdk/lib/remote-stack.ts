@@ -197,6 +197,7 @@ export class TerminalDBRemoteStack extends Stack {
     table.grantReadWriteData(controlFunction);
     table.grantReadWriteData(connectionFunction);
     table.grantReadWriteData(relayFunction);
+    table.grantReadWriteData(preSignupFunction);
 
     const relayIntegration = new apigatewayv2Integrations.WebSocketLambdaIntegration(
       "RelayIntegration",
@@ -479,6 +480,7 @@ export class TerminalDBRemoteStack extends Stack {
       },
     });
     userPool.addTrigger(cognito.UserPoolOperation.PRE_SIGN_UP, preSignupFunction);
+    userPool.addTrigger(cognito.UserPoolOperation.POST_CONFIRMATION, preSignupFunction);
     const managedLoginBranding = new cognito.CfnManagedLoginBranding(
       this,
       "ManagedLoginBranding",

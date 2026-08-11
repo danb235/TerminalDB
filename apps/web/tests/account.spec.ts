@@ -169,6 +169,7 @@ test("prepares account creators for mandatory authenticator-app setup", async ({
 
   await page.getByRole("button", { name: "Cancel setup" }).click();
   await expect(page.getByRole("heading", { name: "Sign in to TerminalDB" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeEnabled();
   expect(canceledBootstrap).toBe("qa-approved-bootstrap");
 });
 
