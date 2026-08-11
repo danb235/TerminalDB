@@ -223,7 +223,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     NSDictionary *runbook = @{
         @"id" : NSUUID.UUID.UUIDString,
         @"name" : TerminalProductTrim(name).length > 0
-            ? TerminalProductTrim(name) : @"Untitled runbook",
+            ? TerminalProductTrim(name) : @"Untitled playbook",
         @"command" : trimmedCommand,
         @"steps" : steps,
         @"directory" : directory.length > 0 ? directory : @"~",
@@ -251,7 +251,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     if (index == NSNotFound) return;
     NSMutableDictionary *updated = [self.mutableRunbooks[index] mutableCopy];
     updated[@"name"] = TerminalProductTrim(name).length > 0
-        ? TerminalProductTrim(name) : updated[@"name"] ?: @"Untitled runbook";
+        ? TerminalProductTrim(name) : updated[@"name"] ?: @"Untitled playbook";
     updated[@"command"] = TerminalProductTrim(command);
     updated[@"directory"] = directory.length > 0 ? directory : @"~";
     updated[@"steps"] = TerminalProductRunbookSteps(command);
@@ -680,7 +680,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         initWithFrame:NSMakeRect(22, 632, 1076, 30)];
     self.sectionControl.segmentCount = 6;
     NSArray *labels =
-        @[@"Project", @"Environments", @"Monitor", @"Runbooks",
+        @[@"Project", @"Environments", @"Monitor", @"Playbooks",
           @"Workspaces", @"Settings"];
     for (NSInteger i = 0; i < self.sectionControl.segmentCount; i++) {
         [self.sectionControl setLabel:labels[i] forSegment:i];
@@ -1079,12 +1079,12 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
             break;
         case TerminalProductSectionRunbooks:
             self.eyebrowLabel.stringValue = @"REUSABLE WORKFLOWS";
-            self.titleLabel.stringValue = @"Runbooks";
+            self.titleLabel.stringValue = @"Playbooks";
             self.subtitleLabel.stringValue =
                 @"Save successful commands as inspectable, reusable workflows.";
             self.items = self.store.runbooks.count > 0
                 ? self.store.runbooks : [self starterRunbooks];
-            self.createButton.title = @"New runbook";
+            self.createButton.title = @"New playbook";
             self.primaryButton.title = @"Run…";
             self.secondaryButton.title = @"Paste";
             self.tertiaryButton.title = @"Edit…";
@@ -1337,7 +1337,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     alert.messageText = title;
     alert.informativeText =
         @"Enter one command per line. {parameter} placeholders are requested "
-         "when the runbook is pasted or run.";
+         "when the playbook is pasted or run.";
     [alert addButtonWithTitle:@"Save"];
     [alert addButtonWithTitle:@"Cancel"];
     NSView *container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 560, 260)];
@@ -1404,7 +1404,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     (void)sender;
     if (self.section == TerminalProductSectionRunbooks) {
         NSArray *values =
-            [self promptRunbookWithTitle:@"New runbook"
+            [self promptRunbookWithTitle:@"New playbook"
                                     name:@"New workflow"
                                  command:@""];
         if (values.count == 2 && [values[1] length] > 0) {
@@ -1480,7 +1480,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
                 NSAlert *preview = [[NSAlert alloc] init];
                 preview.alertStyle = NSAlertStyleInformational;
                 preview.messageText = [NSString stringWithFormat:
-                    @"Run “%@”?", item[@"name"] ?: @"runbook"];
+                    @"Run “%@”?", item[@"name"] ?: @"playbook"];
                 preview.informativeText = [NSString stringWithFormat:
                     @"Directory: %@\n%lu step%@\n\nEvery step remains subject "
                      "to the active command permission policy.",
@@ -1594,7 +1594,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
             alert.messageText = @"Keybindings";
             alert.informativeText =
                 @"⌘T New Tab · ⌘D Split Right · ⇧⌘D Split Down\n"
-                 "⇧⌘L AI Chat · ⌘Y History · ⇧⌘R Runbooks\n"
+                 "⇧⌘L AI Chat · ⌘Y History · ⇧⌘R Playbooks\n"
                  "⇧⌘F Focus Mode · F6 Cycle Terminal / AI";
             [alert runModal];
         } else if ([identifier isEqualToString:@"advanced"]) {
@@ -1636,7 +1636,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
             NSAlert *history = [[NSAlert alloc] init];
             history.messageText = @"Choose a history default";
             history.informativeText =
-                @"Local history enables search, bookmarks, and runbooks. "
+                @"Local history enables search, bookmarks, and playbooks. "
                  "Private Session can still be enabled per tab.";
             [history addButtonWithTitle:@"Keep Local History"];
             [history addButtonWithTitle:@"Private by Default"];
@@ -1709,7 +1709,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         [names.array valueForKey:@"capitalizedString"];
     NSArray<NSString *> *defaults = names.array;
     NSArray<NSString *> *values =
-        [self promptWithTitle:@"Runbook parameters"
+        [self promptWithTitle:@"Playbook parameters"
                        labels:labels
                      defaults:defaults];
     if (values == nil) return @"";
@@ -1821,8 +1821,8 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     } else if (self.section == TerminalProductSectionRunbooks) {
         if ([item[@"builtin"] boolValue]) {
             NSArray *values =
-                [self promptRunbookWithTitle:@"Save starter as a runbook"
-                                        name:item[@"name"] ?: @"Runbook"
+                [self promptRunbookWithTitle:@"Save starter as a playbook"
+                                        name:item[@"name"] ?: @"Playbook"
                                      command:item[@"command"] ?: @""];
             if (values.count == 2 && [values[1] length] > 0) {
                 [self.store saveRunbookNamed:values[0]
@@ -1832,7 +1832,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
             }
         } else {
             NSArray *values =
-                [self promptRunbookWithTitle:@"Edit runbook"
+                [self promptRunbookWithTitle:@"Edit playbook"
                                         name:item[@"name"] ?: @""
                                      command:item[@"command"] ?: @""];
             if (values.count == 2 && [values[1] length] > 0) {

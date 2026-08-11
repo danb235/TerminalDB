@@ -17,7 +17,7 @@ Supporting components separate the main product concerns:
 | `TerminalLedger` | Structured command records and searchable local history |
 | `TerminalPermissions` | Risk classification and execution approvals |
 | `TerminalInspector` | Restricted read only command inspection |
-| `TerminalProduct` | Workspaces, runbooks, monitors, environments, and settings |
+| `TerminalProduct` | Workspaces, playbooks, monitors, environments, and settings |
 | `ClaudeProfile` | Isolated Claude subscription profiles and usage |
 | `ClaudeAPI` | Anthropic API key configuration, model discovery, and requests |
 | `ClaudeAssistantView` | Chat transcript, context chips, command and patch actions |
@@ -44,7 +44,7 @@ state. TerminalDB turns those lifecycle events into command records.
 Application data lives under the user account:
 
 - TerminalDB preferences for UI state and API provider configuration
-- Application Support for command history, runbooks, workspaces, monitors, and
+- Application Support for command history, playbooks, workspaces, monitors, and
   Claude profile metadata
 - isolated Claude configuration directories and Claude Code credentials for
   subscription profiles

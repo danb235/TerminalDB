@@ -144,6 +144,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
 
 @interface TerminalLedgerStore ()
 @property(nonatomic, copy, readwrite) NSArray<NSDictionary *> *records;
+@property(nonatomic) BOOL ephemeral;
 @end
 
 @class TerminalCommandInspectorController;
@@ -221,7 +222,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
 + (BOOL)runInterfaceSelfTests {
     TerminalCommandInspectorController *controller =
         [[TerminalCommandInspectorController alloc]
-            initWithStore:[[TerminalLedgerStore alloc] init]
+            initWithStore:[TerminalLedgerStore ephemeralStoreForTesting]
                    theme:[TerminalTheme preferredTheme]];
     [controller presentRecord:@{
         @"id" : @"interface-test",
@@ -256,7 +257,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
         [moreTitles containsObject:@"Copy Command"] &&
         [moreTitles containsObject:@"Copy Output"] &&
         [moreTitles containsObject:@"Paste Command for Review"] &&
-        [moreTitles containsObject:@"Save as Runbook…"] &&
+        [moreTitles containsObject:@"Save as Playbook"] &&
         [moreTitles containsObject:@"Export Command Block…"];
     [controller presentRecord:@{
         @"id" : @"interface-failure-test",
@@ -574,7 +575,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
         ? @"Remove Bookmark" : @"Bookmark Command";
     [menu addItem:[self menuItem:bookmarkTitle
                                action:@selector(toggleBookmark:)]];
-    [menu addItem:[self menuItem:@"Save as Runbook…"
+    [menu addItem:[self menuItem:@"Save as Playbook"
                                action:@selector(saveRunbook:)]];
     [menu addItem:[self menuItem:@"Export Command Block…"
                                action:@selector(exportBlock:)]];
@@ -670,6 +671,13 @@ static NSString *TerminalLedgerCSVCell(id value) {
     return store;
 }
 
++ (instancetype)ephemeralStoreForTesting {
+    TerminalLedgerStore *store = [[TerminalLedgerStore alloc] init];
+    store.ephemeral = YES;
+    store.records = @[];
+    return store;
+}
+
 + (BOOL)runPrivacyAndEnvironmentSelfTests {
     NSString *anthropic =
         TerminalLedgerRedact(@"export ANTHROPIC_API_KEY="
@@ -725,6 +733,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
 }
 
 - (void)persist {
+    if (self.ephemeral) return;
     NSData *data =
         [NSJSONSerialization dataWithJSONObject:self.records
                                          options:0
@@ -1189,7 +1198,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
                                   action:@selector(rerunCommand:)];
     _bookmarkButton = [self buttonWithTitle:@"☆"
                                      action:@selector(toggleBookmark:)];
-    _runbookButton = [self buttonWithTitle:@"▤ Runbook"
+    _runbookButton = [self buttonWithTitle:@"▤ Playbook"
                                     action:@selector(saveAsRunbook:)];
     _detailsButton = [self buttonWithTitle:@"Details"
                                     action:@selector(showDetails:)];
@@ -1449,41 +1458,61 @@ static NSString *TerminalLedgerCSVCell(id value) {
 
 @end
 
-@interface TerminalLedgerWindowController ()
+@class TerminalHistoryController;
+
+@interface TerminalLedgerPanelView : NSView
+@property(nonatomic, weak) TerminalHistoryController *controller;
+@end
+
+@interface TerminalHistoryController ()
 @property(nonatomic, strong) TerminalLedgerStore *store;
 @property(nonatomic, strong) TerminalTheme *theme;
+@property(nonatomic, strong, readwrite) NSView *panelView;
 @property(nonatomic, strong) NSSearchField *searchField;
-@property(nonatomic, strong) NSPopUpButton *statusFilter;
-@property(nonatomic, strong) NSPopUpButton *environmentFilter;
-@property(nonatomic, strong) NSButton *bookmarksOnlyButton;
-@property(nonatomic, strong) NSPopUpButton *savedSearches;
-@property(nonatomic, strong) NSButton *saveSearchButton;
+@property(nonatomic, strong) NSPopUpButton *scopeFilter;
 @property(nonatomic, strong) NSTextField *resultCountLabel;
 @property(nonatomic, strong) NSTableView *tableView;
 @property(nonatomic, strong) NSTextView *detailView;
+@property(nonatomic, strong) NSScrollView *tableScroll;
+@property(nonatomic, strong) NSScrollView *detailScroll;
+@property(nonatomic, strong) NSTextField *privacyLabel;
+@property(nonatomic, strong) NSButton *pasteButton;
+@property(nonatomic, strong) NSButton *rerunButton;
+@property(nonatomic, strong) NSButton *playbookButton;
+@property(nonatomic, strong) NSButton *moreButton;
+@property(nonatomic, strong) NSTextField *actionHintLabel;
 @property(nonatomic, copy) NSArray<NSDictionary *> *filteredRecords;
+- (NSMenu *)moreActionsMenu;
+- (void)layoutPanel;
 @end
 
-@implementation TerminalLedgerWindowController
+@implementation TerminalLedgerPanelView
+
+- (void)layout {
+    [super layout];
+    [self.controller layoutPanel];
+}
+
+@end
+
+@implementation TerminalHistoryController
 
 - (instancetype)initWithStore:(TerminalLedgerStore *)store
                          theme:(TerminalTheme *)theme {
-    NSWindow *window = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(0, 0, 1120, 650)
-                  styleMask:NSWindowStyleMaskTitled |
-                            NSWindowStyleMaskClosable |
-                            NSWindowStyleMaskMiniaturizable |
-                            NSWindowStyleMaskResizable
-                    backing:NSBackingStoreBuffered
-                      defer:NO];
-    window.title = @"TerminalDB — History Database";
-    window.contentMinSize = NSMakeSize(1120, 650);
-    window.backgroundColor = theme.terminalBackground;
-    self = [super initWithWindow:window];
+    self = [super init];
     if (self == nil) return nil;
     _store = store;
     _theme = theme;
     _filteredRecords = store.records;
+    TerminalLedgerPanelView *panel = [[TerminalLedgerPanelView alloc]
+        initWithFrame:NSMakeRect(0, 0, 1080, 340)];
+    panel.controller = self;
+    _panelView = panel;
+    _panelView.wantsLayer = YES;
+    _panelView.layer.backgroundColor = theme.terminalBackground.CGColor;
+    [_panelView setAccessibilityElement:YES];
+    [_panelView setAccessibilityRole:NSAccessibilityGroupRole];
+    [_panelView setAccessibilityLabel:@"Command history"];
     [self buildUI];
     [NSNotificationCenter.defaultCenter
         addObserver:self
@@ -1497,63 +1526,59 @@ static NSString *TerminalLedgerCSVCell(id value) {
     [NSNotificationCenter.defaultCenter removeObserver:self];
 }
 
++ (BOOL)runInterfaceSelfTests {
+    TerminalHistoryController *controller =
+        [[TerminalHistoryController alloc]
+            initWithStore:[TerminalLedgerStore ephemeralStoreForTesting]
+                   theme:[TerminalTheme preferredTheme]];
+    NSArray<NSString *> *scopeTitles =
+        [controller.scopeFilter.itemArray valueForKey:@"title"];
+    NSArray<NSString *> *moreTitles =
+        [controller.moreActionsMenu.itemArray valueForKey:@"title"];
+    CGFloat firstGap = NSMinX(controller.pasteButton.frame) -
+        NSMaxX(controller.rerunButton.frame);
+    CGFloat secondGap = NSMinX(controller.playbookButton.frame) -
+        NSMaxX(controller.pasteButton.frame);
+    return controller.panelView.window == nil &&
+        [controller.panelView.accessibilityLabel
+            isEqualToString:@"Command history"] &&
+        [controller.rerunButton.title isEqualToString:@"Run again"] &&
+        [controller.pasteButton.title isEqualToString:@"Paste to edit"] &&
+        [controller.playbookButton.title
+            isEqualToString:@"Save as Playbook"] &&
+        firstGap >= 12.0 && secondGap >= 12.0 &&
+        [scopeTitles isEqualToArray:
+            @[@"All commands", @"Failed", @"Bookmarked"]] &&
+        [moreTitles containsObject:@"Ask AI"] &&
+        [moreTitles containsObject:@"Bookmark Command"] &&
+        [moreTitles containsObject:@"Export Results…"] &&
+        [moreTitles containsObject:@"Clear History…"];
+}
+
 - (void)buildUI {
-    NSView *content = self.window.contentView;
-    content.wantsLayer = YES;
-    content.layer.backgroundColor = self.theme.terminalBackground.CGColor;
+    NSView *content = self.panelView;
 
     self.searchField =
-        [[NSSearchField alloc] initWithFrame:NSMakeRect(18, 605, 390, 28)];
+        [[NSSearchField alloc] initWithFrame:NSMakeRect(18, 605, 600, 30)];
     self.searchField.placeholderString =
-        @"Search commands, paths, output, or ask naturally";
+        @"Search commands, folders, or output";
     self.searchField.delegate = self;
-    self.searchField.autoresizingMask = NSViewMinYMargin;
+    self.searchField.autoresizingMask =
+        NSViewWidthSizable | NSViewMinYMargin;
+    [self.searchField setAccessibilityLabel:@"Search command history"];
     [content addSubview:self.searchField];
 
-    self.statusFilter =
-        [[NSPopUpButton alloc] initWithFrame:NSMakeRect(420, 605, 112, 28)
+    self.scopeFilter =
+        [[NSPopUpButton alloc] initWithFrame:NSMakeRect(632, 605, 150, 30)
                                   pullsDown:NO];
-    [self.statusFilter addItemsWithTitles:
-        @[@"All status", @"Succeeded", @"Failed"]];
-    self.statusFilter.target = self;
-    self.statusFilter.action = @selector(filterChanged:);
-    self.statusFilter.autoresizingMask = NSViewMinYMargin;
-    [content addSubview:self.statusFilter];
-
-    self.environmentFilter =
-        [[NSPopUpButton alloc] initWithFrame:NSMakeRect(540, 605, 122, 28)
-                                  pullsDown:NO];
-    [self.environmentFilter addItemsWithTitles:
-        @[@"All environments", @"Local", @"Remote", @"Staging",
-          @"Production"]];
-    self.environmentFilter.target = self;
-    self.environmentFilter.action = @selector(filterChanged:);
-    self.environmentFilter.autoresizingMask = NSViewMinYMargin;
-    [content addSubview:self.environmentFilter];
-
-    self.bookmarksOnlyButton =
-        [NSButton checkboxWithTitle:@"Bookmarks"
-                             target:self
-                             action:@selector(filterChanged:)];
-    self.bookmarksOnlyButton.frame = NSMakeRect(672, 607, 102, 24);
-    self.bookmarksOnlyButton.autoresizingMask = NSViewMinYMargin;
-    [content addSubview:self.bookmarksOnlyButton];
-
-    self.savedSearches =
-        [[NSPopUpButton alloc] initWithFrame:NSMakeRect(780, 605, 150, 28)
-                                  pullsDown:NO];
-    self.savedSearches.target = self;
-    self.savedSearches.action = @selector(selectSavedSearch:);
-    self.savedSearches.autoresizingMask = NSViewMinYMargin;
-    [content addSubview:self.savedSearches];
-    self.saveSearchButton =
-        [NSButton buttonWithTitle:@"Save"
-                           target:self
-                           action:@selector(saveCurrentSearch:)];
-    self.saveSearchButton.frame = NSMakeRect(936, 605, 66, 28);
-    self.saveSearchButton.controlSize = NSControlSizeSmall;
-    self.saveSearchButton.autoresizingMask = NSViewMinYMargin;
-    [content addSubview:self.saveSearchButton];
+    [self.scopeFilter addItemsWithTitles:
+        @[@"All commands", @"Failed", @"Bookmarked"]];
+    self.scopeFilter.target = self;
+    self.scopeFilter.action = @selector(filterChanged:);
+    self.scopeFilter.autoresizingMask =
+        NSViewMinXMargin | NSViewMinYMargin;
+    [self.scopeFilter setAccessibilityLabel:@"Filter command history"];
+    [content addSubview:self.scopeFilter];
 
     self.resultCountLabel = [NSTextField labelWithString:@""];
     self.resultCountLabel.font =
@@ -1562,34 +1587,29 @@ static NSString *TerminalLedgerCSVCell(id value) {
                                            weight:NSFontWeightRegular];
     self.resultCountLabel.textColor = self.theme.statusBarForeground;
     self.resultCountLabel.alignment = NSTextAlignmentRight;
-    self.resultCountLabel.frame = NSMakeRect(1008, 609, 94, 18);
+    self.resultCountLabel.frame = NSMakeRect(794, 611, 268, 18);
     self.resultCountLabel.autoresizingMask =
         NSViewMinXMargin | NSViewMinYMargin;
     [content addSubview:self.resultCountLabel];
 
-    NSTextField *privacy = [NSTextField labelWithString:
-        @"LOCAL LEDGER · secrets redacted · stored only on this Mac"];
-    privacy.font =
+    self.privacyLabel = [NSTextField labelWithString:
+        @"LOCAL HISTORY · secrets redacted · stays on this Mac"];
+    self.privacyLabel.font =
         [NSFont fontWithName:self.theme.fontName size:9.5]
             ?: [NSFont monospacedSystemFontOfSize:9.5
                                            weight:NSFontWeightRegular];
-    privacy.textColor = self.theme.ansiColors[6];
-    privacy.frame = NSMakeRect(600, 582, 502, 18);
-    privacy.alignment = NSTextAlignmentRight;
-    privacy.autoresizingMask =
-        NSViewMinXMargin | NSViewMinYMargin;
-    [content addSubview:privacy];
-    [self reloadSavedSearches];
-
-    NSScrollView *tableScroll =
-        [[NSScrollView alloc] initWithFrame:NSMakeRect(18, 84, 580, 492)];
-    tableScroll.hasVerticalScroller = YES;
-    tableScroll.borderType = NSBezelBorder;
-    tableScroll.drawsBackground = YES;
-    tableScroll.backgroundColor = self.theme.terminalBackground;
-    tableScroll.autoresizingMask =
-        NSViewWidthSizable | NSViewHeightSizable;
-    self.tableView = [[NSTableView alloc] initWithFrame:tableScroll.bounds];
+    self.privacyLabel.textColor = self.theme.ansiColors[6];
+    self.privacyLabel.frame = NSMakeRect(560, 578, 502, 18);
+    self.privacyLabel.alignment = NSTextAlignmentRight;
+    [content addSubview:self.privacyLabel];
+    self.tableScroll =
+        [[NSScrollView alloc] initWithFrame:NSMakeRect(18, 96, 500, 474)];
+    self.tableScroll.hasVerticalScroller = YES;
+    self.tableScroll.borderType = NSBezelBorder;
+    self.tableScroll.drawsBackground = YES;
+    self.tableScroll.backgroundColor = self.theme.terminalBackground;
+    self.tableView = [[NSTableView alloc]
+        initWithFrame:self.tableScroll.bounds];
     self.tableView.delegate = self;
     self.tableView.dataSource = self;
     self.tableView.usesAlternatingRowBackgroundColors = NO;
@@ -1597,11 +1617,9 @@ static NSString *TerminalLedgerCSVCell(id value) {
     self.tableView.rowHeight = 27;
     NSArray *columns = @[
         @[@"bookmark", @"", @26],
-        @[@"command", @"Command", @280],
-        @[@"project", @"Project", @105],
-        @[@"environment", @"Env", @78],
-        @[@"status", @"Status", @72],
-        @[@"duration", @"Time", @68],
+        @[@"command", @"Command", @220],
+        @[@"project", @"Folder", @100],
+        @[@"status", @"", @46],
     ];
     for (NSArray *definition in columns) {
         NSTableColumn *column =
@@ -1612,16 +1630,15 @@ static NSString *TerminalLedgerCSVCell(id value) {
     }
     self.tableView.headerView =
         [[NSTableHeaderView alloc] initWithFrame:NSMakeRect(0, 0, 0, 24)];
-    tableScroll.documentView = self.tableView;
-    [content addSubview:tableScroll];
+    self.tableScroll.documentView = self.tableView;
+    [content addSubview:self.tableScroll];
 
-    NSScrollView *detailScroll =
-        [[NSScrollView alloc] initWithFrame:NSMakeRect(612, 84, 490, 492)];
-    detailScroll.hasVerticalScroller = YES;
-    detailScroll.borderType = NSBezelBorder;
-    detailScroll.autoresizingMask =
-        NSViewMinXMargin | NSViewHeightSizable;
-    self.detailView = [[NSTextView alloc] initWithFrame:detailScroll.bounds];
+    self.detailScroll =
+        [[NSScrollView alloc] initWithFrame:NSMakeRect(532, 96, 530, 474)];
+    self.detailScroll.hasVerticalScroller = YES;
+    self.detailScroll.borderType = NSBezelBorder;
+    self.detailView = [[NSTextView alloc]
+        initWithFrame:self.detailScroll.bounds];
     self.detailView.editable = NO;
     self.detailView.selectable = YES;
     self.detailView.drawsBackground = YES;
@@ -1633,106 +1650,92 @@ static NSString *TerminalLedgerCSVCell(id value) {
             ?: [NSFont monospacedSystemFontOfSize:11.5
                                            weight:NSFontWeightRegular];
     self.detailView.textContainerInset = NSMakeSize(12, 12);
-    detailScroll.documentView = self.detailView;
-    [content addSubview:detailScroll];
+    self.detailScroll.documentView = self.detailView;
+    [content addSubview:self.detailScroll];
 
-    NSButton *paste = [NSButton buttonWithTitle:@"Paste into Terminal"
-                                         target:self
-                                         action:@selector(pasteSelected:)];
-    paste.frame = NSMakeRect(18, 30, 142, 32);
-    [content addSubview:paste];
-    NSButton *ask = [NSButton buttonWithTitle:@"✦ Ask AI"
-                                       target:self
-                                       action:@selector(askSelected:)];
-    ask.frame = NSMakeRect(168, 30, 104, 32);
-    [content addSubview:ask];
-    NSButton *rerun = [NSButton buttonWithTitle:@"↻ Rerun"
-                                         target:self
-                                         action:@selector(rerunSelected:)];
-    rerun.frame = NSMakeRect(280, 30, 96, 32);
-    [content addSubview:rerun];
-    NSButton *bookmark = [NSButton buttonWithTitle:@"☆ Bookmark"
-                                            target:self
-                                            action:@selector(bookmarkSelected:)];
-    bookmark.frame = NSMakeRect(384, 30, 116, 32);
-    [content addSubview:bookmark];
-    NSButton *runbook = [NSButton buttonWithTitle:@"▤ Save as Runbook"
+    self.rerunButton = [NSButton buttonWithTitle:@"Run again"
                                            target:self
-                                           action:@selector(runbookSelected:)];
-    runbook.frame = NSMakeRect(508, 30, 150, 32);
-    [content addSubview:runbook];
-    NSButton *export = [NSButton buttonWithTitle:@"Export…"
+                                           action:@selector(rerunSelected:)];
+    self.rerunButton.frame = NSMakeRect(18, 36, 120, 36);
+    self.rerunButton.keyEquivalent = @"\r";
+    [self.rerunButton setAccessibilityHelp:
+        @"Runs the selected command after TerminalDB's normal safety check."];
+    [content addSubview:self.rerunButton];
+    self.pasteButton = [NSButton buttonWithTitle:@"Paste to edit"
+                                           target:self
+                                           action:@selector(pasteSelected:)];
+    self.pasteButton.frame = NSMakeRect(150, 36, 120, 36);
+    [content addSubview:self.pasteButton];
+    self.playbookButton = [NSButton buttonWithTitle:@"Save as Playbook"
+                                              target:self
+                                              action:@selector(runbookSelected:)];
+    self.playbookButton.frame = NSMakeRect(282, 36, 154, 36);
+    [content addSubview:self.playbookButton];
+    self.moreButton = [NSButton buttonWithTitle:@"More…"
                                           target:self
-                                          action:@selector(exportHistory:)];
-    export.frame = NSMakeRect(666, 30, 96, 32);
-    [content addSubview:export];
-    NSButton *clear = [NSButton buttonWithTitle:@"Clear History…"
-                                         target:self
-                                         action:@selector(clearHistory:)];
-    clear.frame = NSMakeRect(970, 30, 132, 32);
-    clear.contentTintColor = self.theme.ansiColors[1];
-    clear.autoresizingMask = NSViewMinXMargin;
-    [content addSubview:clear];
+                                          action:@selector(showMoreActions:)];
+    self.moreButton.frame = NSMakeRect(448, 36, 92, 36);
+    [content addSubview:self.moreButton];
+
+    self.actionHintLabel = [NSTextField labelWithString:
+        @"Run it now, edit before running, or keep it as a Playbook."];
+    self.actionHintLabel.font =
+        [NSFont systemFontOfSize:10 weight:NSFontWeightRegular];
+    self.actionHintLabel.textColor = self.theme.statusBarForeground;
+    self.actionHintLabel.frame = NSMakeRect(558, 45, 504, 18);
+    self.actionHintLabel.alignment = NSTextAlignmentRight;
+    self.actionHintLabel.autoresizingMask = NSViewMinXMargin;
+    [content addSubview:self.actionHintLabel];
     [self reload];
+    [self.panelView setNeedsLayout:YES];
 }
 
-- (NSArray<NSString *> *)savedSearchValues {
-    NSArray *saved = [NSUserDefaults.standardUserDefaults
-        arrayForKey:@"TerminalDBSavedHistorySearches"];
-    NSMutableArray<NSString *> *values = [NSMutableArray array];
-    for (id value in saved ?: @[]) {
-        if ([value isKindOfClass:NSString.class] &&
-            [value length] > 0) {
-            [values addObject:value];
-        }
-    }
-    return values;
-}
+- (void)layoutPanel {
+    CGFloat width = NSWidth(self.panelView.bounds);
+    CGFloat height = NSHeight(self.panelView.bounds);
+    CGFloat inset = 18;
+    CGFloat gap = 12;
+    CGFloat countWidth = 160;
+    CGFloat filterWidth = 150;
+    CGFloat searchWidth = MAX(210,
+        width - inset * 2 - gap * 2 - countWidth - filterWidth);
+    CGFloat topY = height - 45;
+    self.searchField.frame =
+        NSMakeRect(inset, topY, searchWidth, 30);
+    self.scopeFilter.frame =
+        NSMakeRect(NSMaxX(self.searchField.frame) + gap,
+                   topY, filterWidth, 30);
+    self.resultCountLabel.frame =
+        NSMakeRect(width - inset - countWidth, topY + 6,
+                   countWidth, 18);
+    self.privacyLabel.frame =
+        NSMakeRect(MAX(inset, width - inset - 502), height - 72,
+                   MIN(502, width - inset * 2), 18);
 
-- (void)reloadSavedSearches {
-    [self.savedSearches removeAllItems];
-    [self.savedSearches addItemWithTitle:@"Saved searches"];
-    self.savedSearches.lastItem.enabled = NO;
-    NSArray<NSString *> *values = [self savedSearchValues];
-    for (NSString *query in values) {
-        [self.savedSearches addItemWithTitle:query];
-        self.savedSearches.lastItem.representedObject = query;
+    CGFloat contentBottom = 92;
+    CGFloat contentTop = height - 82;
+    CGFloat contentHeight = MAX(140, contentTop - contentBottom);
+    if (width >= 900) {
+        CGFloat available = width - inset * 2 - gap;
+        CGFloat tableWidth = floor(available * 0.46);
+        self.tableScroll.frame =
+            NSMakeRect(inset, contentBottom, tableWidth, contentHeight);
+        self.detailScroll.frame =
+            NSMakeRect(NSMaxX(self.tableScroll.frame) + gap,
+                       contentBottom, available - tableWidth, contentHeight);
+    } else {
+        CGFloat halfHeight = floor((contentHeight - gap) * 0.5);
+        self.detailScroll.frame =
+            NSMakeRect(inset, contentBottom,
+                       width - inset * 2, halfHeight);
+        self.tableScroll.frame =
+            NSMakeRect(inset, NSMaxY(self.detailScroll.frame) + gap,
+                       width - inset * 2,
+                       contentHeight - halfHeight - gap);
     }
-    if (values.count == 0) {
-        [self.savedSearches addItemWithTitle:@"No saved searches"];
-        self.savedSearches.lastItem.enabled = NO;
-    }
-    [self.savedSearches selectItemAtIndex:0];
-}
-
-- (void)selectSavedSearch:(NSPopUpButton *)sender {
-    NSString *query =
-        [sender.selectedItem.representedObject isKindOfClass:NSString.class]
-            ? sender.selectedItem.representedObject : @"";
-    if (query.length == 0) return;
-    self.searchField.stringValue = query;
-    [self reload];
-}
-
-- (void)saveCurrentSearch:(id)sender {
-    (void)sender;
-    NSString *query = [self.searchField.stringValue
-        stringByTrimmingCharactersInSet:
-            NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    if (query.length == 0) {
-        NSBeep();
-        return;
-    }
-    NSMutableOrderedSet<NSString *> *saved =
-        [NSMutableOrderedSet orderedSetWithArray:
-            [self savedSearchValues]];
-    [saved addObject:query];
-    while (saved.count > 20) [saved removeObjectAtIndex:0];
-    [NSUserDefaults.standardUserDefaults
-        setObject:saved.array
-           forKey:@"TerminalDBSavedHistorySearches"];
-    [self reloadSavedSearches];
-    [self.savedSearches selectItemWithTitle:query];
+    self.actionHintLabel.hidden = width < 900;
+    self.actionHintLabel.frame =
+        NSMakeRect(558, 45, MAX(1, width - 576), 18);
 }
 
 - (void)historyChanged:(NSNotification *)notification {
@@ -1742,22 +1745,17 @@ static NSString *TerminalLedgerCSVCell(id value) {
 
 - (void)reload {
     NSMutableDictionary *filters = [NSMutableDictionary dictionary];
-    NSString *status = self.statusFilter.titleOfSelectedItem;
-    if ([status isEqualToString:@"Succeeded"]) filters[@"status"] = @"success";
-    if ([status isEqualToString:@"Failed"]) filters[@"status"] = @"failed";
-    NSString *environment = self.environmentFilter.titleOfSelectedItem;
-    if (![environment isEqualToString:@"All environments"] &&
-        environment.length > 0) {
-        filters[@"environment"] = environment.uppercaseString;
-    }
-    if (self.bookmarksOnlyButton.state == NSControlStateValueOn) {
+    NSString *scope = self.scopeFilter.titleOfSelectedItem;
+    if ([scope isEqualToString:@"Failed"]) {
+        filters[@"status"] = @"failed";
+    } else if ([scope isEqualToString:@"Bookmarked"]) {
         filters[@"bookmarked"] = @YES;
     }
     self.filteredRecords =
         [self.store recordsMatching:self.searchField.stringValue
                             filters:filters];
     self.resultCountLabel.stringValue = [NSString stringWithFormat:
-        @"%lu of %lu blocks",
+        @"%lu of %lu commands",
         (unsigned long)self.filteredRecords.count,
         (unsigned long)self.store.records.count];
     [self.tableView reloadData];
@@ -1770,6 +1768,11 @@ static NSString *TerminalLedgerCSVCell(id value) {
             @"No matching commands.\n\nRun a command in TerminalDB and it "
              "will appear here after the shell prompt returns.";
     }
+    BOOL hasSelection = [self selectedRecord] != nil;
+    self.rerunButton.enabled = hasSelection;
+    self.pasteButton.enabled = hasSelection;
+    self.playbookButton.enabled = hasSelection;
+    self.moreButton.enabled = hasSelection || self.filteredRecords.count > 0;
 }
 
 - (void)filterChanged:(id)sender {
@@ -1820,8 +1823,9 @@ static NSString *TerminalLedgerCSVCell(id value) {
     } else if ([identifier isEqualToString:@"status"]) {
         NSInteger code = [record[@"exit_code"] integerValue];
         field.stringValue =
-            code == 0 ? @"✓ exit 0" : [NSString stringWithFormat:
-                @"× exit %ld", (long)code];
+            code == 0 ? @"✓" : [NSString stringWithFormat:
+                @"× %ld", (long)code];
+        field.alignment = NSTextAlignmentCenter;
         field.textColor =
             code == 0 ? self.theme.ansiColors[2] : self.theme.ansiColors[1];
     } else {
@@ -1835,6 +1839,11 @@ static NSString *TerminalLedgerCSVCell(id value) {
 - (void)tableViewSelectionDidChange:(NSNotification *)notification {
     (void)notification;
     [self updateDetail];
+    BOOL hasSelection = [self selectedRecord] != nil;
+    self.rerunButton.enabled = hasSelection;
+    self.pasteButton.enabled = hasSelection;
+    self.playbookButton.enabled = hasSelection;
+    self.moreButton.enabled = hasSelection || self.filteredRecords.count > 0;
 }
 
 - (nullable NSDictionary *)selectedRecord {
@@ -1918,12 +1927,43 @@ static NSString *TerminalLedgerCSVCell(id value) {
     }
 }
 
+- (NSMenuItem *)historyMenuItem:(NSString *)title action:(SEL)action {
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title
+                                                  action:action
+                                           keyEquivalent:@""];
+    item.target = self;
+    return item;
+}
+
+- (NSMenu *)moreActionsMenu {
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"History actions"];
+    [menu addItem:[self historyMenuItem:@"Ask AI"
+                                 action:@selector(askSelected:)]];
+    NSString *bookmarkTitle = [[self selectedRecord][@"bookmarked"] boolValue]
+        ? @"Remove Bookmark" : @"Bookmark Command";
+    [menu addItem:[self historyMenuItem:bookmarkTitle
+                                 action:@selector(bookmarkSelected:)]];
+    [menu addItem:NSMenuItem.separatorItem];
+    [menu addItem:[self historyMenuItem:@"Export Results…"
+                                 action:@selector(exportHistory:)]];
+    [menu addItem:[self historyMenuItem:@"Clear History…"
+                                 action:@selector(clearHistory:)]];
+    return menu;
+}
+
+- (void)showMoreActions:(NSButton *)sender {
+    NSMenu *menu = [self moreActionsMenu];
+    [menu popUpMenuPositioningItem:nil
+                        atLocation:NSMakePoint(0, NSHeight(sender.bounds) + 4)
+                            inView:sender];
+}
+
 - (void)exportHistory:(id)sender {
     (void)sender;
     NSSavePanel *panel = [NSSavePanel savePanel];
     panel.title = @"Export TerminalDB History";
     panel.nameFieldStringValue = @"terminaldb-history.json";
-    [panel beginSheetModalForWindow:self.window
+    [panel beginSheetModalForWindow:self.panelView.window
                  completionHandler:^(NSModalResponse response) {
         if (response != NSModalResponseOK || panel.URL == nil) return;
         NSString *format =
@@ -1955,9 +1995,14 @@ static NSString *TerminalLedgerCSVCell(id value) {
     [alert addButtonWithTitle:@"Clear History"];
     [alert addButtonWithTitle:@"Cancel"];
     alert.alertStyle = NSAlertStyleWarning;
-    if ([alert runModal] == NSAlertFirstButtonReturn) {
-        [self.store clearHistory];
-    }
+    NSWindow *window = self.panelView.window;
+    if (window == nil) return;
+    [alert beginSheetModalForWindow:window
+                 completionHandler:^(NSModalResponse response) {
+        if (response == NSAlertFirstButtonReturn) {
+            [self.store clearHistory];
+        }
+    }];
 }
 
 @end

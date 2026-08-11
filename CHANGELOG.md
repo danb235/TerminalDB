@@ -25,6 +25,13 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Command History now opens inside the active terminal window and presents one
+  search field, one scope filter, and three clear next steps: run again, paste
+  to edit, or save as a Playbook. AI, bookmarks, export, and deletion remain
+  available under a secondary More menu.
+- Runbooks are now called Playbooks throughout the interface. Saving a command
+  creates a sensibly named Playbook immediately and opens its in-window view,
+  instead of interrupting the workflow with a separate naming dialog.
 - Cognito's sign-in, account-creation, password, and authenticator-app screens
   now use TerminalDB's Graphite Ledger palette, application mark, focus states,
   and semantic success, warning, and error colors.

@@ -13,7 +13,7 @@ delivery promise.
 - Anthropic API key and Claude subscription providers
 - isolated management for multiple Claude subscription accounts
 - usage display for session, weekly, and model specific limits
-- runbooks, workspaces, environments, monitors, splits, and private sessions
+- playbooks, workspaces, environments, monitors, splits, and private sessions
 - universal macOS build, checksums, and GitHub release automation
 
 ## Near term
@@ -27,7 +27,7 @@ delivery promise.
 
 ## Later
 
-- team shared runbooks with inspectable local execution
+- team shared playbooks with inspectable local execution
 - optional encrypted history storage
 - additional shells after command boundary parity is proven
 - Apple Developer ID signing and notarization when program access exists
