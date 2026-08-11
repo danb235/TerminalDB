@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#0c0e11">
-<title>TerminalDB: The terminal that remembers what worked</title>
-<meta name="description" content="TerminalDB is a native macOS terminal that turns every command into structured, searchable context, with AI that asks permission and fast Claude account switching.">
+<title>TerminalDB: Claude Code accounts and terminals, under control</title>
+<meta name="description" content="Switch Claude Code subscriptions per terminal, see usage and reset status, and securely control your open TerminalDB sessions from any browser.">
 <link rel="icon" href="./favicon.svg" type="image/svg+xml">
 <script src="./vendor/react.production.min.js"></script>
 <script src="./vendor/react-dom.production.min.js"></script>
@@ -16,17 +16,17 @@
 <body>
 <x-dc>
 <helmet>
-<title>TerminalDB: The terminal that remembers what worked</title>
-<meta name="description" content="TerminalDB is a native macOS terminal that turns every command into structured, searchable context, with AI that asks permission, history that stays on your Mac, and automatic secret redaction. Open source, MIT.">
+<title>TerminalDB: Claude Code accounts and terminals, under control</title>
+<meta name="description" content="Switch Claude Code subscriptions per terminal, see usage and reset status, and securely control your open TerminalDB sessions from any browser.">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta property="og:title" content="TerminalDB: The terminal that remembers what worked">
-<meta property="og:description" content="Every command becomes structured, searchable context. Native macOS. History stays local. MIT licensed.">
+<meta property="og:title" content="TerminalDB: Claude Code accounts and terminals, under control">
+<meta property="og:description" content="Remote terminal access, one-click Claude Code account switching, and subscription usage at a glance.">
 <meta property="og:type" content="website">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"TerminalDB","applicationCategory":"DeveloperApplication","operatingSystem":"macOS 13.0 or later","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"license":"https://opensource.org/licenses/MIT","softwareVersion":"0.1.0","downloadUrl":"https://github.com/danb235/TerminalDB/releases/download/v0.1.0/TerminalDB-macOS.zip","codeRepository":"https://github.com/danb235/TerminalDB","description":"A native macOS terminal that records every command as structured, searchable context, with AI assistance that asks permission and history that stays on the machine."}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"TerminalDB","applicationCategory":"DeveloperApplication","operatingSystem":"macOS 13.0 or later","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"license":"https://opensource.org/licenses/MIT","softwareVersion":"0.1.0","downloadUrl":"https://github.com/danb235/TerminalDB/releases/download/v0.1.0/TerminalDB-macOS.zip","codeRepository":"https://github.com/danb235/TerminalDB","description":"A native macOS terminal for remotely accessing terminal sessions, switching Claude Code subscriptions per tab, and monitoring account usage and reset status."}
 </script>
 <style>
   html { scroll-behavior: smooth; }
@@ -37,6 +37,7 @@
   ::selection { background:rgba(90,211,230,.28); }
   :focus-visible { outline:2px solid #5ad3e6; outline-offset:3px; border-radius:4px; }
   summary::-webkit-details-marker { display:none; }
+  section[id] { scroll-margin-top:84px; }
   [hidden] { display:none !important; }
   .tdb-account-status { display:flex; align-items:center; justify-content:flex-end; min-height:38px; }
   .tdb-account-status [data-account-checking],
@@ -55,14 +56,40 @@
   .tdb-account-actions > a.tdb-account-primary:hover { background:rgba(90,211,230,.2); }
   .tdb-account-signed-in { display:flex; align-items:center; gap:12px; }
   .tdb-account-signed-in strong { color:#ecedef; font-weight:500; }
+  .tdb-hero-grid { display:grid; grid-template-columns:minmax(0,.9fr) minmax(440px,1.1fr); gap:clamp(28px,5vw,70px); align-items:center; }
+  .tdb-command-center { border:1px solid #2c343e; border-radius:16px; background:linear-gradient(145deg,#11151a,#0b0e12); padding:12px; box-shadow:0 42px 90px -44px rgba(0,0,0,.95),0 0 80px -60px rgba(90,211,230,.7); }
+  .tdb-command-center-inner { overflow:hidden; border:1px solid #20262e; border-radius:11px; background:#0d1014; }
+  .tdb-command-center-top { display:flex; align-items:center; justify-content:space-between; gap:14px; min-height:46px; padding:0 15px; border-bottom:1px solid #20262e; background:#11151a; }
+  .tdb-command-center-body { display:grid; grid-template-columns:minmax(154px,.72fr) minmax(0,1.45fr); min-height:330px; }
+  .tdb-device-list { padding:12px; border-right:1px solid #20262e; background:#0b0e12; }
+  .tdb-device { padding:12px; border:1px solid #262d36; border-radius:8px; background:#12161b; }
+  .tdb-device + .tdb-device { margin-top:9px; }
+  .tdb-device-active { border-color:rgba(90,211,230,.48); background:rgba(90,211,230,.07); }
+  .tdb-control-main { display:grid; grid-template-rows:auto 1fr; min-width:0; }
+  .tdb-control-tabs { display:flex; gap:7px; padding:11px 12px; overflow:hidden; border-bottom:1px solid #20262e; }
+  .tdb-control-tab { min-width:0; padding:7px 9px; border:1px solid #292f38; border-radius:6px; color:#88919e; font:500 10px/1 'JetBrains Mono',monospace; white-space:nowrap; }
+  .tdb-control-tab-active { border-color:#3b7680; color:#d8f8ff; background:rgba(90,211,230,.08); }
+  .tdb-control-terminal { display:grid; grid-template-rows:1fr auto; min-height:0; padding:17px; color:#aeb6c1; font:400 11px/1.75 'JetBrains Mono',monospace; }
+  .tdb-usage-row { display:grid; grid-template-columns:28px 1fr 34px; align-items:center; gap:8px; }
+  .tdb-usage-track { height:4px; overflow:hidden; border-radius:99px; background:#242a32; }
+  .tdb-usage-fill { height:100%; border-radius:99px; background:#5ad3e6; }
+  .tdb-feature-lead { display:grid; grid-template-columns:minmax(0,.9fr) minmax(420px,1.1fr); gap:clamp(26px,5vw,70px); align-items:center; }
+  .tdb-priority-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:1px; border:1px solid #232a32; border-radius:12px; overflow:hidden; background:#232a32; }
+  .tdb-priority-card { padding:20px; background:#11151a; }
   @media (max-width: 920px) {
+    section[id] { scroll-margin-top:148px; }
     header nav[aria-label="Primary"] { order:3; width:100%; overflow-x:auto; padding-bottom:8px; }
     .tdb-header-spacer { display:none; }
     .tdb-account-status { margin-left:auto; }
+    .tdb-hero-grid,
+    .tdb-feature-lead { grid-template-columns:1fr; }
+    .tdb-priority-grid { grid-template-columns:1fr; }
   }
   @media (max-width: 560px) {
     .tdb-account-state { display:none; }
     .tdb-account-actions > a { padding:0 10px; }
+    .tdb-command-center-body { grid-template-columns:1fr; }
+    .tdb-device-list { display:none; }
   }
   @keyframes tdbBlink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
   @media (prefers-reduced-motion: reduce) {
@@ -81,11 +108,10 @@
       <span style="font:600 16px/1 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;letter-spacing:-.01em">TerminalDB</span>
     </a>
     <nav aria-label="Primary" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-left:6px">
-      <a href="#product" style="padding:8px 10px;border-radius:6px;font-size:13.5px;color:#b6bdc7;text-decoration:none" style-hover="color:#ecedef;background:#161a20">Product</a>
+      <a href="#remote-access" style="padding:8px 10px;border-radius:6px;font-size:13.5px;color:#b6bdc7;text-decoration:none" style-hover="color:#ecedef;background:#161a20">Remote access</a>
       <a href="#claude-accounts" style="padding:8px 10px;border-radius:6px;font-size:13.5px;color:#b6bdc7;text-decoration:none" style-hover="color:#ecedef;background:#161a20">Claude accounts</a>
-      <a href="#features" style="padding:8px 10px;border-radius:6px;font-size:13.5px;color:#b6bdc7;text-decoration:none" style-hover="color:#ecedef;background:#161a20">Features</a>
+      <a href="#usage" style="padding:8px 10px;border-radius:6px;font-size:13.5px;color:#b6bdc7;text-decoration:none" style-hover="color:#ecedef;background:#161a20">Usage</a>
       <a href="#security" style="padding:8px 10px;border-radius:6px;font-size:13.5px;color:#b6bdc7;text-decoration:none" style-hover="color:#ecedef;background:#161a20">Security</a>
-      <a href="#docs" style="padding:8px 10px;border-radius:6px;font-size:13.5px;color:#b6bdc7;text-decoration:none" style-hover="color:#ecedef;background:#161a20">Docs</a>
       <a href="https://github.com/danb235/TerminalDB" rel="noopener" style="padding:8px 10px;border-radius:6px;font-size:13.5px;color:#b6bdc7;text-decoration:none;display:flex;align-items:center;gap:6px" style-hover="color:#ecedef;background:#161a20">GitHub<span style="font:400 11px/1 'JetBrains Mono',monospace;color:#6b7481">&#8599;</span></a>
     </nav>
     <div class="tdb-header-spacer" style="flex:1 1 40px"></div>
@@ -110,62 +136,143 @@
 
   <section style="position:relative;overflow:hidden;padding:clamp(48px,6vw,88px) clamp(20px,5vw,64px) clamp(40px,5vw,72px)">
     <div style="position:absolute;inset:-40% 30% 40% -20%;background:radial-gradient(60% 60% at 30% 40%,rgba(90,211,230,.11),transparent 70%);pointer-events:none"></div>
-    <div style="position:relative;max-width:1180px;margin:0 auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:clamp(28px,4vw,56px);align-items:center">
+    <div class="tdb-hero-grid" style="position:relative;max-width:1180px;margin:0 auto">
       <div style="min-width:0">
         <div style="display:inline-flex;align-items:center;gap:8px;padding:5px 10px;border:1px solid #232830;border-radius:999px;background:#12151a;font:400 11px/1 'JetBrains Mono',monospace;letter-spacing:.06em;color:#98a0ac">
-          <span style="width:6px;height:6px;border-radius:50%;background:#b8e04a;box-shadow:0 0 8px rgba(184,224,74,.7)"></span>MIT&nbsp;licensed&nbsp;&middot;&nbsp;native&nbsp;macOS&nbsp;&middot;&nbsp;local&nbsp;history
+          <span style="width:6px;height:6px;border-radius:50%;background:#b8e04a;box-shadow:0 0 8px rgba(184,224,74,.7)"></span>REMOTE&nbsp;TERMINALS&nbsp;&middot;&nbsp;CLAUDE&nbsp;ACCOUNTS&nbsp;&middot;&nbsp;USAGE
         </div>
         <h1 style="font:500 clamp(34px,4.6vw,58px)/1.06 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;letter-spacing:-.03em;margin:20px 0 0;text-wrap:balance">
-          The terminal that<br>remembers <span style="color:#5ad3e6">what worked.</span>
+          Your Claude Code accounts and terminals. <span style="color:#5ad3e6">One place.</span>
         </h1>
         <p style="color:#98a0ac;font-size:clamp(15.5px,1.35vw,18px);line-height:1.6;max-width:56ch;margin:18px 0 0;text-wrap:pretty">
-          TerminalDB records every command as a structured record. Path, host, environment, exit status, duration and output are all captured, then kept in a searchable database on your Mac. Your shell history stops being a flat list of strings and becomes context you and your AI assistant can actually reason about. Connect as many Claude subscription accounts as you use, and switch the active one per terminal tab in a single action.
+          Open your live terminal windows from any browser. Connect every Claude subscription you use, switch the active account per tab, and see plan status, usage, and reset times without breaking your flow.
         </p>
         <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:28px">
           <a href="https://github.com/danb235/TerminalDB/releases/download/v0.1.0/TerminalDB-macOS.zip" style="display:inline-flex;align-items:center;gap:9px;padding:13px 20px;border:1px solid #5ad3e6;border-radius:9px;background:rgba(90,211,230,.09);color:#d8f8ff;font:500 14.5px/1 -apple-system,system-ui,sans-serif;text-decoration:none" style-hover="background:rgba(90,211,230,.18);text-decoration:none" style-active="background:rgba(90,211,230,.28)">
             <span style="font:700 13px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>Download v0.1.0 for macOS
           </a>
-          <a href="https://github.com/danb235/TerminalDB" rel="noopener" style="display:inline-flex;align-items:center;gap:9px;padding:13px 20px;border:1px solid #2a3039;border-radius:9px;background:#12151a;color:#ecedef;font:500 14.5px/1 -apple-system,system-ui,sans-serif;text-decoration:none" style-hover="border-color:#3b444f;background:#171b21;text-decoration:none">View source on GitHub</a>
+          <a href="https://app.terminaldb.app/" style="display:inline-flex;align-items:center;gap:9px;padding:13px 20px;border:1px solid #2a3039;border-radius:9px;background:#12151a;color:#ecedef;font:500 14.5px/1 -apple-system,system-ui,sans-serif;text-decoration:none" style-hover="border-color:#3b444f;background:#171b21;text-decoration:none">Open remote app</a>
         </div>
         <p style="margin:16px 0 0;font:400 12px/1.6 'JetBrains Mono',monospace;color:#6b7481">
-          macOS 13+ &middot; universal build (Apple&nbsp;Silicon + Intel) &middot; SHA-256 published with every release<br>
-          <span style="color:#b8e04a">Public prerelease:</span> v0.1.0 is available now. The published checksum is included on the <a href="https://github.com/danb235/TerminalDB/releases/tag/v0.1.0">release page</a>.
+          Native macOS &middot; secure browser access &middot; Claude credentials stay on your Mac<br>
+          <span style="color:#b8e04a">Open source:</span> MIT licensed, universal for Apple Silicon and Intel.
         </p>
       </div>
 
       <div style="min-width:0">
-        <figure style="margin:0">
-          <div style="border:1px solid #262c35;border-radius:14px;background:#0b0d10;padding:10px;box-shadow:0 40px 80px -40px rgba(0,0,0,.9)">
-            <img src="uploads/terminaldb-native-current.png" width="2056" height="1392" alt="Screenshot of the TerminalDB app on macOS. The left pane shows a saved command block for find . -type f -iname '*.jpg' with EXIT 0, the path /Users/demo/Projects/archive, host Demo Mac, LOCAL environment and a 0.12s duration, plus Ask AI, Rerun and Details actions above the live terminal output. The right pane is the AI chat, running Claude Sonnet 5, proposing two commands with Paste and Run buttons. The bottom status strip reads Demo Team, developer@example.com, Team, LOCAL, and usage of 5h 28 percent, 7d 46 percent and F 12 percent with reset times." style="display:block;width:100%;height:auto;border-radius:8px">
+        <div class="tdb-command-center" aria-label="TerminalDB remote control preview">
+          <div class="tdb-command-center-inner">
+            <div class="tdb-command-center-top">
+              <div style="display:flex;align-items:center;gap:9px;font:600 12px/1 -apple-system,system-ui,sans-serif"><span style="color:#5ad3e6;font-family:'JetBrains Mono',monospace">&gt;_</span> TerminalDB Remote</div>
+              <div style="display:flex;align-items:center;gap:7px;font:500 9px/1 'JetBrains Mono',monospace;color:#b8e04a"><span style="width:6px;height:6px;border-radius:50%;background:#b8e04a;box-shadow:0 0 7px rgba(184,224,74,.6)"></span> 2 MACS ONLINE</div>
+            </div>
+            <div class="tdb-command-center-body">
+              <div class="tdb-device-list">
+                <div style="margin:1px 2px 10px;font:500 8.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#68727f">YOUR MACS</div>
+                <div class="tdb-device tdb-device-active">
+                  <div style="display:flex;justify-content:space-between;gap:8px"><strong style="font:600 11px/1.2 -apple-system,system-ui,sans-serif">MacBook Pro</strong><span style="color:#b8e04a;font:500 8px/1 'JetBrains Mono',monospace">ONLINE</span></div>
+                  <div style="margin-top:7px;color:#77818e;font:400 9px/1.4 'JetBrains Mono',monospace">2 windows · 5 tabs</div>
+                </div>
+                <div class="tdb-device">
+                  <div style="display:flex;justify-content:space-between;gap:8px"><strong style="font:600 11px/1.2 -apple-system,system-ui,sans-serif">Mac Studio</strong><span style="color:#b8e04a;font:500 8px/1 'JetBrains Mono',monospace">ONLINE</span></div>
+                  <div style="margin-top:7px;color:#77818e;font:400 9px/1.4 'JetBrains Mono',monospace">1 window · 3 tabs</div>
+                </div>
+                <div class="tdb-device" style="opacity:.58">
+                  <div style="display:flex;justify-content:space-between;gap:8px"><strong style="font:600 11px/1.2 -apple-system,system-ui,sans-serif">Office Mac</strong><span style="color:#77818e;font:500 8px/1 'JetBrains Mono',monospace">OFFLINE</span></div>
+                  <div style="margin-top:7px;color:#77818e;font:400 9px/1.4 'JetBrains Mono',monospace">Last seen yesterday</div>
+                </div>
+              </div>
+              <div class="tdb-control-main">
+                <div class="tdb-control-tabs">
+                  <div class="tdb-control-tab tdb-control-tab-active">Claude · app</div>
+                  <div class="tdb-control-tab">Build logs</div>
+                  <div class="tdb-control-tab">Database</div>
+                </div>
+                <div class="tdb-control-terminal">
+                  <div>
+                    <div><span style="color:#b8e04a">&#10095;</span> <span style="color:#5ad3e6">~/terminaldb</span> claude</div>
+                    <div style="margin-top:9px;color:#68727f">Claude is working on your current task...</div>
+                    <div style="margin-top:13px;color:#ecedef">Update complete. All checks passed.</div>
+                    <div style="margin-top:18px"><span style="color:#b8e04a">&#10095;</span> <span style="color:#5ad3e6">~/terminaldb</span> <span style="display:inline-block;width:7px;height:14px;background:#d8f8ff;vertical-align:-2px;animation:tdbBlink 1s step-end infinite"></span></div>
+                  </div>
+                  <div style="border-top:1px solid #20262e;padding-top:12px">
+                    <div style="display:flex;justify-content:space-between;gap:12px;margin-bottom:10px"><span style="color:#ecedef">Personal · Max</span><span style="color:#b8e04a">SIGNED IN</span></div>
+                    <div style="display:grid;gap:8px">
+                      <div class="tdb-usage-row"><span>5h</span><div class="tdb-usage-track"><div class="tdb-usage-fill" style="width:28%"></div></div><span>28%</span></div>
+                      <div class="tdb-usage-row"><span>7d</span><div class="tdb-usage-track"><div class="tdb-usage-fill" style="width:46%"></div></div><span>46%</span></div>
+                      <div class="tdb-usage-row"><span>F</span><div class="tdb-usage-track"><div class="tdb-usage-fill" style="width:12%"></div></div><span>12%</span></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
-          <figcaption style="margin:11px 2px 0;font:400 11.5px/1.6 'JetBrains Mono',monospace;color:#7e8795">TerminalDB 0.1.0 running on macOS. Command blocks, the AI pane and the status strip share one local record. <a href="uploads/terminaldb-native-current.png" target="_blank" rel="noopener">View full size</a></figcaption>
-        </figure>
+        </div>
+        <div style="margin:11px 2px 0;font:400 10.5px/1.6 'JetBrains Mono',monospace;color:#68727f">One account opens every active TerminalDB session across your Macs. One-time secure links still work without an account.</div>
       </div>
     </div>
   </section>
 
   <section style="border-top:1px solid #1b2027;border-bottom:1px solid #1b2027;background:#0e1115">
     <div style="max-width:1180px;margin:0 auto;padding:clamp(20px,2.4vw,30px) clamp(20px,5vw,64px);display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:clamp(16px,2vw,28px)">
-      <div><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#5ad3e6">Structured</div><p style="margin:9px 0 0;font-size:13.5px;line-height:1.55;color:#98a0ac">Commands are records, not scrollback. Path, host, env, exit code, duration, output.</p></div>
-      <div><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#b8e04a">Permissioned</div><p style="margin:9px 0 0;font-size:13.5px;line-height:1.55;color:#98a0ac">The assistant proposes. Nothing executes without an explicit grant you can scope.</p></div>
-      <div><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#f0b429">Every Claude account</div><p style="margin:9px 0 0;font-size:13.5px;line-height:1.55;color:#98a0ac">Connect as many subscription accounts as you need. Switch per tab in one action.</p></div>
+      <div><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#5ad3e6">Access from anywhere</div><p style="margin:9px 0 0;font-size:13.5px;line-height:1.55;color:#98a0ac">Open the same live windows and tabs from your phone, tablet, or another computer.</p></div>
+      <div><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#b8e04a">Switch per tab</div><p style="margin:9px 0 0;font-size:13.5px;line-height:1.55;color:#98a0ac">Move one terminal to a different Claude subscription without changing the tabs beside it.</p></div>
+      <div><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#f0b429">Know your usage</div><p style="margin:9px 0 0;font-size:13.5px;line-height:1.55;color:#98a0ac">See the active plan, authentication state, usage windows, and reset times at a glance.</p></div>
     </div>
     <div style="max-width:1180px;margin:0 auto;padding:0 clamp(20px,5vw,64px) clamp(18px,2vw,24px);font:400 11.5px/1.7 'JetBrains Mono',monospace;color:#7e8795">
-      History stays on your Mac &middot; MIT licensed and buildable from source &middot; no analytics by default
+      Terminal content stays end-to-end encrypted &middot; Claude credentials never leave your Mac &middot; no analytics by default
+    </div>
+  </section>
+
+  <section id="remote-access" style="padding:clamp(56px,7vw,104px) clamp(20px,5vw,64px);border-bottom:1px solid #1b2027">
+    <div class="tdb-feature-lead" style="max-width:1180px;margin:0 auto">
+      <div>
+        <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#5ad3e6"><span>&#10095;</span>Remote terminal access</div>
+        <h2 style="font:500 clamp(28px,3.6vw,46px)/1.12 -apple-system,system-ui,sans-serif;letter-spacing:-.028em;margin:14px 0 0;text-wrap:balance">Leave the Mac. Keep the terminal.</h2>
+        <p style="color:#98a0ac;font-size:clamp(15px,1.35vw,17.5px);line-height:1.65;max-width:58ch;margin:14px 0 0;text-wrap:pretty">TerminalDB mirrors the terminal windows already open on your Mac. Sign in once to see every connected Mac, window, and tab, then type into the live session from any modern browser.</p>
+        <div style="display:grid;gap:13px;margin-top:24px">
+          <div style="display:grid;grid-template-columns:28px 1fr;gap:12px"><span style="display:grid;place-items:center;width:28px;height:28px;border:1px solid #31525a;border-radius:7px;background:rgba(90,211,230,.07);color:#5ad3e6;font:700 11px/1 'JetBrains Mono',monospace">01</span><div><strong style="display:block;font-size:14px">Every live session, automatically</strong><span style="display:block;margin-top:4px;color:#7e8795;font-size:13px;line-height:1.55">Multiple Macs, multiple windows, and every tab appear under the same account while they are online.</span></div></div>
+          <div style="display:grid;grid-template-columns:28px 1fr;gap:12px"><span style="display:grid;place-items:center;width:28px;height:28px;border:1px solid #31525a;border-radius:7px;background:rgba(90,211,230,.07);color:#5ad3e6;font:700 11px/1 'JetBrains Mono',monospace">02</span><div><strong style="display:block;font-size:14px">Fast enough to feel local</strong><span style="display:block;margin-top:4px;color:#7e8795;font-size:13px;line-height:1.55">Optimistic input appears immediately while encrypted relay acknowledgements catch up in the background.</span></div></div>
+          <div style="display:grid;grid-template-columns:28px 1fr;gap:12px"><span style="display:grid;place-items:center;width:28px;height:28px;border:1px solid #31525a;border-radius:7px;background:rgba(90,211,230,.07);color:#5ad3e6;font:700 11px/1 'JetBrains Mono',monospace">03</span><div><strong style="display:block;font-size:14px">Accounts are optional</strong><span style="display:block;margin-top:4px;color:#7e8795;font-size:13px;line-height:1.55">Use an expiring one-time link for quick access, or create an account to find sessions without sending yourself links.</span></div></div>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:26px">
+          <a href="https://app.terminaldb.app/" style="display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:0 16px;border:1px solid #5ad3e6;border-radius:8px;background:rgba(90,211,230,.08);color:#d8f8ff;font-size:13.5px;text-decoration:none">Open remote app</a>
+          <a href="#security" style="display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:0 16px;border:1px solid #2a3039;border-radius:8px;background:#12151a;color:#d7dbe1;font-size:13.5px;text-decoration:none">How remote access stays secure</a>
+        </div>
+      </div>
+
+      <div style="border:1px solid #252c35;border-radius:14px;background:#0f1216;padding:18px;box-shadow:0 34px 80px -50px rgba(0,0,0,.95)">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;padding-bottom:14px;border-bottom:1px solid #252c35">
+          <div><div style="font:500 9px/1 'JetBrains Mono',monospace;letter-spacing:.13em;color:#6f7986">YOUR TERMINALDB ACCOUNT</div><strong style="display:block;margin-top:7px;font-size:18px">Your Macs</strong></div>
+          <span style="padding:6px 8px;border:1px solid #31523b;border-radius:99px;color:#b8e04a;font:500 9px/1 'JetBrains Mono',monospace">2 ONLINE</span>
+        </div>
+        <div style="display:grid;gap:10px;margin-top:14px">
+          <div style="display:grid;grid-template-columns:1fr auto;gap:16px;align-items:center;padding:15px;border:1px solid #31525a;border-radius:9px;background:rgba(90,211,230,.06)"><div><strong style="font-size:14px">MacBook Pro</strong><span style="display:block;margin-top:5px;color:#7e8795;font:400 10px/1.4 'JetBrains Mono',monospace">Online · 2 windows · 5 tabs</span></div><span style="color:#5ad3e6;font:500 11px/1 'JetBrains Mono',monospace">OPEN &#10095;</span></div>
+          <div style="display:grid;grid-template-columns:1fr auto;gap:16px;align-items:center;padding:15px;border:1px solid #2a3039;border-radius:9px;background:#12151a"><div><strong style="font-size:14px">Mac Studio</strong><span style="display:block;margin-top:5px;color:#7e8795;font:400 10px/1.4 'JetBrains Mono',monospace">Online · 1 window · 3 tabs</span></div><span style="color:#5ad3e6;font:500 11px/1 'JetBrains Mono',monospace">OPEN &#10095;</span></div>
+          <div style="display:grid;grid-template-columns:1fr auto;gap:16px;align-items:center;padding:15px;border:1px solid #252a31;border-radius:9px;background:#101318;opacity:.66"><div><strong style="font-size:14px">Office Mac</strong><span style="display:block;margin-top:5px;color:#7e8795;font:400 10px/1.4 'JetBrains Mono',monospace">Offline · Last seen yesterday</span></div><span style="color:#7e8795;font:500 9px/1 'JetBrains Mono',monospace">OPEN TERMINALDB</span></div>
+        </div>
+        <div style="margin-top:14px;padding:12px;border:1px solid #2b3322;border-radius:8px;background:rgba(184,224,74,.04);color:#899281;font:400 11.5px/1.6 'JetBrains Mono',monospace"><span style="color:#b8e04a">&#10003;</span> Offline Macs stay listed. Sign-in still works even when every Mac is closed.</div>
+      </div>
     </div>
   </section>
 
   <section id="claude-accounts" style="padding:clamp(56px,7vw,104px) clamp(20px,5vw,64px);border-bottom:1px solid #1b2027">
     <div style="max-width:1180px;margin:0 auto">
-      <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#5ad3e6"><span>&#10095;</span>Claude account management</div>
-      <h2 style="font:500 clamp(26px,3.4vw,44px)/1.12 -apple-system,system-ui,sans-serif;letter-spacing:-.028em;margin:14px 0 0;text-wrap:balance">Every Claude account, ready when you need it.</h2>
-      <p style="color:#98a0ac;font-size:clamp(15px,1.35vw,17.5px);line-height:1.6;max-width:66ch;margin:12px 0 0;text-wrap:pretty">Work, team and personal Claude subscriptions live side by side in TerminalDB. Each connected profile gets its own isolated Claude configuration directory and its own macOS Keychain credential, so switching the account for a tab takes one click and never touches the tab beside it.</p>
+      <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#5ad3e6"><span>&#10095;</span>Claude Code account switching</div>
+      <h2 style="font:500 clamp(26px,3.4vw,44px)/1.12 -apple-system,system-ui,sans-serif;letter-spacing:-.028em;margin:14px 0 0;text-wrap:balance">Switch Claude subscriptions without restarting your work.</h2>
+      <p style="color:#98a0ac;font-size:clamp(15px,1.35vw,17.5px);line-height:1.6;max-width:69ch;margin:12px 0 0;text-wrap:pretty">Keep work, team, and personal Claude Code subscriptions signed in side by side. Choose the active profile for one terminal tab in a click. Every other tab keeps its own account, conversation, usage allocation, and billing context.</p>
+
+      <div class="tdb-priority-grid" style="margin-top:26px">
+        <div class="tdb-priority-card"><div style="color:#5ad3e6;font:700 11px/1 'JetBrains Mono',monospace">01</div><h3 style="margin:12px 0 0;font-size:15px">Add every subscription</h3><p style="margin:7px 0 0;color:#89929e;font-size:12.5px;line-height:1.6">Connect the Claude Code accounts you already pay for. Each profile is isolated with its own Keychain credential.</p></div>
+        <div class="tdb-priority-card"><div style="color:#b8e04a;font:700 11px/1 'JetBrains Mono',monospace">02</div><h3 style="margin:12px 0 0;font-size:15px">Assign one per tab</h3><p style="margin:7px 0 0;color:#89929e;font-size:12.5px;line-height:1.6">Move a busy terminal to a different plan while every neighboring tab continues exactly where it was.</p></div>
+        <div class="tdb-priority-card"><div style="color:#f0b429;font:700 11px/1 'JetBrains Mono',monospace">03</div><h3 style="margin:12px 0 0;font-size:15px">Always know who is active</h3><p style="margin:7px 0 0;color:#89929e;font-size:12.5px;line-height:1.6">The status strip keeps the account, plan, authentication state, and usage in view as you work.</p></div>
+      </div>
 
       <figure style="margin:28px 0 0;max-width:1180px">
             <div style="border:1px solid #262c35;border-radius:14px;background:#0b0d10;padding:10px;box-shadow:0 40px 80px -44px rgba(0,0,0,.92)">
               <img src="uploads/terminaldb-accounts-current.png" width="1976" height="1332" loading="lazy" decoding="async" alt="Screenshot of the TerminalDB Claude Code Account and Usage window on macOS. A cyan label reads CLAUDE CODE, ACTIVE FOR THIS TAB above the heading Account and usage, with the note that subscription usage is per Claude Code account and AI chat can use this subscription or a separately managed API key. The active account is Demo Team, developer@example.com, Team, marked SIGNED IN with usage applying to this terminal tab, beside an account picker and a Remove button. A usage panel lists 5h at 28 percent, 7d at 46 percent and F at 12 percent with reset times of 7/24 8:03 PM, 7/29 6:03 PM and a Fable weekly reset of 7/28 6:03 PM. Below, a list headed ALL ACCOUNTS, NO LIMIT, ONE ACTIVE PER TAB shows a checkmark beside Demo Team developer@example.com Team, then Operations ops@example.com Max, then Personal personal@example.com Pro. Footer buttons are Refresh Usage, Add Account and Done." style="display:block;width:100%;height:auto;border-radius:8px">
             </div>
-            <figcaption style="margin:11px 2px 0;font:400 11.5px/1.6 'JetBrains Mono',monospace;color:#7e8795">The Claude Code account and usage window in TerminalDB 0.1.0. The switcher also lives in the AI menu, and the active profile, plan and authentication state always show in the bottom status strip. <a href="uploads/terminaldb-accounts-current.png" target="_blank" rel="noopener">View full size</a></figcaption>
+            <figcaption style="margin:11px 2px 0;font:400 11.5px/1.6 'JetBrains Mono',monospace;color:#7e8795">Every connected Claude Code profile, its plan, usage windows, and reset status in one view. The active profile also stays visible in the terminal status strip. <a href="uploads/terminaldb-accounts-current.png" target="_blank" rel="noopener">View full size</a></figcaption>
           </figure>
 
       <div style="display:flex;flex-direction:column;gap:14px;margin-top:22px">
@@ -222,6 +329,42 @@
               <li>Choose the provider once, change it whenever</li>
             </ul>
           </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="usage" style="padding:clamp(56px,7vw,104px) clamp(20px,5vw,64px);border-bottom:1px solid #1b2027;background:#0e1115">
+    <div class="tdb-feature-lead" style="max-width:1180px;margin:0 auto">
+      <div>
+        <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#f0b429"><span>&#10095;</span>Subscription status and usage</div>
+        <h2 style="font:500 clamp(28px,3.6vw,46px)/1.12 -apple-system,system-ui,sans-serif;letter-spacing:-.028em;margin:14px 0 0;text-wrap:balance">See the limit before it slows you down.</h2>
+        <p style="color:#98a0ac;font-size:clamp(15px,1.35vw,17.5px);line-height:1.65;max-width:60ch;margin:14px 0 0;text-wrap:pretty">TerminalDB puts Claude Code plan and usage data next to the work using it. Know which subscription is active, how much of each window remains, and exactly when capacity resets.</p>
+        <div style="display:grid;gap:12px;margin-top:24px">
+          <div style="display:flex;align-items:flex-start;gap:11px;padding:13px 14px;border:1px solid #273126;border-radius:8px;background:rgba(184,224,74,.035)"><span style="color:#b8e04a;font:700 13px/1 'JetBrains Mono',monospace">&#10003;</span><div><strong style="display:block;font-size:13.5px">Authentication state</strong><span style="display:block;margin-top:4px;color:#7e8795;font-size:12.5px;line-height:1.55">See whether each account is ready, expired, or needs you to sign in again.</span></div></div>
+          <div style="display:flex;align-items:flex-start;gap:11px;padding:13px 14px;border:1px solid #2a3039;border-radius:8px;background:#11151a"><span style="color:#5ad3e6;font:700 13px/1 'JetBrains Mono',monospace">%</span><div><strong style="display:block;font-size:13.5px">Every usage window</strong><span style="display:block;margin-top:4px;color:#7e8795;font-size:12.5px;line-height:1.55">Track 5 hour, 7 day, and Fable allocations independently for every profile.</span></div></div>
+          <div style="display:flex;align-items:flex-start;gap:11px;padding:13px 14px;border:1px solid #2a3039;border-radius:8px;background:#11151a"><span style="color:#f0b429;font:700 13px/1 'JetBrains Mono',monospace">&#8635;</span><div><strong style="display:block;font-size:13.5px">Reset times that make sense</strong><span style="display:block;margin-top:4px;color:#7e8795;font-size:12.5px;line-height:1.55">Plan around the next reset instead of discovering a limit in the middle of a task.</span></div></div>
+        </div>
+      </div>
+
+      <div style="display:grid;gap:10px">
+        <div style="border:1px solid #33535b;border-radius:12px;background:linear-gradient(135deg,rgba(90,211,230,.08),#11151a 58%);padding:17px;box-shadow:0 26px 60px -44px rgba(90,211,230,.7)">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px"><div><span style="font:500 9px/1 'JetBrains Mono',monospace;letter-spacing:.11em;color:#5ad3e6">ACTIVE FOR THIS TAB</span><strong style="display:block;margin-top:7px;font-size:16px">Personal</strong><span style="display:block;margin-top:3px;color:#7e8795;font:400 10px/1.4 'JetBrains Mono',monospace">Max plan</span></div><span style="padding:6px 8px;border:1px solid #31523b;border-radius:99px;color:#b8e04a;font:500 9px/1 'JetBrains Mono',monospace">SIGNED IN</span></div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:17px">
+            <div><div style="display:flex;justify-content:space-between;color:#aeb6c1;font:500 10px/1 'JetBrains Mono',monospace"><span>5h</span><span>28%</span></div><div class="tdb-usage-track" style="margin-top:8px"><div class="tdb-usage-fill" style="width:28%"></div></div><div style="margin-top:7px;color:#66707c;font:400 8.5px/1.35 'JetBrains Mono',monospace">Resets 11:30 AM</div></div>
+            <div><div style="display:flex;justify-content:space-between;color:#aeb6c1;font:500 10px/1 'JetBrains Mono',monospace"><span>7d</span><span>46%</span></div><div class="tdb-usage-track" style="margin-top:8px"><div class="tdb-usage-fill" style="width:46%"></div></div><div style="margin-top:7px;color:#66707c;font:400 8.5px/1.35 'JetBrains Mono',monospace">Resets Sunday</div></div>
+            <div><div style="display:flex;justify-content:space-between;color:#aeb6c1;font:500 10px/1 'JetBrains Mono',monospace"><span>F</span><span>12%</span></div><div class="tdb-usage-track" style="margin-top:8px"><div class="tdb-usage-fill" style="width:12%;background:#b8e04a"></div></div><div style="margin-top:7px;color:#66707c;font:400 8.5px/1.35 'JetBrains Mono',monospace">Resets Monday</div></div>
+          </div>
+        </div>
+
+        <div style="border:1px solid #2a3039;border-radius:12px;background:#11151a;padding:17px">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px"><div><strong style="font-size:15px">Work</strong><span style="display:block;margin-top:3px;color:#7e8795;font:400 10px/1.4 'JetBrains Mono',monospace">Team plan</span></div><span style="color:#b8e04a;font:500 9px/1 'JetBrains Mono',monospace">READY</span></div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px"><div class="tdb-usage-row" style="grid-template-columns:22px 1fr 27px"><span>5h</span><div class="tdb-usage-track"><div class="tdb-usage-fill" style="width:62%;background:#f0b429"></div></div><span>62%</span></div><div class="tdb-usage-row" style="grid-template-columns:22px 1fr 27px"><span>7d</span><div class="tdb-usage-track"><div class="tdb-usage-fill" style="width:31%"></div></div><span>31%</span></div><div class="tdb-usage-row" style="grid-template-columns:22px 1fr 27px"><span>F</span><div class="tdb-usage-track"><div class="tdb-usage-fill" style="width:7%;background:#b8e04a"></div></div><span>7%</span></div></div>
+        </div>
+
+        <div style="border:1px solid #2a3039;border-radius:12px;background:#11151a;padding:17px">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px"><div><strong style="font-size:15px">Client</strong><span style="display:block;margin-top:3px;color:#7e8795;font:400 10px/1.4 'JetBrains Mono',monospace">Pro plan</span></div><span style="color:#f0b429;font:500 9px/1 'JetBrains Mono',monospace">SIGN IN AGAIN</span></div>
+          <div style="margin-top:12px;color:#727c88;font-size:12px;line-height:1.55">The profile stays isolated and available. Reauthenticate it without disturbing either account above.</div>
         </div>
       </div>
     </div>
@@ -456,6 +599,13 @@ alembic current</pre>
     <div style="max-width:1180px;margin:0 auto">
       <div style="display:flex;align-items:center;gap:8px;font:500 11px/1 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#b8e04a"><span>&#10095;</span>Project aware work</div>
       <h2 style="font:500 clamp(26px,3.1vw,40px)/1.15 -apple-system,system-ui,sans-serif;letter-spacing:-.025em;margin:14px 0 0">Built for the whole loop, not just the prompt.</h2>
+      <p style="color:#98a0ac;font-size:clamp(15px,1.3vw,17px);line-height:1.6;max-width:68ch;margin:12px 0 0">Remote access and account control sit on top of a full native terminal: structured command history, permissioned AI, searchable failures, monitored runs, runbooks, and restorable workspaces.</p>
+      <figure style="margin:26px 0 0">
+        <div style="border:1px solid #262c35;border-radius:14px;background:#0b0d10;padding:10px;box-shadow:0 40px 80px -44px rgba(0,0,0,.9)">
+          <img src="uploads/terminaldb-native-current.png" width="2056" height="1392" loading="lazy" decoding="async" alt="Screenshot of TerminalDB on macOS with structured command blocks, the Claude assistant, per-tab account status, usage information, and the active local environment." style="display:block;width:100%;height:auto;border-radius:8px">
+        </div>
+        <figcaption style="margin:11px 2px 0;font:400 11.5px/1.6 'JetBrains Mono',monospace;color:#7e8795">A native terminal, structured history, Claude assistance, active account, and usage status in the same workspace. <a href="uploads/terminaldb-native-current.png" target="_blank" rel="noopener">View full size</a></figcaption>
+      </figure>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(272px,1fr));gap:14px;margin-top:28px">
         <div style="border:1px solid #232830;border-radius:10px;background:#12151a;padding:18px;display:flex;flex-direction:column;gap:12px">
           <h3 style="margin:0;font:500 15px/1.3 -apple-system,system-ui,sans-serif">Coding tools with a paper trail</h3>
@@ -757,6 +907,14 @@ alembic current</pre>
       <h2 style="font:500 clamp(26px,3.1vw,40px)/1.15 -apple-system,system-ui,sans-serif;letter-spacing:-.025em;margin:14px 0 24px">Questions worth answering plainly.</h2>
       <div style="display:grid;grid-template-columns:1fr;gap:1px;background:#1b2027;border:1px solid #232830;border-radius:11px;overflow:hidden">
         <details style="background:#12151a">
+          <summary style="display:flex;align-items:center;gap:12px;padding:16px 18px;cursor:pointer;font:500 14px/1.4 -apple-system,system-ui,sans-serif;color:#ecedef;list-style:none"><span style="font:700 11px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>Can I sign in when every Mac is offline?</summary>
+          <div style="padding:0 18px 17px 42px;font-size:13.5px;line-height:1.7;color:#98a0ac">Yes. Account authentication lives in AWS Cognito, so login works independently of your Macs. Enrolled Macs remain listed as offline with their last seen time. Open TerminalDB on a Mac and its active sessions become available automatically.</div>
+        </details>
+        <details style="background:#12151a">
+          <summary style="display:flex;align-items:center;gap:12px;padding:16px 18px;cursor:pointer;font:500 14px/1.4 -apple-system,system-ui,sans-serif;color:#ecedef;list-style:none"><span style="font:700 11px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>Does TerminalDB send my Claude credentials or terminal history to AWS?</summary>
+          <div style="padding:0 18px 17px 42px;font-size:13.5px;line-height:1.7;color:#98a0ac">No. Claude profile credentials remain isolated in the macOS Keychain, and command history stays in the local TerminalDB database. Remote control sends end-to-end encrypted session messages through AWS. The relay cannot read the terminal content.</div>
+        </details>
+        <details style="background:#12151a">
           <summary style="display:flex;align-items:center;gap:12px;padding:16px 18px;cursor:pointer;font:500 14px/1.4 -apple-system,system-ui,sans-serif;color:#ecedef;list-style:none"><span style="font:700 11px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>Do I need an API key, or is a Claude subscription enough?</summary>
           <div style="padding:0 18px 17px 42px;font-size:13.5px;line-height:1.7;color:#98a0ac">Either works, and they are independent. Sign in with a Claude subscription, paste an Anthropic API key, or set up both. With both configured you pick which one powers AI, and subscription account management stays available regardless of the choice.</div>
         </details>
@@ -795,12 +953,12 @@ alembic current</pre>
   <section style="padding:clamp(52px,6vw,88px) clamp(20px,5vw,64px);background:#0e1115;border-bottom:1px solid #1b2027">
     <div style="max-width:1180px;margin:0 auto;display:flex;flex-wrap:wrap;gap:24px;align-items:center;justify-content:space-between">
       <div style="min-width:0">
-        <h2 style="margin:0;font:500 clamp(23px,2.6vw,34px)/1.2 -apple-system,system-ui,sans-serif;letter-spacing:-.025em">Keep the command that worked.</h2>
-        <p style="margin:10px 0 0;font-size:14.5px;line-height:1.6;color:#98a0ac;max-width:56ch">Structured command history, assistance that asks permission, and every Claude account a click away. Install the current build, or read the source first. Both take about a minute.</p>
+        <h2 style="margin:0;font:500 clamp(23px,2.6vw,34px)/1.2 -apple-system,system-ui,sans-serif;letter-spacing:-.025em">Keep every terminal and Claude account within reach.</h2>
+        <p style="margin:10px 0 0;font-size:14.5px;line-height:1.6;color:#98a0ac;max-width:58ch">Install TerminalDB on your Mac, connect the Claude Code subscriptions you use, and open your live sessions from any browser.</p>
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:11px">
         <a href="https://github.com/danb235/TerminalDB/releases/download/v0.1.0/TerminalDB-macOS.zip" style="display:inline-flex;align-items:center;gap:9px;padding:13px 19px;border:1px solid #5ad3e6;border-radius:9px;background:rgba(90,211,230,.09);color:#d8f8ff;font:500 14px/1 -apple-system,system-ui,sans-serif;text-decoration:none" style-hover="background:rgba(90,211,230,.18);text-decoration:none"><span style="font:700 12px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>Download v0.1.0 for macOS</a>
-        <a href="https://github.com/danb235/TerminalDB" style="display:inline-flex;align-items:center;gap:9px;padding:13px 19px;border:1px solid #2a3039;border-radius:9px;background:#12151a;color:#ecedef;font:500 14px/1 -apple-system,system-ui,sans-serif;text-decoration:none" style-hover="border-color:#3b444f;text-decoration:none">View source on GitHub</a>
+        <a href="https://app.terminaldb.app/" style="display:inline-flex;align-items:center;gap:9px;padding:13px 19px;border:1px solid #2a3039;border-radius:9px;background:#12151a;color:#ecedef;font:500 14px/1 -apple-system,system-ui,sans-serif;text-decoration:none" style-hover="border-color:#3b444f;text-decoration:none">Open remote app</a>
       </div>
     </div>
   </section>
@@ -814,9 +972,9 @@ alembic current</pre>
           <span aria-hidden="true" style="width:24px;height:24px;border:1px solid #2c3946;border-radius:7px;background:#171b21;display:flex;align-items:center;justify-content:center;gap:3px;flex:0 0 auto"><span style="font:700 10px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span><span style="display:flex;flex-direction:column;gap:2px"><span style="width:6px;height:2px;border-radius:1px;background:#8b939f"></span><span style="width:6px;height:2px;border-radius:1px;background:#8b939f"></span><span style="width:6px;height:2px;border-radius:1px;background:#b8e04a"></span></span></span>
           <span style="font:600 15px/1 system-ui;letter-spacing:-.01em">TerminalDB</span>
         </div>
-        <p style="margin:12px 0 0;font-size:12.5px;line-height:1.65;color:#6b7481;max-width:34ch">A native macOS terminal that remembers and understands terminal work. MIT licensed.</p>
+        <p style="margin:12px 0 0;font-size:12.5px;line-height:1.65;color:#6b7481;max-width:34ch">Remote terminal access, Claude Code account switching, and subscription usage in one native macOS app. MIT licensed.</p>
       </div>
-      <nav aria-label="Product" style="min-width:0"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#7e8795">Product</div><div style="display:flex;flex-direction:column;gap:9px;margin-top:12px;font-size:13px"><a href="#claude-accounts" style="color:#98a0ac">Claude accounts</a><a href="#product" style="color:#98a0ac">Command blocks</a><a href="#features" style="color:#98a0ac">Explain &amp; fix</a><a href="#features" style="color:#98a0ac">Runbooks</a><a href="#download" style="color:#98a0ac">Download</a></div></nav>
+      <nav aria-label="Product" style="min-width:0"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#7e8795">Product</div><div style="display:flex;flex-direction:column;gap:9px;margin-top:12px;font-size:13px"><a href="#remote-access" style="color:#98a0ac">Remote access</a><a href="#claude-accounts" style="color:#98a0ac">Claude accounts</a><a href="#usage" style="color:#98a0ac">Usage and status</a><a href="#product" style="color:#98a0ac">Command history</a><a href="#features" style="color:#98a0ac">More features</a></div></nav>
       <nav aria-label="Resources" style="min-width:0"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#7e8795">Resources</div><div style="display:flex;flex-direction:column;gap:9px;margin-top:12px;font-size:13px"><a href="https://github.com/danb235/TerminalDB/blob/main/docs/architecture.md" style="color:#98a0ac">Docs</a><a href="https://github.com/danb235/TerminalDB/blob/main/docs/build.md" style="color:#98a0ac">Build from source</a><a href="https://github.com/danb235/TerminalDB/releases" style="color:#98a0ac">Releases</a><a href="https://github.com/danb235/TerminalDB/blob/main/docs/roadmap.md" style="color:#98a0ac">Roadmap</a></div></nav>
       <nav aria-label="Project" style="min-width:0"><div style="font:500 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:#7e8795">Project</div><div style="display:flex;flex-direction:column;gap:9px;margin-top:12px;font-size:13px"><a href="https://github.com/danb235/TerminalDB" style="color:#98a0ac">GitHub</a><a href="https://github.com/danb235/TerminalDB/issues" style="color:#98a0ac">Issues</a><a href="https://github.com/danb235/TerminalDB/blob/main/SECURITY.md" style="color:#98a0ac">Security</a><a href="https://github.com/danb235/TerminalDB/blob/main/LICENSE" style="color:#98a0ac">MIT license</a></div></nav>
     </div>
