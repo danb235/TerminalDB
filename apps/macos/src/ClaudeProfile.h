@@ -15,6 +15,7 @@ extern NSNotificationName const ClaudeProfilesDidChangeNotification;
 @property(nonatomic, copy, readonly) NSString *settingsPath;
 @property(nonatomic, copy, readonly) NSString *statusCachePath;
 @property(nonatomic, copy, readonly) NSString *statusLineCachePath;
+@property(nonatomic, copy, readonly) NSString *usageHistoryPath;
 @property(nonatomic, copy, readonly) NSString *keychainService;
 
 @end

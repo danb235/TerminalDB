@@ -49,6 +49,11 @@ static BOOL ClaudeProfileIdentifierIsSafe(NSString *identifier) {
         stringByAppendingPathComponent:@"claude-statusline.json"];
 }
 
+- (NSString *)usageHistoryPath {
+    return [self.profileDirectory
+        stringByAppendingPathComponent:@"usage-history.json"];
+}
+
 - (NSString *)keychainService {
     NSString *normalized =
         self.configDirectory.precomposedStringWithCanonicalMapping;
