@@ -3155,10 +3155,19 @@ static BOOL TerminalDBWriteAll(int descriptor,
 }
 
 - (void)removeClaudeProfileFromMenu:(id)sender {
-    (void)sender;
     AppDelegate *root = [self rootController];
     AppDelegate *active = [root activeTerminalController];
-    ClaudeProfile *profile = active.selectedProfile;
+    NSString *identifier = [sender respondsToSelector:@selector(representedObject)] &&
+        [[sender representedObject] isKindOfClass:NSString.class]
+            ? [sender representedObject] : nil;
+    ClaudeProfile *profile = identifier.length > 0
+        ? [root.profileManager profileWithIdentifier:identifier]
+        : active.selectedProfile;
+    [root removeClaudeProfile:profile];
+}
+
+- (void)removeClaudeProfile:(ClaudeProfile *)profile {
+    AppDelegate *root = [self rootController];
     if (profile == nil) return;
 
     for (AppDelegate *controller in root.windowControllers) {
@@ -7191,10 +7200,10 @@ static BOOL TerminalDBWriteAll(int descriptor,
     [self startClaudeLoginForProfile:profile];
 }
 
-- (void)claudeStatusBarDidRequestRemoveProfile:
-    (ClaudeStatusBar *)statusBar {
+- (void)claudeStatusBar:(ClaudeStatusBar *)statusBar
+ didRequestRemoveProfile:(ClaudeProfile *)profile {
     (void)statusBar;
-    [[self rootController] removeClaudeProfileFromMenu:nil];
+    [[self rootController] removeClaudeProfile:profile];
 }
 
 - (void)claudeStatusBarDidRequestUsagePanel:(ClaudeStatusBar *)statusBar {
@@ -7209,11 +7218,14 @@ static BOOL TerminalDBWriteAll(int descriptor,
         [weakHost hideUtilityPanel:nil];
     };
     [host showUtilityPanelView:usageView
-                         title:@"Claude Account & Usage"
+                         title:@"Claude Accounts & Usage"
                      fullWidth:YES
-                dismissHandler:^{
+    dismissHandler:^{
         [weakStatusBar didDismissUsagePanel];
     }];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [weakStatusBar prepareUsagePanel];
+    });
 }
 
 - (void)claudeStatusBar:(ClaudeStatusBar *)statusBar

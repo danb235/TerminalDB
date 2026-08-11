@@ -14,7 +14,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)claudeStatusBarDidRequestAddProfile:(ClaudeStatusBar *)statusBar;
 - (void)claudeStatusBar:(ClaudeStatusBar *)statusBar
  didRequestLoginProfile:(ClaudeProfile *)profile;
-- (void)claudeStatusBarDidRequestRemoveProfile:(ClaudeStatusBar *)statusBar;
+- (void)claudeStatusBar:(ClaudeStatusBar *)statusBar
+ didRequestRemoveProfile:(ClaudeProfile *)profile;
 - (void)claudeStatusBarDidRequestUsagePanel:(ClaudeStatusBar *)statusBar;
 
 @end
