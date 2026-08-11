@@ -196,6 +196,13 @@ describe("TerminalDB Remote infrastructure", () => {
     template.hasResourceProperties("AWS::CloudFront::Distribution", {
       DistributionConfig: Match.objectLike({
         CacheBehaviors: Match.arrayWith([
+          Match.objectLike({ PathPattern: "/auth-status.html" }),
+        ]),
+      }),
+    });
+    template.hasResourceProperties("AWS::CloudFront::Distribution", {
+      DistributionConfig: Match.objectLike({
+        CacheBehaviors: Match.arrayWith([
           Match.objectLike({
             PathPattern: "/socket*",
             TargetOriginId: Match.anyValue(),
@@ -221,6 +228,27 @@ describe("TerminalDB Remote infrastructure", () => {
       FunctionCode: Match.stringLikeRegexp("r\\.uri\\.replace.*'/dev'"),
     });
     template.resourceCountIs("AWS::CloudFront::Function", 2);
+  });
+
+  it("frames only the minimal account-status bridge from TerminalDB marketing", () => {
+    template.resourceCountIs("AWS::CloudFront::ResponseHeadersPolicy", 2);
+    const policies = Object.values(
+      template.findResources("AWS::CloudFront::ResponseHeadersPolicy"),
+    );
+    const accountStatus = policies.find((policy) =>
+      JSON.stringify(policy).includes("AccountStatus"),
+    );
+    expect(accountStatus).toBeDefined();
+    expect(JSON.stringify(accountStatus)).toContain("TerminalDBRemote-dev-AccountStatus");
+    expect(JSON.stringify(accountStatus)).toContain(
+      "frame-ancestors https://terminaldb.app https://www.terminaldb.app",
+    );
+    expect(JSON.stringify(accountStatus)).not.toContain("FrameOption");
+    const defaultPolicy = policies.find((policy) =>
+      JSON.stringify(policy).includes("Security") && policy !== accountStatus,
+    );
+    expect(JSON.stringify(defaultPolicy)).toContain("frame-ancestors 'none'");
+    expect(JSON.stringify(defaultPolicy)).toContain('"FrameOption":"DENY"');
   });
 
   it("grants API Gateway permission to invoke every WebSocket lifecycle route", () => {

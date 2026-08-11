@@ -11,6 +11,7 @@
 <script src="./vendor/react.production.min.js"></script>
 <script src="./vendor/react-dom.production.min.js"></script>
 <script src="./support.js"></script>
+<script src="./account-status.js" defer></script>
 </head>
 <body>
 <x-dc>
@@ -36,6 +37,33 @@
   ::selection { background:rgba(90,211,230,.28); }
   :focus-visible { outline:2px solid #5ad3e6; outline-offset:3px; border-radius:4px; }
   summary::-webkit-details-marker { display:none; }
+  [hidden] { display:none !important; }
+  .tdb-account-status { display:flex; align-items:center; justify-content:flex-end; min-height:38px; }
+  .tdb-account-status [data-account-checking],
+  .tdb-account-status [data-account-signed-out],
+  .tdb-account-status [data-account-signed-in] { display:none !important; }
+  .tdb-account-status[data-state="checking"] [data-account-checking],
+  .tdb-account-status[data-state="signed-out"] [data-account-signed-out],
+  .tdb-account-status[data-state="signed-in"] [data-account-signed-in] { display:flex !important; }
+  .tdb-account-state { display:flex; align-items:center; gap:8px; color:#98a0ac; font:500 12px/1.2 'JetBrains Mono',monospace; white-space:nowrap; }
+  .tdb-account-state::before { content:""; width:7px; height:7px; border-radius:50%; background:#6b7481; box-shadow:0 0 0 3px rgba(107,116,129,.12); }
+  .tdb-account-status[data-state="signed-in"] .tdb-account-state::before { background:#b8e04a; box-shadow:0 0 8px rgba(184,224,74,.55); }
+  .tdb-account-actions { display:flex; align-items:center; gap:9px; }
+  .tdb-account-actions > a { display:inline-flex; align-items:center; justify-content:center; min-height:36px; padding:0 13px; border:1px solid #2a3039; border-radius:8px; color:#d7dbe1; font:500 13px/1 -apple-system,system-ui,sans-serif; text-decoration:none; white-space:nowrap; }
+  .tdb-account-actions > a:hover { border-color:#4a5664; background:#161a20; color:#fff; text-decoration:none; }
+  .tdb-account-actions > a.tdb-account-primary { border-color:#5ad3e6; background:rgba(90,211,230,.1); color:#d8f8ff; }
+  .tdb-account-actions > a.tdb-account-primary:hover { background:rgba(90,211,230,.2); }
+  .tdb-account-signed-in { display:flex; align-items:center; gap:12px; }
+  .tdb-account-signed-in strong { color:#ecedef; font-weight:500; }
+  @media (max-width: 920px) {
+    header nav[aria-label="Primary"] { order:3; width:100%; overflow-x:auto; padding-bottom:8px; }
+    .tdb-header-spacer { display:none; }
+    .tdb-account-status { margin-left:auto; }
+  }
+  @media (max-width: 560px) {
+    .tdb-account-state { display:none; }
+    .tdb-account-actions > a { padding:0 10px; }
+  }
   @keyframes tdbBlink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
   @media (prefers-reduced-motion: reduce) {
     html { scroll-behavior:auto; }
@@ -60,10 +88,21 @@
       <a href="#docs" style="padding:8px 10px;border-radius:6px;font-size:13.5px;color:#b6bdc7;text-decoration:none" style-hover="color:#ecedef;background:#161a20">Docs</a>
       <a href="https://github.com/danb235/TerminalDB" rel="noopener" style="padding:8px 10px;border-radius:6px;font-size:13.5px;color:#b6bdc7;text-decoration:none;display:flex;align-items:center;gap:6px" style-hover="color:#ecedef;background:#161a20">GitHub<span style="font:400 11px/1 'JetBrains Mono',monospace;color:#6b7481">&#8599;</span></a>
     </nav>
-    <div style="flex:1 1 40px"></div>
-    <a href="https://github.com/danb235/TerminalDB/releases/download/v0.1.0/TerminalDB-macOS.zip" style="display:inline-flex;align-items:center;gap:8px;padding:9px 15px;border:1px solid #5ad3e6;border-radius:8px;background:rgba(90,211,230,.07);color:#c8f4fc;font:500 13px/1 -apple-system,system-ui,sans-serif;text-decoration:none;white-space:nowrap" style-hover="background:rgba(90,211,230,.16);color:#eafbff;text-decoration:none" style-active="background:rgba(90,211,230,.26)">
-      <span style="font:700 12px/1 'JetBrains Mono',monospace;color:#5ad3e6">&#10095;</span>Download for macOS
-    </a>
+    <div class="tdb-header-spacer" style="flex:1 1 40px"></div>
+    <div class="tdb-account-status" data-terminaldb-account data-state="checking" aria-live="polite">
+      <span class="tdb-account-state" data-account-checking>Checking account…</span>
+      <div class="tdb-account-actions" data-account-signed-out hidden>
+        <span class="tdb-account-state">Signed out</span>
+        <a href="https://app.terminaldb.app/?account=signin&amp;source=marketing">Log in</a>
+        <a class="tdb-account-primary" href="https://app.terminaldb.app/?account=create&amp;source=marketing">Create account</a>
+      </div>
+      <div class="tdb-account-signed-in" data-account-signed-in hidden>
+        <span class="tdb-account-state">Signed in as <strong data-account-username>TerminalDB user</strong></span>
+        <div class="tdb-account-actions">
+          <a class="tdb-account-primary" href="https://app.terminaldb.app/">Open app</a>
+        </div>
+      </div>
+    </div>
   </div>
 </header>
 
@@ -789,6 +828,12 @@ alembic current</pre>
 </footer>
 
 </x-dc>
+<iframe
+  id="terminaldb-account-status-frame"
+  src="https://app.terminaldb.app/auth-status.html"
+  title="TerminalDB account status"
+  hidden
+></iframe>
 <script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440},&quot;downloadState&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;ready&quot;,&quot;none&quot;,&quot;unsupported&quot;,&quot;failed&quot;,&quot;offline&quot;],&quot;default&quot;:&quot;ready&quot;,&quot;tsType&quot;:&quot;'ready'|'none'|'unsupported'|'failed'|'offline'&quot;,&quot;section&quot;:&quot;States&quot;},&quot;defaultProvider&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;subscription&quot;,&quot;api&quot;],&quot;default&quot;:&quot;subscription&quot;,&quot;tsType&quot;:&quot;'subscription'|'api'&quot;,&quot;section&quot;:&quot;States&quot;},&quot;showEdgeStates&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Sections&quot;}}">
 class Component extends DCLogic {
   state = {

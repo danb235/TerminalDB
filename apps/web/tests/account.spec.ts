@@ -81,6 +81,90 @@ test("keeps enrolled Macs visible with clear online and offline states", async (
     .toBeVisible();
 });
 
+test("explains the Mac-approved account workflow from the marketing site", async ({ page }) => {
+  await page.route("**/api/config", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        apiBaseUrl: "",
+        websocketUrl: "/socket",
+        protocolVersion: 1,
+        region: "us-west-2",
+        pairingEnabled: true,
+        accountAuth: accountConfiguration,
+        mockMode: false,
+      }),
+    });
+  });
+  await page.goto("/?unpaired&account=create&source=marketing");
+
+  await expect(page.getByRole("heading", { name: "Create your account from TerminalDB" }))
+    .toBeVisible();
+  await expect(page.getByText(/website cannot create an account and claim access/u))
+    .toBeVisible();
+  await expect(page.getByRole("link", { name: "Download TerminalDB for macOS" }))
+    .toHaveAttribute("href", /TerminalDB-macOS\.zip$/u);
+  await expect(page.getByRole("button", { name: "Already have an account? Log in" }))
+    .toBeEnabled();
+});
+
+test("reports signed-in status to the marketing origin without sharing tokens", async ({ page }) => {
+  const username = "marketing-qa-user";
+  const claims = btoa(JSON.stringify({ username, iat: Math.floor(Date.now() / 1_000) }))
+    .replace(/\+/gu, "-")
+    .replace(/\//gu, "_")
+    .replace(/=+$/gu, "");
+  const accessToken = `header.${claims}.signature`;
+  await page.addInitScript(({ token }) => {
+    localStorage.setItem("terminaldb.account.tokens.v1", JSON.stringify({
+      accessToken: token,
+      refreshToken: "bridge-refresh-token",
+      expiresAt: Date.now() + 60 * 60 * 1_000,
+    }));
+  }, { token: accessToken });
+  await page.route("**/api/config", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        apiBaseUrl: "",
+        websocketUrl: "/socket",
+        protocolVersion: 1,
+        region: "us-west-2",
+        pairingEnabled: true,
+        accountAuth: accountConfiguration,
+        mockMode: false,
+      }),
+    });
+  });
+  await page.goto("/?unpaired");
+
+  const status = await page.evaluate(() => new Promise<Record<string, unknown>>((resolve) => {
+    const frame = document.createElement("iframe");
+    const timeout = window.setTimeout(() => resolve({ timeout: true }), 5_000);
+    window.addEventListener("message", (event) => {
+      if (event.data?.type === "terminaldb-account-status-v1") {
+        window.clearTimeout(timeout);
+        resolve(event.data);
+      }
+    }, { once: true });
+    frame.addEventListener("load", () => {
+      frame.contentWindow?.postMessage(
+        { type: "terminaldb-account-status-request-v1" },
+        location.origin,
+      );
+    });
+    frame.src = "/auth-status.html";
+    document.body.append(frame);
+  }));
+  expect(status).toEqual({
+    type: "terminaldb-account-status-v1",
+    signedIn: true,
+    username,
+  });
+  expect(JSON.stringify(status)).not.toContain(accessToken);
+  expect(JSON.stringify(status)).not.toContain("bridge-refresh-token");
+});
+
 test("allows account login when every enrolled Mac is offline", async ({ page }) => {
   const now = Math.floor(Date.now() / 1_000);
   await mockAccountPage(page, [

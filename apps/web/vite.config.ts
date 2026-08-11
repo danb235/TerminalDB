@@ -21,6 +21,12 @@ export default defineConfig({
   build: {
     target: "es2022",
     sourcemap: true,
+    rollupOptions: {
+      input: {
+        app: fileURLToPath(new URL("./index.html", import.meta.url)),
+        accountStatus: fileURLToPath(new URL("./auth-status.html", import.meta.url)),
+      },
+    },
   },
   test: {
     environment: "jsdom",
