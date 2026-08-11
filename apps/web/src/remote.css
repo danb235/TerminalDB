@@ -1415,6 +1415,99 @@ p {
   font-weight: 700;
 }
 
+.account-enrollment {
+  width: min(100%, 560px);
+  justify-self: center;
+}
+
+.account-totp-enrollment > span,
+.account-totp-enrollment > h2,
+.account-totp-enrollment > p {
+  text-align: center;
+}
+
+.account-totp-setup {
+  display: grid;
+  gap: 14px;
+  justify-items: center;
+  width: 100%;
+}
+
+.account-totp-qr {
+  display: grid;
+  place-items: center;
+  width: min(100%, 248px);
+  min-height: 248px;
+  padding: 12px;
+  border: 1px solid var(--tdb-border-strong);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.account-totp-qr img {
+  display: block;
+  width: min(100%, 224px);
+  height: auto;
+}
+
+.account-totp-qr > span {
+  color: var(--tdb-black);
+  font: 10px/1.4 var(--tdb-mono);
+}
+
+.account-totp-key {
+  display: grid;
+  gap: 9px;
+  width: 100%;
+  padding: 13px;
+  border: 1px solid var(--tdb-border-strong);
+  border-radius: 7px;
+  background: var(--tdb-black);
+  text-align: center;
+}
+
+.account-totp-key > span {
+  color: var(--tdb-muted);
+  font: 700 9px/1.2 var(--tdb-mono);
+  letter-spacing: 0.08em;
+}
+
+.account-totp-key code {
+  display: block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: var(--tdb-cyan);
+  font: 700 13px/1.7 var(--tdb-mono);
+  letter-spacing: 0.08em;
+  user-select: all;
+}
+
+.account-totp-key button {
+  min-height: 42px;
+  border: 1px solid rgb(65 214 202 / 48%);
+  border-radius: 5px;
+  background: rgb(65 214 202 / 12%);
+  color: var(--tdb-cyan);
+  font-weight: 700;
+}
+
+.account-totp-key small {
+  min-height: 28px;
+  color: var(--tdb-muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.account-totp-enrollment form {
+  width: 100%;
+}
+
+.account-totp-enrollment input[inputmode="numeric"] {
+  text-align: center;
+  font-size: 18px;
+  letter-spacing: 0.32em;
+}
+
 .account-success {
   padding: 10px;
   border: 1px solid rgb(180 227 77 / 32%);

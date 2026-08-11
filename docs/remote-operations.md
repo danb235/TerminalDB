@@ -85,14 +85,15 @@ requires its one-time approval. The Mac proves possession of its non-exportable 
 a random 20-minute signup grant. The grant remains in the URL fragment or the
 encrypted Mac/browser channel, never an HTTP URL or log.
 
-The browser carries the grant in session storage and sends the entire
-username/password/TOTP ceremony through Cognito Managed Login. A pre-signup
-trigger auto-confirms the username without creating an email or phone
-attribute. Managed login uses authorization code with PKCE and requires
-authenticator-app TOTP setup. Email, SMS, passkeys, and backup codes are not
-alternatives. The setup screen recommends enrolling a second secure or
-securely synced authenticator copy because losing every copy requires operator
-assistance. After login, the web app atomically binds the Cognito `sub` to the
+The browser carries the grant in session storage and sends first-time username,
+password, and authenticator challenges directly from the TerminalDB page to
+Cognito's public user-pool API. A pre-signup trigger auto-confirms the username
+without creating an email or phone attribute. The setup screen centers the QR
+code beside an always-visible, copyable manual setup key. Email, SMS, passkeys,
+and backup codes are not alternatives. The screen recommends a securely synced
+authenticator copy because losing every copy requires operator assistance.
+Returning sign-in uses Cognito managed login with authorization code and PKCE.
+After authentication, the web app atomically binds the Cognito `sub` to the
 waiting Mac and consumes the grant. The agent polls with the grant, replaces an
 active guest session if necessary, and starts the account-owned session without
 a copy/paste step. Canceling setup invalidates the unused grant immediately so

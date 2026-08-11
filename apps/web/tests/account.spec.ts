@@ -121,19 +121,134 @@ test("prepares account creators for mandatory authenticator-app setup", async ({
     canceledBootstrap = body.bootstrapToken;
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ canceled: true }) });
   });
+  await page.route("https://cognito-idp.us-west-2.amazonaws.com/**", async (route) => {
+    const target = route.request().headers()["x-amz-target"];
+    const responses: Record<string, Record<string, unknown>> = {
+      "AWSCognitoIdentityProviderService.SignUp": {},
+      "AWSCognitoIdentityProviderService.InitiateAuth": {
+        ChallengeName: "MFA_SETUP",
+        Session: "qa-password-session",
+      },
+      "AWSCognitoIdentityProviderService.AssociateSoftwareToken": {
+        SecretCode: "JBSWY3DPEHPK3PXP",
+        Session: "qa-totp-session",
+      },
+    };
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(responses[target ?? ""] ?? {}),
+    });
+  });
   await page.goto("/?unpaired&account=create#account-bootstrap=qa-approved-bootstrap");
 
   await expect(page.getByRole("heading", { name: "Create your TerminalDB account" }))
     .toBeVisible();
   await expect(page.getByText("Authenticator app required")).toBeVisible();
-  await expect(page.getByText(/Cognito will ask you to create the account/u)).toBeVisible();
-  await expect(page.getByText(/There is no email, SMS, passkey, or backup-code alternative/u))
-    .toBeVisible();
-  await expect(page.getByRole("button", { name: "Continue to secure account creation" }))
-    .toBeVisible();
+  await expect(page.getByText(/scan a QR code or copy the setup key/u)).toBeVisible();
+  await expect(page.getByText(/There is no email, SMS, or backup-code fallback/u)).toBeVisible();
+  await page.getByRole("button", { name: "Create account", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Choose your credentials" })).toBeVisible();
+  await page.getByLabel("Username").fill("qa-new-user");
+  await page.getByLabel("Password", { exact: true }).fill("Unique-Password-42!");
+  await page.getByLabel("Confirm password").fill("Unique-Password-42!");
+  await page.getByRole("button", { name: "Continue to authenticator setup" }).click();
+
+  await expect(page.getByRole("heading", { name: "Secure your account" })).toBeVisible();
+  await expect(page.getByRole("img", { name: "TerminalDB authenticator QR code" })).toBeVisible();
+  await expect(page.getByLabel("Authenticator setup key")).toContainText("JBSW Y3DP EHPK 3PXP");
+  await page.getByRole("button", { name: "Copy setup key" }).click();
+  await expect(page.getByRole("status")).toHaveText("Setup key copied.");
+  const setup = await page.locator(".account-totp-setup").boundingBox();
+  const qr = await page.locator(".account-totp-qr").boundingBox();
+  const key = await page.locator(".account-totp-key").boundingBox();
+  expect(setup).not.toBeNull();
+  expect(qr).not.toBeNull();
+  expect(key).not.toBeNull();
+  expect(Math.abs((qr!.x + qr!.width / 2) - (setup!.x + setup!.width / 2))).toBeLessThan(2);
+  expect(qr!.y + qr!.height).toBeLessThanOrEqual(key!.y);
+
   await page.getByRole("button", { name: "Cancel setup" }).click();
   await expect(page.getByRole("heading", { name: "Sign in to TerminalDB" })).toBeVisible();
   expect(canceledBootstrap).toBe("qa-approved-bootstrap");
+});
+
+test("completes first-party TOTP enrollment and connects the approved Mac", async ({ page }) => {
+  const directAccessToken = freshAccessToken("direct-signup-access");
+  let completedAuthorization: string | undefined;
+  let completedBootstrap: string | undefined;
+  await page.route("**/api/config", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        apiBaseUrl: "",
+        websocketUrl: "/socket",
+        protocolVersion: 1,
+        region: "us-west-2",
+        pairingEnabled: true,
+        accountAuth: accountConfiguration,
+        mockMode: false,
+      }),
+    });
+  });
+  await page.route("https://cognito-idp.us-west-2.amazonaws.com/**", async (route) => {
+    const target = route.request().headers()["x-amz-target"];
+    const responses: Record<string, Record<string, unknown>> = {
+      "AWSCognitoIdentityProviderService.SignUp": {},
+      "AWSCognitoIdentityProviderService.InitiateAuth": {
+        ChallengeName: "MFA_SETUP",
+        Session: "qa-password-session",
+      },
+      "AWSCognitoIdentityProviderService.AssociateSoftwareToken": {
+        SecretCode: "JBSWY3DPEHPK3PXP",
+        Session: "qa-totp-session",
+      },
+      "AWSCognitoIdentityProviderService.VerifySoftwareToken": {
+        Status: "SUCCESS",
+        Session: "qa-verified-session",
+      },
+      "AWSCognitoIdentityProviderService.RespondToAuthChallenge": {
+        AuthenticationResult: {
+          AccessToken: directAccessToken,
+          RefreshToken: "qa-direct-refresh",
+          ExpiresIn: 3_600,
+        },
+      },
+    };
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(responses[target ?? ""] ?? {}),
+    });
+  });
+  await page.route("**/api/v1/account/bootstrap/complete", async (route) => {
+    completedAuthorization = route.request().headers().authorization;
+    completedBootstrap = (route.request().postDataJSON() as { bootstrapToken?: string }).bootstrapToken;
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ completed: true, deviceId: "qa-mac" }),
+    });
+  });
+  await page.route("**/api/v1/account/devices", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ devices: [] }) });
+  });
+  await page.goto("/?unpaired&account=create#account-bootstrap=qa-approved-bootstrap");
+  await page.getByRole("button", { name: "Create account", exact: true }).click();
+  await page.getByLabel("Username").fill("qa-new-user");
+  await page.getByLabel("Password", { exact: true }).fill("Unique-Password-42!");
+  await page.getByLabel("Confirm password").fill("Unique-Password-42!");
+  await page.getByRole("button", { name: "Continue to authenticator setup" }).click();
+  await page.getByLabel("Six-digit code").fill("123456");
+  await page.getByRole("button", { name: "Finish account setup" }).click();
+
+  await expect(page.getByRole("heading", { name: "Your Macs" })).toBeVisible();
+  await expect(page.getByText(/Mac enrolled/u)).toBeVisible();
+  await expect.poll(() => completedAuthorization).toBe(`Bearer ${directAccessToken}`);
+  expect(completedBootstrap).toBe("qa-approved-bootstrap");
+  expect(JSON.parse(await page.evaluate(() =>
+    localStorage.getItem("terminaldb.account.tokens.v1") ?? "{}"
+  ))).toMatchObject({
+    accessToken: directAccessToken,
+    refreshMode: "cognito",
+  });
 });
 
 test("connects an existing account from a Mac without an enrollment code", async ({ page }) => {

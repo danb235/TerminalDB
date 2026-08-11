@@ -39,19 +39,22 @@ Remote supports two independent access grants:
 
 - **One-time link:** the existing possession-based pairing flow works without
   an account and grants access only to the session named by the opaque link.
-- **Account:** Cognito managed login uses authorization code with PKCE. API
-  Gateway validates the access token, and the control Lambda derives the tenant
-  exclusively from Cognito's immutable `sub` claim. A signed-in browser can
-  discover and register a controller only for sessions indexed under that
-  subject.
+- **Account:** first-time signup and authenticator enrollment use Cognito's
+  public user-pool API directly from the TerminalDB web app; returning sign-in
+  uses Cognito managed login with authorization code and PKCE. API Gateway
+  validates either Cognito access-token scope, and the control Lambda derives
+  the tenant exclusively from Cognito's immutable `sub` claim. A signed-in
+  browser can discover and register a controller only for sessions indexed
+  under that subject.
 
 Account creation begins with a random, short-lived bootstrap capability signed
 by a Mac's non-exportable identity. The browser sends username and password
 directly to Cognito with that capability as client metadata. A pre-signup
-trigger atomically consumes it and auto-confirms the no-email user. After OAuth
-login, the control Lambda binds the immutable Cognito `sub` to the exact Mac
-public keys captured by the grant. The Mac polls only for completion, never for
-the password or OAuth tokens.
+trigger atomically consumes it and auto-confirms the no-email user. The web app
+shows Cognito's TOTP QR and manual setup key together, then exchanges the
+completed challenge for Cognito tokens. The control Lambda binds the immutable
+Cognito `sub` to the exact Mac public keys captured by the grant. The Mac polls
+only for completion, never for the password, authenticator secret, or tokens.
 
 Cognito is a control-plane identity, not a terminal encryption key. An account
 browser still creates non-extractable P-256 signing and ECDH keys. The Mac and

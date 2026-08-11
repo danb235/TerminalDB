@@ -16,20 +16,23 @@ import {
   useRef,
   useState,
 } from "react";
+import QRCode from "qrcode";
 
 import { clearControllerSession, loadControllerSession } from "./identity";
 import {
   accountAccessToken,
   beginAccountSignIn,
-  beginAccountSignUp,
+  beginAccountTotpEnrollment,
   changeAccountPassword,
   clearAccountCredentials,
   clearPendingAccountBootstrap,
   completeAccountSignIn,
+  completeAccountTotpEnrollment,
   hasRecentAccountAuthentication,
   pendingAccountBootstrap,
   savePendingAccountBootstrap,
   signOutAccount,
+  type AccountTotpEnrollment,
 } from "./account-auth";
 import { accounts as mockAccounts, mockInventory, terminalFixture } from "./mock-data";
 import { AcknowledgedInputQueue } from "./ordered-input";
@@ -330,6 +333,279 @@ export function accountDeviceActivityLabel(
   return `Last seen ${Math.floor(seconds / (24 * 60 * 60))}d ago`;
 }
 
+function AccountEnrollment({
+  configuration,
+  bootstrapToken,
+  onComplete,
+  onExistingAccount,
+  onCancel,
+}: {
+  readonly configuration: NonNullable<RemotePublicConfiguration["accountAuth"]>;
+  readonly bootstrapToken: string;
+  readonly onComplete: (accessToken: string) => void;
+  readonly onExistingAccount: () => void;
+  readonly onCancel: () => Promise<void>;
+}) {
+  const [stage, setStage] = useState<"intro" | "credentials" | "totp">("intro");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [passwordConfirmation, setPasswordConfirmation] = useState("");
+  const [enrollment, setEnrollment] = useState<AccountTotpEnrollment>();
+  const [authenticatorCode, setAuthenticatorCode] = useState("");
+  const [qrCode, setQrCode] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const [copyStatus, setCopyStatus] = useState<string>();
+
+  useEffect(() => {
+    if (!enrollment) {
+      setQrCode(undefined);
+      return;
+    }
+    let canceled = false;
+    const label = encodeURIComponent(`TerminalDB:${enrollment.username}`);
+    const issuer = encodeURIComponent("TerminalDB");
+    const uri = `otpauth://totp/${label}?secret=${enrollment.secret}&issuer=${issuer}&algorithm=SHA1&digits=6&period=30`;
+    void QRCode.toDataURL(uri, {
+      width: 224,
+      margin: 2,
+      errorCorrectionLevel: "M",
+      color: { dark: "#101013", light: "#ffffff" },
+    }).then((dataUrl) => {
+      if (!canceled) setQrCode(dataUrl);
+    }).catch(() => {
+      if (!canceled) setError("The QR code could not be drawn. Use the setup key below.");
+    });
+    return () => {
+      canceled = true;
+    };
+  }, [enrollment]);
+
+  const submitCredentials = async () => {
+    if (password !== passwordConfirmation) {
+      setError("The passwords do not match.");
+      return;
+    }
+    setBusy(true);
+    setError(undefined);
+    try {
+      const nextEnrollment = await beginAccountTotpEnrollment({
+        configuration,
+        username,
+        password,
+        bootstrapToken,
+      });
+      setEnrollment(nextEnrollment);
+      setUsername(nextEnrollment.username);
+      setPassword("");
+      setPasswordConfirmation("");
+      setStage("totp");
+    } catch (setupError) {
+      setError(setupError instanceof Error ? setupError.message : "Account setup could not start.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const verifyAuthenticator = async () => {
+    if (!enrollment) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      const accessToken = await completeAccountTotpEnrollment({
+        configuration,
+        enrollment,
+        code: authenticatorCode,
+      });
+      setAuthenticatorCode("");
+      onComplete(accessToken);
+    } catch (verificationError) {
+      setError(verificationError instanceof Error
+        ? verificationError.message
+        : "The authenticator code could not be verified.");
+      setBusy(false);
+    }
+  };
+
+  const copySetupKey = async () => {
+    if (!enrollment) return;
+    setCopyStatus(undefined);
+    const fallbackCopy = () => {
+      const field = document.createElement("textarea");
+      field.value = enrollment.secret;
+      field.setAttribute("readonly", "");
+      field.style.position = "fixed";
+      field.style.opacity = "0";
+      document.body.append(field);
+      field.select();
+      const copied = document.execCommand("copy");
+      field.remove();
+      return copied;
+    };
+    try {
+      if (!navigator.clipboard?.writeText) {
+        if (!fallbackCopy()) throw new Error("Clipboard unavailable");
+      } else {
+        await Promise.race([
+          navigator.clipboard.writeText(enrollment.secret),
+          new Promise<never>((_resolve, reject) => {
+            window.setTimeout(() => reject(new Error("Clipboard timed out")), 750);
+          }),
+        ]).catch((clipboardError: unknown) => {
+          if (!fallbackCopy()) throw clipboardError;
+        });
+      }
+      setCopyStatus("Setup key copied.");
+    } catch {
+      setCopyStatus("Copy was blocked. Select the setup key and copy it manually.");
+    }
+  };
+
+  const cancel = async () => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await onCancel();
+    } catch (cancelError) {
+      setError(cancelError instanceof Error ? cancelError.message : "Account setup could not be canceled.");
+      setBusy(false);
+    }
+  };
+
+  if (stage === "intro") {
+    return (
+      <section className="account-access account-signup">
+        <span>MAC APPROVED · NO EMAIL REQUIRED</span>
+        <h2>Create your TerminalDB account</h2>
+        <p>This one-time approval connects the Mac that opened this page. Your password and authenticator setup go directly from this browser to AWS Cognito.</p>
+        <div className="account-security-notice">
+          <strong>Authenticator app required</strong>
+          <p>You can scan a QR code or copy the setup key into your authenticator app. Both options are shown together on the next step.</p>
+          <ul>
+            <li>Save the password when your password manager offers it.</li>
+            <li>Keep the authenticator in a securely synced app or add it to a second device.</li>
+            <li>There is no email, SMS, or backup-code fallback.</li>
+          </ul>
+        </div>
+        <button disabled={busy} onClick={() => setStage("credentials")}>
+          Create account
+        </button>
+        <button className="text-button" disabled={busy} onClick={onExistingAccount}>
+          Already have an account? Sign in & connect this Mac
+        </button>
+        <button className="text-button" disabled={busy} onClick={() => void cancel()}>
+          Cancel setup
+        </button>
+        {error ? <small role="alert">{error}</small> : null}
+      </section>
+    );
+  }
+
+  if (stage === "credentials") {
+    return (
+      <section className="account-access account-signup account-enrollment">
+        <span>STEP 1 OF 2 · ACCOUNT</span>
+        <h2>Choose your credentials</h2>
+        <p>Use a password manager to create and save a unique password for TerminalDB.</p>
+        <form onSubmit={(event) => {
+          event.preventDefault();
+          void submitCredentials();
+        }}>
+          <label htmlFor="account-signup-username">Username</label>
+          <input
+            id="account-signup-username"
+            autoCapitalize="none"
+            autoComplete="username"
+            autoCorrect="off"
+            disabled={busy}
+            maxLength={128}
+            required
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+          />
+          <label htmlFor="account-signup-password">Password</label>
+          <input
+            id="account-signup-password"
+            autoComplete="new-password"
+            disabled={busy}
+            minLength={12}
+            required
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+          />
+          <small>At least 12 characters with upper and lowercase letters, a number, and a symbol.</small>
+          <label htmlFor="account-signup-password-confirmation">Confirm password</label>
+          <input
+            id="account-signup-password-confirmation"
+            autoComplete="new-password"
+            disabled={busy}
+            minLength={12}
+            required
+            type="password"
+            value={passwordConfirmation}
+            onChange={(event) => setPasswordConfirmation(event.target.value)}
+          />
+          <button disabled={busy} type="submit">
+            {busy ? "Creating account…" : "Continue to authenticator setup"}
+          </button>
+        </form>
+        <button className="text-button" disabled={busy} onClick={() => setStage("intro")}>Back</button>
+        <button className="text-button" disabled={busy} onClick={() => void cancel()}>Cancel setup</button>
+        {error ? <small role="alert">{error}</small> : null}
+      </section>
+    );
+  }
+
+  const formattedSecret = enrollment?.secret.match(/.{1,4}/gu)?.join(" ") ?? "";
+  return (
+    <section className="account-access account-signup account-enrollment account-totp-enrollment">
+      <span>STEP 2 OF 2 · AUTHENTICATOR</span>
+      <h2>Secure your account</h2>
+      <p>Scan the QR code or copy the setup key. Then enter the current six-digit code from your authenticator app.</p>
+      <div className="account-totp-setup">
+        <div className="account-totp-qr">
+          {qrCode
+            ? <img alt="TerminalDB authenticator QR code" height="224" src={qrCode} width="224" />
+            : <span aria-live="polite">Preparing QR code…</span>}
+        </div>
+        <div className="account-totp-key">
+          <span>MANUAL SETUP KEY</span>
+          <code aria-label="Authenticator setup key">{formattedSecret}</code>
+          <button disabled={busy} type="button" onClick={() => void copySetupKey()}>
+            Copy setup key
+          </button>
+          <small role="status">{copyStatus ?? "Keep this key private. It provides access to your authenticator codes."}</small>
+        </div>
+      </div>
+      <form onSubmit={(event) => {
+        event.preventDefault();
+        void verifyAuthenticator();
+      }}>
+        <label htmlFor="account-authenticator-code">Six-digit code</label>
+        <input
+          id="account-authenticator-code"
+          aria-describedby="account-authenticator-help"
+          autoComplete="one-time-code"
+          disabled={busy}
+          inputMode="numeric"
+          maxLength={6}
+          pattern="[0-9]{6}"
+          required
+          value={authenticatorCode}
+          onChange={(event) => setAuthenticatorCode(event.target.value.replace(/\D/gu, ""))}
+        />
+        <small id="account-authenticator-help">Codes change every 30 seconds. If one expires, enter the next code.</small>
+        <button disabled={busy} type="submit">
+          {busy ? "Verifying…" : "Finish account setup"}
+        </button>
+      </form>
+      <button className="text-button" disabled={busy} onClick={() => void cancel()}>Cancel setup</button>
+      {error ? <small role="alert">{error}</small> : null}
+    </section>
+  );
+}
+
 function AccountAccess({
   configuration,
   onSessionReady,
@@ -467,19 +743,6 @@ function AccountAccess({
       forceReauthentication: true,
     });
   }, [accessToken, configuration, loading, securityAction]);
-
-  const createAccount = async () => {
-    if (!bootstrapToken) {
-      setError("Start account creation again from TerminalDB on your Mac.");
-      return;
-    }
-    setError(undefined);
-    savePendingAccountBootstrap(bootstrapToken);
-    await beginAccountSignUp(configuration, undefined, {
-      returnTo: "/?account=finish&intent=create",
-      forceReauthentication: true,
-    });
-  };
 
   const cancelAccountSetup = async () => {
     if (!bootstrapToken) return;
@@ -635,46 +898,19 @@ function AccountAccess({
         );
       }
       return (
-        <section className="account-access account-signup">
-          <span>MAC APPROVED · NO EMAIL REQUIRED</span>
-          <h2>Create your TerminalDB account</h2>
-          <p>This one-time approval connects the Mac that opened this page. Cognito handles your username, password, and authenticator setup together so your password manager can save and reuse one credential.</p>
-          <div className="account-security-notice">
-            <strong>Authenticator app required</strong>
-            <p>Cognito will ask you to create the account, then show a QR code. Scan it with a TOTP authenticator app and enter the current six-digit code to finish.</p>
-            <ul>
-              <li>Have the authenticator app ready before continuing.</li>
-              <li>Save the suggested password when your password manager offers it. Future sign-ins use the same TerminalDB authentication domain.</li>
-              <li>For recovery, keep the TOTP in a securely synced authenticator or add it to a second device during setup.</li>
-              <li>There is no email, SMS, passkey, or backup-code alternative. Losing every copy of the authenticator locks sign-in.</li>
-            </ul>
-          </div>
-          <button disabled={loading || accountActionBusy} onClick={() => void createAccount()}>
-            Continue to secure account creation
-          </button>
-          <small>You will stay on TerminalDB's branded authentication site until account creation and authenticator enrollment are complete.</small>
-          <button
-            className="text-button"
-            disabled={loading || accountActionBusy}
-            onClick={() => {
-              savePendingAccountBootstrap(bootstrapToken);
-              void beginAccountSignIn(configuration, undefined, {
-                returnTo: "/?account=finish&intent=connect",
-                forceReauthentication: true,
-              });
-            }}
-          >
-            Already have an account? Sign in & connect this Mac
-          </button>
-          <button
-            className="text-button"
-            disabled={accountActionBusy}
-            onClick={() => void cancelAccountSetup()}
-          >
-            Cancel setup
-          </button>
-          {error ? <small role="alert">{error}</small> : null}
-        </section>
+        <AccountEnrollment
+          bootstrapToken={bootstrapToken}
+          configuration={configuration}
+          onCancel={cancelAccountSetup}
+          onComplete={(token) => setAccessToken(token)}
+          onExistingAccount={() => {
+            savePendingAccountBootstrap(bootstrapToken);
+            void beginAccountSignIn(configuration, undefined, {
+              returnTo: "/?account=finish&intent=connect",
+              forceReauthentication: true,
+            });
+          }}
+        />
       );
     }
     return (
