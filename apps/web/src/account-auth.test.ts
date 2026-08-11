@@ -2,14 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   accountAccessToken,
+  beginAccountPasswordSignIn,
   accountTokenIssuedAt,
   beginAccountSignIn,
-  beginAccountSignUp,
   beginAccountTotpEnrollment,
   changeAccountPassword,
   clearAccountCredentials,
   completeAccountSignIn,
   completeAccountTotpEnrollment,
+  completeAccountTotpSignIn,
   hasRecentAccountAuthentication,
   signOutAccount,
   type AccountAuthConfiguration,
@@ -96,22 +97,6 @@ describe("Cognito account OAuth", () => {
       .toBe("/?account=password&source=desktop");
   });
 
-  it("keeps account creation inside Cognito's managed signup ceremony", async () => {
-    const navigate = vi.fn();
-
-    await beginAccountSignUp(configuration, navigate, {
-      returnTo: "/?account=finish&intent=create",
-      forceReauthentication: true,
-    });
-
-    const url = navigate.mock.calls[0]?.[0] as URL;
-    expect(url.pathname).toBe("/signup");
-    expect(url.searchParams.get("prompt")).toBe("login");
-    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
-    expect(sessionStorage.getItem("terminaldb.account.return-to.v1"))
-      .toBe("/?account=finish&intent=create");
-  });
-
   it("starts first-party signup and receives a Cognito TOTP secret without a TerminalDB API", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response("{}", { status: 200 }))
@@ -189,6 +174,73 @@ describe("Cognito account OAuth", () => {
       refreshToken: "direct-refresh",
       refreshMode: "cognito",
     });
+  });
+
+  it("keeps returning password and TOTP sign-in on the TerminalDB origin", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ChallengeName: "SOFTWARE_TOKEN_MFA",
+        Session: "totp-signin-session",
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        AuthenticationResult: {
+          AccessToken: "signed-in-access",
+          RefreshToken: "signed-in-refresh",
+          ExpiresIn: 3_600,
+        },
+      }), { status: 200 }));
+
+    const signIn = await beginAccountPasswordSignIn({
+      configuration: cognitoConfiguration,
+      username: "returning-user",
+      password: "Unique-Password-42!",
+    });
+    await expect(completeAccountTotpSignIn({
+      configuration: cognitoConfiguration,
+      signIn,
+      code: "123456",
+    })).resolves.toBe("signed-in-access");
+
+    expect(fetchMock.mock.calls.map((call) =>
+      (call[1]?.headers as Record<string, string>)["x-amz-target"]
+    )).toEqual([
+      "AWSCognitoIdentityProviderService.InitiateAuth",
+      "AWSCognitoIdentityProviderService.RespondToAuthChallenge",
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      AuthFlow: "USER_AUTH",
+      ClientId: "web-client",
+      AuthParameters: {
+        USERNAME: "returning-user",
+        PASSWORD: "Unique-Password-42!",
+        PREFERRED_CHALLENGE: "PASSWORD",
+      },
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({
+      ChallengeName: "SOFTWARE_TOKEN_MFA",
+      ChallengeResponses: {
+        USERNAME: "returning-user",
+        SOFTWARE_TOKEN_MFA_CODE: "123456",
+      },
+    });
+    expect(JSON.parse(localStorage.getItem("terminaldb.account.tokens.v1") ?? "{}")).toMatchObject({
+      accessToken: "signed-in-access",
+      refreshToken: "signed-in-refresh",
+      refreshMode: "cognito",
+    });
+  });
+
+  it("directs incomplete legacy accounts back to Mac-approved enrollment", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      ChallengeName: "MFA_SETUP",
+      Session: "unfinished-session",
+    }), { status: 200 }));
+
+    await expect(beginAccountPasswordSignIn({
+      configuration: cognitoConfiguration,
+      username: "unfinished-user",
+      password: "Unique-Password-42!",
+    })).rejects.toThrow(/Open TerminalDB on your Mac.*copyable setup key/u);
   });
 
   it("changes the password directly with Cognito instead of the TerminalDB API", async () => {

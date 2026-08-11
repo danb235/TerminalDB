@@ -21,9 +21,10 @@ guest regression, encryption check, or production security gate fails.
 - Confirm setup recommends a second secure or securely synced authenticator
   copy and clearly warns that losing every copy requires operator assistance.
   Exercise ordinary clock skew, code reuse, throttling, and interrupted setup.
-- Prove OAuth uses authorization code with PKCE and rejects a mismatched state.
-- Reject an external post-authentication return URL and never place the PKCE
-  verifier, access token, or enrollment code in the authorization URL.
+- Prove returning password and TOTP sign-in stays on the TerminalDB origin and
+  calls Cognito directly without placing passwords, tokens, or enrollment
+  secrets in a URL. Keep authorization-code/PKCE callback verification covered
+  for browsers that began the legacy flow before an update.
 - Accept only Cognito access tokens with the required scope; reject missing,
   expired, ID, wrong-client, and wrong-issuer tokens at API Gateway.
 - Refresh an expired access token and revoke the refresh token at sign-out.
@@ -52,7 +53,7 @@ guest regression, encryption check, or production security gate fails.
   active, end it before claiming the Mac and starting the account session.
 - Create a password with the browser password manager and confirm Cognito does
   not ask for it a second time during the same signup. Sign out and verify the
-  saved credential is offered from the same TerminalDB authentication domain.
+  saved credential is offered from the same `app.terminaldb.app` origin.
 - Cancel before leaving the account introduction and verify the Mac exits its
   setting-up state promptly and can issue a fresh approval.
 - Claim an existing link-only Mac without rotating its Keychain identity.
@@ -251,6 +252,27 @@ Status: **local, deployed, and visible-product gates passed**.
 - Ran the deployed live MFA qualification against the same stack. It covered
   initial and additional Mac binding, direct Cognito password change,
   pre-change token rejection, retained TOTP, fresh-auth deletion, and cleanup.
+
+## First-party sign-in and enrollment execution record — 2026-08-11
+
+Status: **deployed and visible-product gates passed**.
+
+- Opened production in the isolated in-app browser and used the normal Sign in
+  action. Username, password, and TOTP stayed on `app.terminaldb.app`; no
+  managed-login page opened, the username received focus, and the document had
+  no vertical scroll.
+- Started a fresh short-lived enrollment approval against production, entered a
+  disposable username and password through the visible forms, and reached the
+  required authenticator screen. The QR and manual setup key were both visible,
+  centered side by side, and the desktop document did not scroll.
+- Selected **Copy setup key** and observed the visible copied confirmation.
+  The secret itself was not read, logged, or captured.
+- Canceled through the visible enrollment action and confirmed the app returned
+  to sign-in, the one-time Mac approval was removed, and the disposable Cognito
+  user was deleted.
+- Phone, tablet, and desktop browser coverage passed for account creation,
+  direct password-plus-TOTP sign-in, incomplete-account recovery, offline Mac
+  inventory, password change, account deletion, and one-time-link regressions.
 
 ## Local execution record — 2026-08-08
 

@@ -243,18 +243,126 @@ test("prepares account creators for mandatory authenticator-app setup", async ({
   await page.getByRole("button", { name: "Copy setup key" }).click();
   await expect(page.getByRole("status")).toHaveText("Setup key copied.");
   const setup = await page.locator(".account-totp-setup").boundingBox();
+  const enrollment = await page.locator(".account-totp-enrollment").boundingBox();
   const qr = await page.locator(".account-totp-qr").boundingBox();
   const key = await page.locator(".account-totp-key").boundingBox();
   expect(setup).not.toBeNull();
+  expect(enrollment).not.toBeNull();
   expect(qr).not.toBeNull();
   expect(key).not.toBeNull();
-  expect(Math.abs((qr!.x + qr!.width / 2) - (setup!.x + setup!.width / 2))).toBeLessThan(2);
-  expect(qr!.y + qr!.height).toBeLessThanOrEqual(key!.y);
+  expect(Math.abs((setup!.x + setup!.width / 2) - (enrollment!.x + enrollment!.width / 2)))
+    .toBeLessThan(2);
+  if ((page.viewportSize()?.width ?? 0) >= 600) {
+    expect(Math.abs(qr!.y - key!.y)).toBeLessThan(2);
+    expect(await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1))
+      .toBe(true);
+  } else {
+    expect(qr!.y + qr!.height).toBeLessThanOrEqual(key!.y);
+  }
 
   await page.getByRole("button", { name: "Cancel setup" }).click();
   await expect(page.getByRole("heading", { name: "Sign in to TerminalDB" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeEnabled();
   expect(canceledBootstrap).toBe("qa-approved-bootstrap");
+});
+
+test("keeps password and TOTP sign-in inside TerminalDB", async ({ page }) => {
+  const directAccessToken = freshAccessToken("direct-signin-access");
+  const externalAuthRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().startsWith(accountConfiguration.domain)) {
+      externalAuthRequests.push(request.url());
+    }
+  });
+  await page.route("**/api/config", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        apiBaseUrl: "",
+        websocketUrl: "/socket",
+        protocolVersion: 1,
+        region: "us-west-2",
+        pairingEnabled: true,
+        accountAuth: accountConfiguration,
+        mockMode: false,
+      }),
+    });
+  });
+  await page.route("https://cognito-idp.us-west-2.amazonaws.com/**", async (route) => {
+    const target = route.request().headers()["x-amz-target"];
+    const responses: Record<string, Record<string, unknown>> = {
+      "AWSCognitoIdentityProviderService.InitiateAuth": {
+        ChallengeName: "SOFTWARE_TOKEN_MFA",
+        Session: "qa-signin-session",
+      },
+      "AWSCognitoIdentityProviderService.RespondToAuthChallenge": {
+        AuthenticationResult: {
+          AccessToken: directAccessToken,
+          RefreshToken: "qa-signin-refresh",
+          ExpiresIn: 3_600,
+        },
+      },
+    };
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(responses[target ?? ""] ?? {}),
+    });
+  });
+  await page.route("**/api/v1/account/devices", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ devices: [] }) });
+  });
+
+  await page.goto("/?unpaired&account");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.getByLabel("Username").fill("returning-user");
+  await page.getByLabel("Password", { exact: true }).fill("Unique-Password-42!");
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Enter your authenticator code" }))
+    .toBeVisible();
+  await page.getByLabel("Six-digit code").fill("123456");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+  await expect(page.getByRole("heading", { name: "Your Macs" })).toBeVisible();
+  expect(new URL(page.url()).origin).not.toBe(accountConfiguration.domain);
+  expect(externalAuthRequests).toEqual([]);
+  expect(JSON.parse(await page.evaluate(() =>
+    localStorage.getItem("terminaldb.account.tokens.v1") ?? "{}"
+  ))).toMatchObject({
+    accessToken: directAccessToken,
+    refreshMode: "cognito",
+  });
+});
+
+test("recovers incomplete accounts without opening Cognito's hosted MFA page", async ({ page }) => {
+  await page.route("**/api/config", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        apiBaseUrl: "",
+        websocketUrl: "/socket",
+        protocolVersion: 1,
+        region: "us-west-2",
+        pairingEnabled: true,
+        accountAuth: accountConfiguration,
+        mockMode: false,
+      }),
+    });
+  });
+  await page.route("https://cognito-idp.us-west-2.amazonaws.com/**", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ ChallengeName: "MFA_SETUP", Session: "unfinished-session" }),
+    });
+  });
+
+  await page.goto("/?unpaired&account");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.getByLabel("Username").fill("unfinished-user");
+  await page.getByLabel("Password", { exact: true }).fill("Unique-Password-42!");
+  await page.getByRole("button", { name: "Continue" }).click();
+
+  await expect(page.getByRole("alert")).toContainText("copyable setup key");
+  await expect(page).toHaveURL(/\?unpaired&account$/u);
 });
 
 test("completes first-party TOTP enrollment and connects the approved Mac", async ({ page }) => {

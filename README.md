@@ -250,10 +250,12 @@ custom deployment or a Mac where automatic AWS enrollment is unavailable.
 The same deployment also supports optional TerminalDB accounts. Choose
 **Create Account** in the Mac's Remote Control panel, or open **Accounts**
 from an active one-time web terminal. The Mac signs a short-lived signup
-approval with its non-exportable Keychain identity. Cognito Managed Login owns
-the complete username, password, and authenticator ceremony so password
-managers see one consistent authentication domain and the password is entered
-only once. No email address or verification email is required. After
+approval with its non-exportable Keychain identity. Cognito owns the account
+and token policy, while TerminalDB keeps the username, password, and
+authenticator forms on `app.terminaldb.app` and sends their values directly to
+Cognito. Password managers therefore see one consistent application domain,
+and TerminalDB's backend never receives the credentials. No email address or
+verification email is required. After
 username/password creation and authenticator-app TOTP setup, the
 waiting Mac connects to the new account automatically. TOTP
 is mandatory; email, SMS, passkeys, and backup codes are not offered. Set up a
