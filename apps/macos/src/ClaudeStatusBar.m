@@ -896,9 +896,7 @@ static double ClaudeUsageClampedPercent(double percent) {
             attributes:muted]];
     if (fivePercent != nil) {
         [styled appendAttributedString:
-            [self usageWindowSegment:@"5h"
-                             percent:fivePercent.doubleValue
-                              window:fiveHour]];
+            [self usageSegment:@"5h" percent:fivePercent.doubleValue]];
     }
     if (weekPercent != nil) {
         if (fivePercent != nil) {
@@ -906,16 +904,14 @@ static double ClaudeUsageClampedPercent(double percent) {
                 initWithString:@" · " attributes:muted]];
         }
         [styled appendAttributedString:
-            [self usageWindowSegment:@"7d"
-                             percent:weekPercent.doubleValue
-                              window:sevenDay]];
+            [self usageSegment:@"7d" percent:weekPercent.doubleValue]];
     }
     if (fablePercent != nil) {
         if (fivePercent != nil || weekPercent != nil) {
             [styled appendAttributedString:[[NSAttributedString alloc]
                 initWithString:@" · " attributes:muted]];
         }
-        [styled appendAttributedString:[self usageSegment:@"F"
+        [styled appendAttributedString:[self usageSegment:@"Fable"
                                                  percent:fablePercent.doubleValue]];
     }
     self.usageLabel.attributedStringValue = styled;
@@ -1309,6 +1305,34 @@ static double ClaudeUsageClampedPercent(double percent) {
         @"five_hour" : @{@"utilization" : @140},
         @"seven_day" : @{@"utilization" : @(-5)},
     }];
+    NSString *fixtureRoot = [NSTemporaryDirectory()
+        stringByAppendingPathComponent:[NSString stringWithFormat:
+            @"terminaldb-usage-summary-%@", NSUUID.UUID.UUIDString]];
+    [NSFileManager.defaultManager createDirectoryAtPath:fixtureRoot
+                            withIntermediateDirectories:YES
+                                             attributes:nil
+                                                  error:nil];
+    ClaudeProfile *fixtureProfile = [[ClaudeProfile alloc] init];
+    [fixtureProfile setValue:@"usage-summary" forKey:@"identifier"];
+    [fixtureProfile setValue:@"Usage Summary" forKey:@"label"];
+    [fixtureProfile setValue:fixtureRoot forKey:@"profileDirectory"];
+    NSData *fixtureData = [NSJSONSerialization
+        dataWithJSONObject:normalized options:0 error:nil];
+    [fixtureData writeToFile:fixtureProfile.statusCachePath atomically:YES];
+    ClaudeStatusBar *fixtureBar = [[ClaudeStatusBar alloc]
+        initWithFrame:NSMakeRect(0, 0, 720, 28)
+        claudeExecutable:@""
+        profileManager:[[ClaudeProfileManager alloc] init]
+        selectedProfile:fixtureProfile
+        theme:[TerminalTheme preferredTheme]];
+    [fixtureBar refreshUsage];
+    NSString *compactSummary = fixtureBar.usageLabel.stringValue;
+    BOOL showsEveryWindow =
+        [compactSummary containsString:@"5h 12%"] &&
+        [compactSummary containsString:@"7d 34%"] &&
+        [compactSummary containsString:@"Fable 56%"] &&
+        ![compactSummary containsString:@"↻"];
+    [NSFileManager.defaultManager removeItemAtPath:fixtureRoot error:nil];
     return [limits[@"five_hour"][@"used_percentage"] isEqual:@12] &&
         [fiveHourReset isKindOfClass:NSNumber.class] &&
         [limits[@"seven_day"][@"used_percentage"] isEqual:@34] &&
@@ -1333,7 +1357,8 @@ static double ClaudeUsageClampedPercent(double percent) {
         [clamped[@"rate_limits"][@"five_hour"][@"used_percentage"]
             isEqual:@100] &&
         [clamped[@"rate_limits"][@"seven_day"][@"used_percentage"]
-            isEqual:@0];
+            isEqual:@0] &&
+        showsEveryWindow;
 }
 
 + (nullable NSNumber *)timestampFromUsageResetValue:(id)value {
@@ -1402,34 +1427,6 @@ static double ClaudeUsageClampedPercent(double percent) {
     NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
     [formatter setLocalizedDateFormatFromTemplate:@"Mdjmm"];
     return [formatter stringFromDate:date];
-}
-
-- (NSAttributedString *)usageWindowSegment:(NSString *)label
-                                   percent:(double)percent
-                                    window:(NSDictionary *)window {
-    NSMutableAttributedString *segment =
-        [[self usageSegment:label percent:percent] mutableCopy];
-    NSNumber *timestamp = [window[@"resets_at"] isKindOfClass:NSNumber.class]
-        ? window[@"resets_at"]
-        : nil;
-    NSTimeInterval period = [label isEqualToString:@"5h"]
-        ? 5.0 * 60.0 * 60.0
-        : 7.0 * 24.0 * 60.0 * 60.0;
-    BOOL rolled = NO;
-    timestamp = [ClaudeStatusBar nextResetTimestamp:timestamp
-                                             period:period
-                                             rolled:&rolled];
-    NSString *resetDateTime =
-        [ClaudeStatusBar compactResetDateTimeFromTimestamp:timestamp] ?: @"—";
-    [segment appendAttributedString:[[NSAttributedString alloc]
-        initWithString:[NSString stringWithFormat:@" %@ %@",
-            rolled ? @"≈" : @"↻", resetDateTime]
-            attributes:@{
-                NSFontAttributeName : self.usageLabel.font,
-                NSForegroundColorAttributeName :
-                    self.theme.statusBarActiveForeground,
-            }]];
-    return segment;
 }
 
 - (void)appendResetDescription:(NSString *)label

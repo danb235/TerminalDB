@@ -545,7 +545,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
 @property(nonatomic, strong, nullable)
     TerminalLedgerWindowController *ledgerWindowController;
 @property(nonatomic, strong, nullable)
-    TerminalCommandInspectorWindowController *commandInspectorController;
+    TerminalCommandInspectorController *commandInspectorController;
 @property(nonatomic, copy) NSString *activeLedgerCommand;
 @property(nonatomic, copy) NSString *activeLedgerDirectory;
 @property(nonatomic, strong, nullable) NSDate *activeLedgerStartedAt;
@@ -866,8 +866,6 @@ static BOOL TerminalDBWriteAll(int descriptor,
                                containsObject:
                                    @"--visual-qa-section=inspector"]) {
                     [controller showCommandInspectorForRecord:visualRecord];
-                    [controller.commandInspectorController.window
-                        orderBack:nil];
                 }
             });
             for (NSString *argument in
@@ -3554,7 +3552,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
     AppDelegate *controller = [self activeTerminalController] ?: self;
     if (controller.commandInspectorController == nil) {
         controller.commandInspectorController =
-            [[TerminalCommandInspectorWindowController alloc]
+            [[TerminalCommandInspectorController alloc]
                 initWithStore:controller.ledgerStore ?:
                     [TerminalLedgerStore sharedStore]
                        theme:controller.theme ?: [TerminalTheme preferredTheme]];
@@ -3562,10 +3560,12 @@ static BOOL TerminalDBWriteAll(int descriptor,
         controller.commandInspectorController.pasteHandler =
             ^(NSString *command) {
                 [weakController pasteCommandForReview:command];
+                [weakController hideUtilityPanel:nil];
             };
         controller.commandInspectorController.rerunHandler =
             ^(NSString *command) {
                 [weakController requestExecutionForCommand:command];
+                [weakController hideUtilityPanel:nil];
             };
         controller.commandInspectorController.askHandler =
             ^(NSDictionary *selectedRecord) {
@@ -3580,9 +3580,12 @@ static BOOL TerminalDBWriteAll(int descriptor,
                 [weakController saveRunbookFromRecord:selectedRecord];
             };
     }
-    [controller.commandInspectorController
-        presentRecord:record
-     relativeToWindow:controller.window];
+    [controller.commandInspectorController presentRecord:record];
+    [controller showUtilityPanelView:
+                    controller.commandInspectorController.panelView
+                               title:@"Command details"
+                           fullWidth:NO
+                      dismissHandler:nil];
 }
 
 - (void)showCommandHistory:(id)sender {
@@ -8732,6 +8735,10 @@ static BOOL TerminalDBWriteAll(int descriptor,
     }
     if (![TerminalLedgerStore runPrivacyAndEnvironmentSelfTests]) {
         fprintf(stderr, "FAIL command ledger privacy/environment\n");
+        failures++;
+    }
+    if (![TerminalCommandInspectorController runInterfaceSelfTests]) {
+        fprintf(stderr, "FAIL embedded command details interface\n");
         failures++;
     }
     if (![TerminalPermissionCenter runSelfTests]) {
