@@ -76,7 +76,11 @@ extern NSNotificationName const TerminalLedgerDidChangeNotification;
 
 @end
 
-@interface TerminalCommandInspectorWindowController : NSWindowController
+@interface TerminalCommandInspectorController : NSObject
+
+@property(nonatomic, strong, readonly) NSView *panelView;
+
++ (BOOL)runInterfaceSelfTests;
 
 @property(nonatomic, copy, nullable) void (^pasteHandler)(NSString *command);
 @property(nonatomic, copy, nullable) void (^rerunHandler)(NSString *command);
@@ -86,8 +90,7 @@ extern NSNotificationName const TerminalLedgerDidChangeNotification;
 
 - (instancetype)initWithStore:(TerminalLedgerStore *)store
                          theme:(TerminalTheme *)theme;
-- (void)presentRecord:(NSDictionary *)record
-             relativeToWindow:(nullable NSWindow *)parentWindow;
+- (void)presentRecord:(NSDictionary *)record;
 
 @end
 

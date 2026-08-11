@@ -146,39 +146,69 @@ static NSString *TerminalLedgerCSVCell(id value) {
 @property(nonatomic, copy, readwrite) NSArray<NSDictionary *> *records;
 @end
 
-@interface TerminalCommandInspectorWindowController ()
+@class TerminalCommandInspectorController;
+
+@interface TerminalCommandInspectorPanelView : NSView
+@property(nonatomic, weak) TerminalCommandInspectorController *controller;
+@end
+
+@interface TerminalCommandInspectorController ()
 @property(nonatomic, strong) TerminalLedgerStore *store;
 @property(nonatomic, strong) TerminalTheme *theme;
 @property(nonatomic, copy, nullable) NSDictionary *record;
+@property(nonatomic, strong, readwrite) NSView *panelView;
 @property(nonatomic, strong) NSTextField *titleLabel;
 @property(nonatomic, strong) NSTextField *commandLabel;
 @property(nonatomic, strong) NSTextField *statusLabel;
 @property(nonatomic, strong) NSTextField *metadataLabel;
+@property(nonatomic, strong) NSTextField *outputTitleLabel;
+@property(nonatomic, strong) NSTextField *annotationsTitleLabel;
+@property(nonatomic, strong) NSScrollView *outputScroll;
 @property(nonatomic, strong) NSTextView *outputView;
+@property(nonatomic, strong) NSScrollView *annotationScroll;
 @property(nonatomic, strong) NSTextView *annotationsView;
 @property(nonatomic, strong) NSTextField *annotationField;
-@property(nonatomic, strong) NSButton *bookmarkButton;
+@property(nonatomic, strong) NSButton *commandCopyButton;
+@property(nonatomic, strong) NSButton *askButton;
+@property(nonatomic, strong) NSButton *rerunButton;
+@property(nonatomic, strong) NSButton *moreButton;
+@property(nonatomic, strong) NSButton *addAnnotationButton;
+@property(nonatomic, strong) NSTextField *privacyLabel;
+- (void)layoutPanel;
+- (NSMenu *)moreActionsMenu;
 @end
 
-@implementation TerminalCommandInspectorWindowController
+@implementation TerminalCommandInspectorPanelView
+
+- (BOOL)isFlipped {
+    return YES;
+}
+
+- (void)layout {
+    [super layout];
+    [self.controller layoutPanel];
+}
+
+@end
+
+@implementation TerminalCommandInspectorController
 
 - (instancetype)initWithStore:(TerminalLedgerStore *)store
                          theme:(TerminalTheme *)theme {
-    NSWindow *window = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(0, 0, 940, 620)
-                  styleMask:NSWindowStyleMaskTitled |
-                            NSWindowStyleMaskClosable |
-                            NSWindowStyleMaskMiniaturizable |
-                            NSWindowStyleMaskResizable
-                    backing:NSBackingStoreBuffered
-                      defer:NO];
-    window.title = @"TerminalDB — Command Inspector";
-    window.contentMinSize = NSMakeSize(940, 620);
-    window.backgroundColor = theme.terminalBackground;
-    self = [super initWithWindow:window];
+    self = [super init];
     if (self == nil) return nil;
     _store = store;
     _theme = theme;
+    TerminalCommandInspectorPanelView *panel =
+        [[TerminalCommandInspectorPanelView alloc]
+            initWithFrame:NSMakeRect(0, 0, 620, 720)];
+    panel.controller = self;
+    panel.wantsLayer = YES;
+    panel.layer.backgroundColor = theme.terminalBackground.CGColor;
+    [panel setAccessibilityElement:YES];
+    [panel setAccessibilityRole:NSAccessibilityGroupRole];
+    [panel setAccessibilityLabel:@"Command details"];
+    _panelView = panel;
     [self buildUI];
     [NSNotificationCenter.defaultCenter
         addObserver:self
@@ -186,6 +216,59 @@ static NSString *TerminalLedgerCSVCell(id value) {
                name:TerminalLedgerDidChangeNotification
              object:store];
     return self;
+}
+
++ (BOOL)runInterfaceSelfTests {
+    TerminalCommandInspectorController *controller =
+        [[TerminalCommandInspectorController alloc]
+            initWithStore:[[TerminalLedgerStore alloc] init]
+                   theme:[TerminalTheme preferredTheme]];
+    [controller presentRecord:@{
+        @"id" : @"interface-test",
+        @"command" : @"printf 'ready'",
+        @"directory" : @"/tmp",
+        @"host" : @"Test Mac",
+        @"environment" : @"LOCAL",
+        @"project" : @"test",
+        @"output" : @"ready",
+        @"exit_code" : @0,
+        @"duration" : @0.01,
+        @"timestamp" : @([NSDate date].timeIntervalSince1970),
+        @"bookmarked" : @NO,
+        @"annotations" : @[],
+    }];
+    controller.panelView.frame = NSMakeRect(0, 0, 520, 720);
+    [controller.panelView layoutSubtreeIfNeeded];
+    CGFloat firstGap = NSMinX(controller.rerunButton.frame) -
+        NSMaxX(controller.askButton.frame);
+    CGFloat secondGap = NSMinX(controller.moreButton.frame) -
+        NSMaxX(controller.rerunButton.frame);
+    NSArray<NSString *> *moreTitles =
+        [controller.moreActionsMenu.itemArray valueForKey:@"title"];
+    BOOL successState = [controller.titleLabel.stringValue
+                isEqualToString:@"COMPLETED COMMAND"] &&
+        [controller.askButton.title isEqualToString:@"Ask AI"] &&
+        [controller.rerunButton.title isEqualToString:@"Run again"] &&
+        [controller.moreButton.title isEqualToString:@"More…"] &&
+        firstGap >= 12.0 && secondGap >= 12.0 &&
+        NSHeight(controller.outputScroll.frame) >= 210.0 &&
+        controller.panelView.window == nil &&
+        [moreTitles containsObject:@"Copy Command"] &&
+        [moreTitles containsObject:@"Copy Output"] &&
+        [moreTitles containsObject:@"Paste Command for Review"] &&
+        [moreTitles containsObject:@"Save as Runbook…"] &&
+        [moreTitles containsObject:@"Export Command Block…"];
+    [controller presentRecord:@{
+        @"id" : @"interface-failure-test",
+        @"command" : @"false",
+        @"output" : @"command failed",
+        @"exit_code" : @1,
+        @"timestamp" : @([NSDate date].timeIntervalSince1970),
+        @"annotations" : @[],
+    }];
+    return successState &&
+        [controller.askButton.title isEqualToString:@"Explain & fix"] &&
+        [controller.statusLabel.stringValue isEqualToString:@"× EXIT 1"];
 }
 
 - (void)dealloc {
@@ -217,52 +300,70 @@ static NSString *TerminalLedgerCSVCell(id value) {
 }
 
 - (void)buildUI {
-    NSView *content = self.window.contentView;
-    content.wantsLayer = YES;
-    content.layer.backgroundColor = self.theme.terminalBackground.CGColor;
+    NSView *content = self.panelView;
     NSFont *mono = [NSFont fontWithName:self.theme.fontName size:11.5]
         ?: [NSFont monospacedSystemFontOfSize:11.5
                                        weight:NSFontWeightRegular];
-    self.titleLabel = [self label:@"COMMAND BLOCK"
-                            frame:NSMakeRect(20, 584, 560, 18)
+    self.titleLabel = [self label:@"COMPLETED COMMAND"
+                            frame:NSZeroRect
                              font:[NSFont systemFontOfSize:10
                                                    weight:NSFontWeightSemibold]
                             color:self.theme.ansiColors[6]];
-    self.titleLabel.autoresizingMask =
-        NSViewWidthSizable | NSViewMinYMargin;
     [content addSubview:self.titleLabel];
     self.statusLabel = [self label:@""
-                             frame:NSMakeRect(760, 582, 160, 20)
+                             frame:NSZeroRect
                               font:[NSFont monospacedSystemFontOfSize:10.5
                                                               weight:NSFontWeightSemibold]
                              color:self.theme.ansiColors[2]];
     self.statusLabel.alignment = NSTextAlignmentRight;
-    self.statusLabel.autoresizingMask =
-        NSViewMinXMargin | NSViewMinYMargin;
     [content addSubview:self.statusLabel];
-    self.commandLabel = [self label:@""
-                              frame:NSMakeRect(20, 548, 900, 28)
-                               font:[NSFont fontWithName:self.theme.fontName
-                                                   size:15] ?: mono
-                              color:self.theme.terminalForeground];
-    self.commandLabel.autoresizingMask =
-        NSViewWidthSizable | NSViewMinYMargin;
+    self.commandLabel = [NSTextField wrappingLabelWithString:@""];
+    self.commandLabel.font = [NSFont fontWithName:self.theme.fontName size:14]
+        ?: [NSFont monospacedSystemFontOfSize:14
+                                       weight:NSFontWeightMedium];
+    self.commandLabel.textColor = self.theme.terminalForeground;
+    self.commandLabel.maximumNumberOfLines = 2;
+    self.commandLabel.selectable = YES;
     [content addSubview:self.commandLabel];
-    self.metadataLabel = [self label:@""
-                               frame:NSMakeRect(20, 516, 900, 22)
-                                font:mono
-                               color:self.theme.statusBarActiveForeground];
-    self.metadataLabel.autoresizingMask =
-        NSViewWidthSizable | NSViewMinYMargin;
+    self.commandCopyButton = [self button:@"Copy"
+                             frame:NSZeroRect
+                            action:@selector(copyCommand:)];
+    self.commandCopyButton.controlSize = NSControlSizeSmall;
+    [content addSubview:self.commandCopyButton];
+    self.metadataLabel = [NSTextField wrappingLabelWithString:@""];
+    self.metadataLabel.font = [NSFont fontWithName:self.theme.fontName size:10.5]
+        ?: [NSFont monospacedSystemFontOfSize:10.5
+                                       weight:NSFontWeightRegular];
+    self.metadataLabel.textColor = self.theme.statusBarActiveForeground;
+    self.metadataLabel.maximumNumberOfLines = 2;
     [content addSubview:self.metadataLabel];
 
-    NSScrollView *outputScroll =
-        [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 166, 610, 336)];
-    outputScroll.hasVerticalScroller = YES;
-    outputScroll.borderType = NSBezelBorder;
-    outputScroll.autoresizingMask =
-        NSViewWidthSizable | NSViewHeightSizable;
-    self.outputView = [[NSTextView alloc] initWithFrame:outputScroll.bounds];
+    self.askButton = [self button:@"Ask AI"
+                            frame:NSZeroRect
+                           action:@selector(askAI:)];
+    self.askButton.contentTintColor = self.theme.ansiColors[6];
+    [content addSubview:self.askButton];
+    self.rerunButton = [self button:@"Run again"
+                              frame:NSZeroRect
+                             action:@selector(rerunCommand:)];
+    [content addSubview:self.rerunButton];
+    self.moreButton = [self button:@"More…"
+                             frame:NSZeroRect
+                            action:@selector(showMoreActions:)];
+    [content addSubview:self.moreButton];
+
+    self.outputTitleLabel = [self label:@"OUTPUT"
+                                    frame:NSZeroRect
+                                     font:[NSFont systemFontOfSize:10
+                                                           weight:NSFontWeightSemibold]
+                                    color:self.theme.ansiColors[3]];
+    [content addSubview:self.outputTitleLabel];
+    self.outputScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+    self.outputScroll.hasVerticalScroller = YES;
+    self.outputScroll.autohidesScrollers = YES;
+    self.outputScroll.borderType = NSBezelBorder;
+    self.outputView = [[NSTextView alloc]
+        initWithFrame:self.outputScroll.bounds];
     self.outputView.editable = NO;
     self.outputView.selectable = YES;
     self.outputView.drawsBackground = YES;
@@ -271,24 +372,33 @@ static NSString *TerminalLedgerCSVCell(id value) {
     self.outputView.textColor = self.theme.terminalForeground;
     self.outputView.font = mono;
     self.outputView.textContainerInset = NSMakeSize(12, 12);
-    outputScroll.documentView = self.outputView;
-    [content addSubview:outputScroll];
+    self.outputView.verticallyResizable = YES;
+    self.outputView.horizontallyResizable = NO;
+    self.outputView.textContainer.widthTracksTextView = YES;
+    self.outputView.autoresizingMask = NSViewWidthSizable;
+    self.outputScroll.documentView = self.outputView;
+    [content addSubview:self.outputScroll];
 
-    NSTextField *annotationsTitle = [self label:@"ANNOTATIONS"
-        frame:NSMakeRect(650, 482, 270, 18)
+    self.annotationsTitleLabel = [self label:@"PRIVATE NOTES"
+        frame:NSZeroRect
          font:[NSFont systemFontOfSize:10 weight:NSFontWeightSemibold]
         color:self.theme.ansiColors[3]];
-    annotationsTitle.autoresizingMask =
-        NSViewMinXMargin | NSViewMinYMargin;
-    [content addSubview:annotationsTitle];
-    NSScrollView *annotationScroll =
-        [[NSScrollView alloc] initWithFrame:NSMakeRect(650, 252, 270, 220)];
-    annotationScroll.hasVerticalScroller = YES;
-    annotationScroll.borderType = NSBezelBorder;
-    annotationScroll.autoresizingMask =
-        NSViewMinXMargin | NSViewHeightSizable;
+    [content addSubview:self.annotationsTitleLabel];
+    self.annotationField = [[NSTextField alloc] initWithFrame:NSZeroRect];
+    self.annotationField.placeholderString = @"Add a note to this command";
+    self.annotationField.target = self;
+    self.annotationField.action = @selector(addAnnotation:);
+    [content addSubview:self.annotationField];
+    self.addAnnotationButton = [self button:@"Add note"
+                                      frame:NSZeroRect
+                                     action:@selector(addAnnotation:)];
+    [content addSubview:self.addAnnotationButton];
+    self.annotationScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+    self.annotationScroll.hasVerticalScroller = YES;
+    self.annotationScroll.autohidesScrollers = YES;
+    self.annotationScroll.borderType = NSBezelBorder;
     self.annotationsView =
-        [[NSTextView alloc] initWithFrame:annotationScroll.bounds];
+        [[NSTextView alloc] initWithFrame:self.annotationScroll.bounds];
     self.annotationsView.editable = NO;
     self.annotationsView.selectable = YES;
     self.annotationsView.drawsBackground = YES;
@@ -298,73 +408,64 @@ static NSString *TerminalLedgerCSVCell(id value) {
     self.annotationsView.font =
         [NSFont systemFontOfSize:11 weight:NSFontWeightRegular];
     self.annotationsView.textContainerInset = NSMakeSize(10, 10);
-    annotationScroll.documentView = self.annotationsView;
-    [content addSubview:annotationScroll];
-    self.annotationField =
-        [[NSTextField alloc] initWithFrame:NSMakeRect(650, 212, 192, 28)];
-    self.annotationField.placeholderString = @"Add a private annotation";
-    self.annotationField.target = self;
-    self.annotationField.action = @selector(addAnnotation:);
-    self.annotationField.autoresizingMask = NSViewMinXMargin;
-    [content addSubview:self.annotationField];
-    NSButton *addAnnotation =
-        [self button:@"Add"
-               frame:NSMakeRect(848, 210, 72, 32)
-              action:@selector(addAnnotation:)];
-    addAnnotation.autoresizingMask = NSViewMinXMargin;
-    [content addSubview:addAnnotation];
+    self.annotationsView.verticallyResizable = YES;
+    self.annotationsView.horizontallyResizable = NO;
+    self.annotationsView.textContainer.widthTracksTextView = YES;
+    self.annotationsView.autoresizingMask = NSViewWidthSizable;
+    self.annotationScroll.documentView = self.annotationsView;
+    [content addSubview:self.annotationScroll];
 
-    NSBox *separator = [[NSBox alloc] initWithFrame:NSMakeRect(20, 146, 900, 1)];
-    separator.boxType = NSBoxSeparator;
-    separator.autoresizingMask = NSViewWidthSizable;
-    [content addSubview:separator];
-
-    NSArray<NSArray *> *actions = @[
-        @[@"Copy", NSStringFromSelector(@selector(copyCommand:)), @20],
-        @[@"Paste", NSStringFromSelector(@selector(pasteCommand:)), @100],
-        @[@"↻ Rerun", NSStringFromSelector(@selector(rerunCommand:)), @180],
-        @[@"✦ Ask AI", NSStringFromSelector(@selector(askAI:)), @278],
-        @[@"▤ Runbook", NSStringFromSelector(@selector(saveRunbook:)), @390],
-        @[@"Export…", NSStringFromSelector(@selector(exportBlock:)), @506],
-    ];
-    for (NSArray *definition in actions) {
-        NSButton *button = [self button:definition[0]
-                                  frame:NSMakeRect([definition[2] doubleValue],
-                                                   92, 96, 32)
-                                 action:NSSelectorFromString(definition[1])];
-        [content addSubview:button];
-    }
-    self.bookmarkButton =
-        [self button:@"☆ Bookmark"
-               frame:NSMakeRect(806, 92, 114, 32)
-              action:@selector(toggleBookmark:)];
-    self.bookmarkButton.autoresizingMask = NSViewMinXMargin;
-    [content addSubview:self.bookmarkButton];
-    NSTextField *privacy = [self label:
-        @"LOCAL BLOCK · output may contain sensitive data · exports stay local"
-        frame:NSMakeRect(20, 44, 900, 20)
+    self.privacyLabel = [self label:
+        @"LOCAL ONLY · output and notes stay on this Mac"
+        frame:NSZeroRect
          font:[NSFont fontWithName:self.theme.fontName size:9.5] ?: mono
         color:self.theme.statusBarForeground];
-    privacy.alignment = NSTextAlignmentCenter;
-    privacy.autoresizingMask = NSViewWidthSizable;
-    [content addSubview:privacy];
+    self.privacyLabel.alignment = NSTextAlignmentCenter;
+    [content addSubview:self.privacyLabel];
+    [self.panelView setNeedsLayout:YES];
 }
 
-- (void)presentRecord:(NSDictionary *)record
-     relativeToWindow:(NSWindow *)parentWindow {
+- (void)layoutPanel {
+    CGFloat width = NSWidth(self.panelView.bounds);
+    CGFloat height = NSHeight(self.panelView.bounds);
+    CGFloat inset = 20;
+    CGFloat contentWidth = MAX(1, width - inset * 2);
+    self.titleLabel.frame = NSMakeRect(inset, 18,
+        MAX(1, contentWidth - 130), 18);
+    self.statusLabel.frame = NSMakeRect(width - inset - 122, 16, 122, 20);
+    self.commandCopyButton.frame =
+        NSMakeRect(width - inset - 70, 50, 70, 30);
+    self.commandLabel.frame = NSMakeRect(inset, 48,
+        MAX(1, contentWidth - 82), 42);
+    self.metadataLabel.frame = NSMakeRect(inset, 96, contentWidth, 34);
+    self.askButton.frame = NSMakeRect(inset, 142, 142, 36);
+    self.rerunButton.frame = NSMakeRect(inset + 154, 142, 122, 36);
+    self.moreButton.frame = NSMakeRect(inset + 288, 142, 100, 36);
+    self.outputTitleLabel.frame = NSMakeRect(inset, 194, contentWidth, 18);
+    self.outputScroll.frame = NSMakeRect(inset, 218, contentWidth,
+        MAX(210, height - 468));
+    NSSize outputSize = self.outputScroll.contentSize;
+    self.outputView.frame = NSMakeRect(0, 0, outputSize.width,
+                                      MAX(1, outputSize.height));
+    self.annotationsTitleLabel.frame =
+        NSMakeRect(inset, height - 226, contentWidth, 18);
+    self.annotationField.frame = NSMakeRect(inset, height - 200,
+        MAX(1, contentWidth - 96), 32);
+    self.addAnnotationButton.frame =
+        NSMakeRect(width - inset - 84, height - 202, 84, 36);
+    self.annotationScroll.frame =
+        NSMakeRect(inset, height - 156, contentWidth, 104);
+    NSSize annotationSize = self.annotationScroll.contentSize;
+    self.annotationsView.frame = NSMakeRect(0, 0, annotationSize.width,
+                                           MAX(1, annotationSize.height));
+    self.privacyLabel.frame =
+        NSMakeRect(inset, height - 34, contentWidth, 18);
+}
+
+- (void)presentRecord:(NSDictionary *)record {
     self.record = record;
     [self refresh];
-    if (parentWindow != nil) {
-        NSRect parent = parentWindow.frame;
-        NSRect frame = self.window.frame;
-        frame.origin.x = NSMidX(parent) - frame.size.width / 2.0;
-        frame.origin.y = NSMidY(parent) - frame.size.height / 2.0;
-        [self.window setFrame:frame display:NO];
-    } else {
-        [self.window center];
-    }
-    [self showWindow:nil];
-    [self.window makeKeyAndOrderFront:nil];
+    [self.panelView setNeedsLayout:YES];
 }
 
 - (void)storeChanged:(NSNotification *)notification {
@@ -381,13 +482,15 @@ static NSString *TerminalLedgerCSVCell(id value) {
     NSDictionary *record = self.record;
     if (record == nil) return;
     NSString *identifier = record[@"id"] ?: @"";
-    self.titleLabel.stringValue = [NSString stringWithFormat:
-        @"COMMAND BLOCK · %@", identifier.uppercaseString];
+    self.titleLabel.stringValue = @"COMPLETED COMMAND";
+    self.titleLabel.toolTip = identifier.length > 0
+        ? [NSString stringWithFormat:@"Command block %@", identifier]
+        : nil;
     self.commandLabel.stringValue =
         [NSString stringWithFormat:@"❯ %@", record[@"command"] ?: @""];
     NSInteger exitCode = [record[@"exit_code"] integerValue];
     self.statusLabel.stringValue = exitCode == 0
-        ? @"✓ EXIT 0"
+        ? @"✓ SUCCEEDED"
         : [NSString stringWithFormat:@"× EXIT %ld", (long)exitCode];
     self.statusLabel.textColor =
         exitCode == 0 ? self.theme.ansiColors[2] : self.theme.ansiColors[1];
@@ -424,9 +527,9 @@ static NSString *TerminalLedgerCSVCell(id value) {
     }
     self.annotationsView.string = lines.count > 0
         ? [lines componentsJoinedByString:@"\n\n"]
-        : @"No annotations yet.";
-    self.bookmarkButton.title =
-        [record[@"bookmarked"] boolValue] ? @"★ Bookmarked" : @"☆ Bookmark";
+        : @"No notes yet.";
+    self.askButton.title = exitCode == 0 ? @"Ask AI" : @"Explain & fix";
+    [self.panelView setNeedsLayout:YES];
 }
 
 - (NSString *)command {
@@ -440,6 +543,49 @@ static NSString *TerminalLedgerCSVCell(id value) {
     [NSPasteboard.generalPasteboard clearContents];
     [NSPasteboard.generalPasteboard setString:self.command
                                        forType:NSPasteboardTypeString];
+}
+
+- (void)copyOutput:(id)sender {
+    (void)sender;
+    NSString *output = [self.record[@"output"] isKindOfClass:NSString.class]
+        ? self.record[@"output"] : @"";
+    if (output.length == 0) return;
+    [NSPasteboard.generalPasteboard clearContents];
+    [NSPasteboard.generalPasteboard setString:output
+                                       forType:NSPasteboardTypeString];
+}
+
+- (NSMenuItem *)menuItem:(NSString *)title action:(SEL)action {
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title
+                                                  action:action
+                                           keyEquivalent:@""];
+    item.target = self;
+    return item;
+}
+
+- (NSMenu *)moreActionsMenu {
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Command actions"];
+    [menu addItem:[self menuItem:@"Copy Command" action:@selector(copyCommand:)]];
+    [menu addItem:[self menuItem:@"Copy Output" action:@selector(copyOutput:)]];
+    [menu addItem:[self menuItem:@"Paste Command for Review"
+                               action:@selector(pasteCommand:)]];
+    [menu addItem:NSMenuItem.separatorItem];
+    NSString *bookmarkTitle = [self.record[@"bookmarked"] boolValue]
+        ? @"Remove Bookmark" : @"Bookmark Command";
+    [menu addItem:[self menuItem:bookmarkTitle
+                               action:@selector(toggleBookmark:)]];
+    [menu addItem:[self menuItem:@"Save as Runbook…"
+                               action:@selector(saveRunbook:)]];
+    [menu addItem:[self menuItem:@"Export Command Block…"
+                               action:@selector(exportBlock:)]];
+    return menu;
+}
+
+- (void)showMoreActions:(NSButton *)sender {
+    NSMenu *menu = [self moreActionsMenu];
+    [menu popUpMenuPositioningItem:nil
+                        atLocation:NSMakePoint(0, NSHeight(sender.bounds) + 4)
+                            inView:sender];
 }
 
 - (void)pasteCommand:(id)sender {
@@ -492,7 +638,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
     NSSavePanel *panel = [NSSavePanel savePanel];
     panel.title = @"Export Command Block";
     panel.nameFieldStringValue = @"terminaldb-command-block.json";
-    [panel beginSheetModalForWindow:self.window
+    [panel beginSheetModalForWindow:self.panelView.window
                  completionHandler:^(NSModalResponse response) {
         if (response != NSModalResponseOK || panel.URL == nil) return;
         NSError *error = nil;
@@ -1100,15 +1246,13 @@ static NSString *TerminalLedgerCSVCell(id value) {
     NSSet<NSButton *> *visibleButtons = nil;
     if (width < 620) {
         visibleButtons = [NSSet setWithArray:@[
-            self.detailsButton, self.rerunButton, self.askButton
-        ]];
-    } else if (width < 820) {
-        visibleButtons = [NSSet setWithArray:@[
-            self.detailsButton, self.runbookButton, self.rerunButton,
-            self.askButton, self.bookmarkButton
+            self.detailsButton, self.askButton
         ]];
     } else {
-        visibleButtons = [NSSet setWithArray:buttons];
+        visibleButtons = [NSSet setWithArray:@[
+            self.detailsButton, self.rerunButton,
+            self.askButton, self.historyButton
+        ]];
     }
     for (NSButton *button in buttons) {
         button.hidden = ![visibleButtons containsObject:button];
@@ -1120,7 +1264,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
         right -= buttonWidth;
         button.frame = NSMakeRect(right, NSHeight(self.bounds) - 38,
                                   buttonWidth, 24);
-        right -= 5;
+        right -= 8;
     }
     self.stateLabel.frame = NSMakeRect(14, 13, 78, 14);
     self.commandLabel.frame =
