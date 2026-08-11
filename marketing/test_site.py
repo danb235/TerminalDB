@@ -97,8 +97,10 @@ def main() -> None:
             fail(f"index.html contains forbidden fragment: {fragment}")
 
     required_copy = [
-        "what worked.",
-        "Every Claude account, ready when you need it.",
+        "Your Claude Code accounts and terminals.",
+        "Leave the Mac. Keep the terminal.",
+        "Switch Claude subscriptions without restarting your work.",
+        "See the limit before it slows you down.",
         "No account limit",
         "Claude subscription",
         "Anthropic API key",
@@ -114,6 +116,16 @@ def main() -> None:
     for fragment in required_copy:
         if fragment not in html:
             fail(f"index.html is missing required content: {fragment}")
+
+    priority_sections = [
+        'id="remote-access"',
+        'id="claude-accounts"',
+        'id="usage"',
+        'id="product"',
+    ]
+    positions = [html.find(fragment) for fragment in priority_sections]
+    if any(position < 0 for position in positions) or positions != sorted(positions):
+        fail("primary product sections are missing or out of priority order")
 
     if "—" in "".join(parser.visible_text) or "–" in "".join(parser.visible_text):
         fail("visible website copy contains em dash or en dash punctuation")
