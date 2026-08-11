@@ -66,6 +66,7 @@ def main() -> None:
 
     required_files = [
         ROOT / "support.js",
+        ROOT / "account-status.js",
         ROOT / "vendor/react.production.min.js",
         ROOT / "vendor/react-dom.production.min.js",
         ROOT / "uploads/terminaldb-native-current.png",
@@ -104,6 +105,11 @@ def main() -> None:
         "https://github.com/danb235/TerminalDB",
         "https://github.com/danb235/TerminalDB/releases/download/v0.1.0/TerminalDB-macOS.zip",
         "TerminalDB-macOS.zip",
+        "https://app.terminaldb.app/?account=signin&amp;source=marketing",
+        "https://app.terminaldb.app/?account=create&amp;source=marketing",
+        "https://app.terminaldb.app/auth-status.html",
+        "Signed out",
+        "Open app",
     ]
     for fragment in required_copy:
         if fragment not in html:

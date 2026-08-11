@@ -630,6 +630,8 @@ function AccountAccess({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const initialAccountAction = new URLSearchParams(location.search).get("account");
+  const marketingAccountCreation = initialAccountAction === "create" &&
+    new URLSearchParams(location.search).get("source") === "marketing";
   const bootstrapIntent = initialAccountAction === "connect" ||
     new URLSearchParams(location.search).get("intent") === "connect"
     ? "connect"
@@ -912,6 +914,38 @@ function AccountAccess({
             });
           }}
         />
+      );
+    }
+    if (marketingAccountCreation) {
+      return (
+        <section className="account-access account-marketing-signup">
+          <span>SECURE MAC APPROVAL REQUIRED</span>
+          <h2>Create your account from TerminalDB</h2>
+          <p>TerminalDB accounts begin from a Mac so a website cannot create an account and claim access to someone else’s terminals.</p>
+          <ol>
+            <li>Open TerminalDB on your Mac.</li>
+            <li>Choose <strong>TerminalDB → Remote Control</strong>.</li>
+            <li>Select <strong>Create Account</strong>. Your browser will return here with that Mac’s one-time approval.</li>
+          </ol>
+          <a
+            className="account-download-link"
+            href="https://github.com/danb235/TerminalDB/releases/download/v0.1.0/TerminalDB-macOS.zip"
+          >
+            Download TerminalDB for macOS
+          </a>
+          <button
+            disabled={loading}
+            onClick={() => void beginAccountSignIn(
+              configuration,
+              undefined,
+              { returnTo: "/" },
+            )}
+          >
+            Already have an account? Log in
+          </button>
+          <small>Passwords and authenticator codes go directly to AWS Cognito. TerminalDB receives only your verified account identity.</small>
+          {error ? <small role="alert">{error}</small> : null}
+        </section>
       );
     }
     return (

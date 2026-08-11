@@ -346,6 +346,7 @@ export class TerminalDBRemoteStack extends Stack {
       ],
       true,
     );
+    const webOrigin = cloudfrontOrigins.S3BucketOrigin.withOriginAccessControl(webBucket);
     const responseHeaders = new cloudfront.ResponseHeadersPolicy(this, "SecurityHeaders", {
       responseHeadersPolicyName: `TerminalDBRemote-${props.stage}-Security`,
       securityHeadersBehavior: {
@@ -375,6 +376,41 @@ export class TerminalDBRemoteStack extends Stack {
         ],
       },
     });
+    const accountStatusHeaders = new cloudfront.ResponseHeadersPolicy(
+      this,
+      "AccountStatusSecurityHeaders",
+      {
+        responseHeadersPolicyName: `TerminalDBRemote-${props.stage}-AccountStatus`,
+        securityHeadersBehavior: {
+          contentSecurityPolicy: {
+            override: true,
+            contentSecurityPolicy:
+              `default-src 'self'; connect-src 'self' ${cognitoDomainUrl} https://cognito-idp.${this.region}.${this.urlSuffix}; font-src 'none'; img-src 'none'; style-src 'none'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors https://terminaldb.app https://www.terminaldb.app; form-action 'none'`,
+          },
+          contentTypeOptions: { override: true },
+          referrerPolicy: {
+            referrerPolicy: cloudfront.HeadersReferrerPolicy.NO_REFERRER,
+            override: true,
+          },
+          strictTransportSecurity: {
+            accessControlMaxAge: Duration.days(730),
+            includeSubdomains: true,
+            preload: true,
+            override: true,
+          },
+          xssProtection: { protection: true, modeBlock: true, override: true },
+        },
+        customHeadersBehavior: {
+          customHeaders: [
+            {
+              header: "Permissions-Policy",
+              value: "camera=(), microphone=(), geolocation=(), payment=()",
+              override: true,
+            },
+          ],
+        },
+      },
+    );
     const socketRewrite = new cloudfront.Function(this, "SocketRewrite", {
       code: cloudfront.FunctionCode.fromInline(
         `function handler(event){var r=event.request;r.uri=r.uri.replace(/^\\/socket(?:\\/.*)?$/,'/${webSocketStage.stageName}');return r;}`,
@@ -401,7 +437,7 @@ export class TerminalDBRemoteStack extends Stack {
       httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
       defaultBehavior: {
-        origin: cloudfrontOrigins.S3BucketOrigin.withOriginAccessControl(webBucket),
+        origin: webOrigin,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         responseHeadersPolicy: responseHeaders,
         compress: true,
@@ -413,6 +449,12 @@ export class TerminalDBRemoteStack extends Stack {
         ],
       },
       additionalBehaviors: {
+        "/auth-status.html": {
+          origin: webOrigin,
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          responseHeadersPolicy: accountStatusHeaders,
+          compress: true,
+        },
         "/api/*": {
           origin: new cloudfrontOrigins.HttpOrigin(apiDomain, {
             protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,

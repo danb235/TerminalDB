@@ -1368,6 +1368,38 @@ p {
   font-weight: 700;
 }
 
+.account-marketing-signup ol {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding-left: 22px;
+  color: var(--tdb-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.account-marketing-signup li::marker {
+  color: var(--tdb-cyan);
+  font-family: var(--tdb-mono);
+}
+
+.account-download-link {
+  display: grid;
+  min-height: 42px;
+  place-items: center;
+  border: 1px solid rgb(65 214 202 / 45%);
+  border-radius: 5px;
+  background: rgb(65 214 202 / 12%);
+  color: var(--tdb-cyan);
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.account-download-link:hover {
+  background: rgb(65 214 202 / 20%);
+}
+
 .account-signup form,
 .account-security-action form {
   display: grid;
