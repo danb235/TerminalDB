@@ -474,6 +474,10 @@ export async function signOutAccount(
       // the managed-login cookie if revocation was interrupted.
     }
   }
+  if (tokens?.refreshMode === "cognito") {
+    navigate(new URL("/", location.origin));
+    return;
+  }
   const url = new URL(`${trimSlash(configuration.domain)}/logout`);
   url.searchParams.set("client_id", configuration.clientId);
   url.searchParams.set("logout_uri", location.origin);

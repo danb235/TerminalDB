@@ -157,11 +157,22 @@ describe("TerminalDB Remote infrastructure", () => {
     expect(accountDeletionPolicy).not.toContain('"Resource":"*"');
     expect(accountDeletionPolicy).not.toContain("cognito-idp:AdminSetUserPassword");
     template.hasResourceProperties("AWS::Cognito::UserPool", {
-      LambdaConfig: { PreSignUp: Match.anyValue() },
+      LambdaConfig: {
+        PreSignUp: Match.anyValue(),
+        PostConfirmation: Match.anyValue(),
+      },
     });
     template.hasResourceProperties("AWS::Lambda::Function", {
       FunctionName: "terminaldb-remote-dev-pre-signup",
+      Environment: {
+        Variables: Match.objectLike({ TABLE_NAME: Match.anyValue() }),
+      },
     });
+    const preSignupPolicy = Object.entries(template.findResources("AWS::IAM::Policy"))
+      .find(([logicalId]) => logicalId.includes("PreSignupFunction"));
+    expect(preSignupPolicy).toBeDefined();
+    expect(JSON.stringify(preSignupPolicy?.[1])).toContain("dynamodb:GetItem");
+    expect(JSON.stringify(preSignupPolicy?.[1])).toContain("dynamodb:UpdateItem");
     expect(userPools.every((pool) => !JSON.stringify(pool).includes("AutoVerifiedAttributes"))).toBe(true);
     expect(userPools.every((pool) => !JSON.stringify(pool).includes("EmailConfiguration"))).toBe(true);
   });

@@ -756,6 +756,7 @@ function AccountAccess({
       setError(cancelError instanceof Error
         ? cancelError.message
         : "Account setup could not be canceled.");
+    } finally {
       setAccountActionBusy(false);
     }
   };
