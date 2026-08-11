@@ -669,6 +669,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
         self.productStore = [TerminalProductStore ephemeralStoreForTesting];
         NSString *fixtureRoot = [NSTemporaryDirectory()
             stringByAppendingPathComponent:@"terminaldb-visual-qa"];
+        [NSFileManager.defaultManager removeItemAtPath:fixtureRoot error:nil];
         NSString *profilesRoot =
             [fixtureRoot stringByAppendingPathComponent:@"profiles"];
         NSArray<NSDictionary *> *fixtureAccounts = @[
@@ -714,19 +715,25 @@ static BOOL TerminalDBWriteAll(int descriptor,
                               forKey:@"profileDirectory"];
 
             NSTimeInterval now = [NSDate date].timeIntervalSince1970;
+            BOOL atRisk = [account[@"id"] isEqualToString:@"demo-team"];
+            NSNumber *fiveHourReset = @(now + 2.0 * 60.0 * 60.0);
+            NSNumber *sevenDayReset =
+                @(now + 5.0 * 24.0 * 60.0 * 60.0);
+            NSNumber *fableReset =
+                @(now + 4.0 * 24.0 * 60.0 * 60.0);
             NSDictionary *fixtureUsage = @{
                 @"rate_limits" : @{
                     @"five_hour" : @{
-                        @"used_percentage" : @28,
-                        @"resets_at" : @(now + 2.0 * 60.0 * 60.0),
+                        @"used_percentage" : atRisk ? @42 : @28,
+                        @"resets_at" : fiveHourReset,
                     },
                     @"seven_day" : @{
-                        @"used_percentage" : @46,
-                        @"resets_at" : @(now + 5.0 * 24.0 * 60.0 * 60.0),
+                        @"used_percentage" : atRisk ? @21 : @46,
+                        @"resets_at" : sevenDayReset,
                     },
                     @"fable_five" : @{
-                        @"used_percentage" : @12,
-                        @"resets_at" : @(now + 4.0 * 24.0 * 60.0 * 60.0),
+                        @"used_percentage" : atRisk ? @68 : @12,
+                        @"resets_at" : fableReset,
                     },
                 },
                 @"terminaldb" : @{
@@ -738,6 +745,48 @@ static BOOL TerminalDBWriteAll(int descriptor,
                 dataWithJSONObject:fixtureUsage options:0 error:nil];
             [usageData writeToFile:fixtureProfile.statusCachePath
                         atomically:YES];
+            if (atRisk) {
+                NSArray<NSNumber *> *fiveHourValues = @[@35, @37, @40, @42];
+                NSArray<NSNumber *> *sevenDayValues = @[@18, @19, @20, @21];
+                NSArray<NSNumber *> *fableValues = @[@45, @53, @61, @68];
+                NSMutableArray *samples = [NSMutableArray array];
+                for (NSUInteger sampleIndex = 0;
+                     sampleIndex < fableValues.count;
+                     sampleIndex++) {
+                    [samples addObject:@{
+                        @"recorded_at" : @(now -
+                            (fableValues.count - 1 - sampleIndex) *
+                                10.0 * 60.0),
+                        @"rate_limits" : @{
+                            @"five_hour" : @{
+                                @"used_percentage" :
+                                    fiveHourValues[sampleIndex],
+                                @"resets_at" : fiveHourReset,
+                            },
+                            @"seven_day" : @{
+                                @"used_percentage" :
+                                    sevenDayValues[sampleIndex],
+                                @"resets_at" : sevenDayReset,
+                            },
+                            @"fable_five" : @{
+                                @"used_percentage" : fableValues[sampleIndex],
+                                @"resets_at" : fableReset,
+                            },
+                        },
+                    }];
+                }
+                NSData *historyData = [NSJSONSerialization
+                    dataWithJSONObject:@{
+                        @"version" : @1,
+                        @"samples" : samples,
+                    } options:0 error:nil];
+                [historyData writeToFile:fixtureProfile.usageHistoryPath
+                              atomically:YES];
+                [NSFileManager.defaultManager
+                    setAttributes:@{NSFilePosixPermissions : @0600}
+                    ofItemAtPath:fixtureProfile.usageHistoryPath
+                    error:nil];
+            }
             [fixtureProfiles addObject:fixtureProfile];
         }
 
@@ -8697,7 +8746,8 @@ static BOOL TerminalDBWriteAll(int descriptor,
     }
 
     if (![ClaudeStatusBar runUsageNormalizationSelfTests]) {
-        fprintf(stderr, "FAIL Fable 5 usage normalization\n");
+        fprintf(stderr,
+                "FAIL usage normalization and burn-rate forecasting\n");
         failures++;
     }
     if (![ClaudeAPIConfiguration runConfigurationSelfTests]) {

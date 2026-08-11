@@ -7,6 +7,11 @@
 
 static NSTimeInterval const ClaudeUsageRefreshInterval = 5.0 * 60.0;
 static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
+static NSTimeInterval const ClaudeUsageForecastMinimumSpan = 15.0 * 60.0;
+static NSTimeInterval const ClaudeUsageForecastLookback = 60.0 * 60.0;
+static NSTimeInterval const ClaudeUsageHistoryRetention =
+    8.0 * 24.0 * 60.0 * 60.0;
+static NSUInteger const ClaudeUsageForecastMinimumSamples = 3;
 
 static double ClaudeUsageClampedPercent(double percent) {
     if (!isfinite(percent)) return 0;
@@ -31,16 +36,29 @@ static double ClaudeUsageClampedPercent(double percent) {
 @property(nonatomic) BOOL usageRefreshInFlight;
 @property(nonatomic, readwrite) BOOL accountIsLoggedIn;
 @property(nonatomic, readwrite) BOOL accountStatusKnown;
+@property(nonatomic, copy) NSArray<NSDictionary *> *currentUsageForecasts;
 @property(nonatomic, strong, readwrite, nullable) NSView *usagePanelView;
 @property(nonatomic, strong, nullable) NSTextField *usageWindowAccountLabel;
 @property(nonatomic, strong, nullable) NSTextField *usageWindowUsageLabel;
-@property(nonatomic, strong, nullable) NSTextField *usageWindowAccountsLabel;
 @property(nonatomic, strong, nullable) NSPopUpButton *usageWindowProfilePopup;
 @property(nonatomic, strong, nullable) NSButton *usageWindowSignInButton;
 @property(nonatomic, strong, nullable) NSButton *usageWindowRemoveButton;
 + (nullable NSNumber *)nextResetTimestamp:(nullable NSNumber *)timestamp
                                    period:(NSTimeInterval)period
                                    rolled:(BOOL *)rolled;
++ (nullable NSDictionary *)usageForecastForSamples:(NSArray *)samples
+                                         windowKey:(NSString *)windowKey
+                                     currentWindow:(NSDictionary *)currentWindow
+                                               now:(NSTimeInterval)now;
++ (NSString *)compactDurationFromSeconds:(NSTimeInterval)seconds;
+- (void)recordUsageSampleForStatus:(NSDictionary *)status
+                  sourceModifiedAt:(nullable NSDate *)sourceModifiedAt
+                           profile:(ClaudeProfile *)profile;
+- (NSArray<NSDictionary *> *)usageHistoryForProfile:(ClaudeProfile *)profile;
+- (NSArray<NSDictionary *> *)forecastsForStatus:(NSDictionary *)status
+                                        history:(NSArray *)history
+                                            now:(NSTimeInterval)now;
+- (NSAttributedString *)usagePanelForecastSummary;
 @end
 
 @implementation ClaudeStatusBar
@@ -57,6 +75,7 @@ static double ClaudeUsageClampedPercent(double percent) {
     _profileManager = profileManager;
     _selectedProfile = selectedProfile;
     _theme = theme;
+    _currentUsageForecasts = @[];
     self.wantsLayer = YES;
     self.layer.backgroundColor = theme.statusBarBackground.CGColor;
 
@@ -232,37 +251,38 @@ static double ClaudeUsageClampedPercent(double percent) {
 - (NSView *)prepareUsagePanel {
     if (self.usagePanelView == nil) {
         NSView *content = [[NSView alloc]
-            initWithFrame:NSMakeRect(0, 0, 920, 570)];
+            initWithFrame:NSMakeRect(0, 0, 920, 460)];
         content.wantsLayer = YES;
         content.layer.backgroundColor =
             self.theme.terminalBackground.CGColor;
 
         NSTextField *eyebrow = [self
             usageWindowLabel:@"CLAUDE CODE · ACTIVE FOR THIS TAB"
-                         size:10
+                        size:10
                        weight:NSFontWeightSemibold
                         color:self.theme.ansiColors[6]
-                        frame:NSMakeRect(28, 530, 860, 18)];
+                        frame:NSMakeRect(28, 420, 860, 18)];
         [content addSubview:eyebrow];
         NSTextField *title = [self
             usageWindowLabel:@"Account & usage"
-                         size:23
+                        size:23
                        weight:NSFontWeightSemibold
                         color:self.theme.terminalForeground
-                        frame:NSMakeRect(26, 492, 860, 32)];
+                        frame:NSMakeRect(26, 382, 860, 32)];
         [content addSubview:title];
         NSTextField *subtitle = [self
             usageWindowLabel:
-                @"Subscription usage is per Claude Code account. AI chat can "
-                 "use this subscription or a separately managed API key."
+                @"TerminalDB estimates pace from local usage snapshots. "
+                 "Warnings appear only when an allowance may run out before "
+                 "its reset."
                          size:12
                        weight:NSFontWeightRegular
                         color:self.theme.statusBarActiveForeground
-                        frame:NSMakeRect(28, 458, 860, 34)];
+                        frame:NSMakeRect(28, 348, 860, 34)];
         [content addSubview:subtitle];
 
         NSBox *accountBox =
-            [[NSBox alloc] initWithFrame:NSMakeRect(28, 342, 864, 104)];
+            [[NSBox alloc] initWithFrame:NSMakeRect(28, 246, 864, 90)];
         accountBox.boxType = NSBoxCustom;
         accountBox.borderColor = self.theme.statusBarBorder;
         accountBox.fillColor = self.theme.statusBarBackground;
@@ -274,11 +294,11 @@ static double ClaudeUsageClampedPercent(double percent) {
                          size:14
                        weight:NSFontWeightSemibold
                         color:self.theme.terminalForeground
-                        frame:NSMakeRect(18, 18, 550, 68)];
+                        frame:NSMakeRect(18, 11, 550, 60)];
         [accountBox.contentView
             addSubview:self.usageWindowAccountLabel];
         self.usageWindowProfilePopup = [[NSPopUpButton alloc]
-            initWithFrame:NSMakeRect(582, 56, 260, 28)
+            initWithFrame:NSMakeRect(582, 48, 260, 28)
                 pullsDown:NO];
         self.usageWindowProfilePopup.target = self;
         self.usageWindowProfilePopup.action =
@@ -290,7 +310,7 @@ static double ClaudeUsageClampedPercent(double percent) {
                                target:self
                                action:@selector(signInFromStatusMenu:)];
         self.usageWindowSignInButton.frame =
-            NSMakeRect(582, 16, 122, 30);
+            NSMakeRect(582, 9, 122, 30);
         [accountBox.contentView
             addSubview:self.usageWindowSignInButton];
         self.usageWindowRemoveButton =
@@ -298,14 +318,14 @@ static double ClaudeUsageClampedPercent(double percent) {
                                target:self
                                action:@selector(removeProfileFromUsageWindow:)];
         self.usageWindowRemoveButton.frame =
-            NSMakeRect(712, 16, 130, 30);
+            NSMakeRect(712, 9, 130, 30);
         self.usageWindowRemoveButton.contentTintColor =
             self.theme.ansiColors[1];
         [accountBox.contentView
             addSubview:self.usageWindowRemoveButton];
 
         NSBox *usageBox =
-            [[NSBox alloc] initWithFrame:NSMakeRect(28, 220, 864, 106)];
+            [[NSBox alloc] initWithFrame:NSMakeRect(28, 54, 864, 180)];
         usageBox.boxType = NSBoxCustom;
         usageBox.borderColor = self.theme.statusBarBorder;
         usageBox.fillColor = self.theme.statusBarBackground;
@@ -317,46 +337,27 @@ static double ClaudeUsageClampedPercent(double percent) {
                          size:13
                        weight:NSFontWeightMedium
                         color:self.theme.terminalForeground
-                        frame:NSMakeRect(18, 16, 824, 72)];
+                        frame:NSMakeRect(18, 10, 824, 154)];
         self.usageWindowUsageLabel.font =
             [NSFont fontWithName:self.theme.fontName size:12.5]
                 ?: [NSFont monospacedSystemFontOfSize:12.5
                                                weight:NSFontWeightMedium];
         [usageBox.contentView addSubview:self.usageWindowUsageLabel];
 
-        NSTextField *accountsTitle = [self
-            usageWindowLabel:@"ALL ACCOUNTS · NO LIMIT · ONE ACTIVE PER TAB"
-                         size:10
-                       weight:NSFontWeightSemibold
-                        color:self.theme.statusBarForeground
-                        frame:NSMakeRect(30, 186, 860, 18)];
-        [content addSubview:accountsTitle];
-        self.usageWindowAccountsLabel = [self
-            usageWindowLabel:@""
-                         size:11.5
-                       weight:NSFontWeightRegular
-                        color:self.theme.statusBarActiveForeground
-                        frame:NSMakeRect(30, 92, 860, 88)];
-        self.usageWindowAccountsLabel.font =
-            [NSFont fontWithName:self.theme.fontName size:11]
-                ?: [NSFont monospacedSystemFontOfSize:11
-                                               weight:NSFontWeightRegular];
-        [content addSubview:self.usageWindowAccountsLabel];
-
         NSButton *refresh = [NSButton buttonWithTitle:@"Refresh Usage"
                                                target:self
                                                action:@selector(refreshUsageWindow:)];
-        refresh.frame = NSMakeRect(28, 32, 130, 32);
+        refresh.frame = NSMakeRect(28, 10, 130, 32);
         [content addSubview:refresh];
         NSButton *add = [NSButton buttonWithTitle:@"Add Account…"
                                            target:self
                                            action:@selector(addProfileFromStatusMenu:)];
-        add.frame = NSMakeRect(166, 32, 130, 32);
+        add.frame = NSMakeRect(166, 10, 130, 32);
         [content addSubview:add];
         NSButton *done = [NSButton buttonWithTitle:@"Done"
                                             target:self
                                             action:@selector(dismissUsagePanel:)];
-        done.frame = NSMakeRect(800, 32, 92, 32);
+        done.frame = NSMakeRect(800, 10, 92, 32);
         [content addSubview:done];
         self.usagePanelView = content;
     }
@@ -388,7 +389,105 @@ static double ClaudeUsageClampedPercent(double percent) {
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
         dispatch_get_main_queue(), ^{
             [weakSelf refreshUsageWindowContents];
-        });
+    });
+}
+
+- (NSAttributedString *)usagePanelForecastSummary {
+    NSFont *bodyFont = [NSFont fontWithName:self.theme.fontName size:11.5]
+        ?: [NSFont monospacedSystemFontOfSize:11.5
+                                       weight:NSFontWeightRegular];
+    NSFont *headingFont = [NSFont fontWithName:self.theme.fontName size:11.5]
+        ?: [NSFont monospacedSystemFontOfSize:11.5
+                                       weight:NSFontWeightSemibold];
+    NSDictionary *eyebrowAttributes = @{
+        NSFontAttributeName : headingFont,
+        NSForegroundColorAttributeName : self.theme.ansiColors[6],
+    };
+    NSDictionary *headingAttributes = @{
+        NSFontAttributeName : headingFont,
+        NSForegroundColorAttributeName : self.theme.terminalForeground,
+    };
+    NSDictionary *bodyAttributes = @{
+        NSFontAttributeName : bodyFont,
+        NSForegroundColorAttributeName : self.theme.statusBarActiveForeground,
+    };
+    NSMutableAttributedString *summary = [[NSMutableAttributedString alloc]
+        initWithString:@"ALLOWANCE FORECASTS · LOCAL ESTIMATES · % PER HOUR\n\n"
+             attributes:eyebrowAttributes];
+    if (self.currentUsageForecasts.count == 0) {
+        [summary appendAttributedString:[[NSAttributedString alloc]
+            initWithString:@"Usage is not available yet. Refresh after Claude Code has reported the current allowances."
+                attributes:bodyAttributes]];
+        return summary;
+    }
+
+    for (NSUInteger index = 0;
+         index < self.currentUsageForecasts.count;
+         index++) {
+        NSDictionary *forecast = self.currentUsageForecasts[index];
+        [summary appendAttributedString:[[NSAttributedString alloc]
+            initWithString:[NSString stringWithFormat:@"%@   %.0f%% used\n",
+                forecast[@"detail_label"],
+                [forecast[@"percent"] doubleValue]]
+                attributes:headingAttributes]];
+
+        NSMutableString *detail = [NSMutableString string];
+        if ([forecast[@"stale"] boolValue]) {
+            [detail appendString:@"Usage snapshot is stale · refresh to estimate pace"];
+        } else if (![forecast[@"ready"] boolValue]) {
+            [detail appendString:
+                @"Collecting pace · needs 15 minutes of changing usage"];
+        } else {
+            double rate = [forecast[@"rate_per_hour"] doubleValue];
+            if (rate < 0.05) {
+                [detail appendString:@"No recent usage change"];
+            } else {
+                [detail appendFormat:@"Pace +%.1f%%/hr", rate];
+                NSNumber *available = forecast[@"sustainable_rate_per_hour"];
+                if ([available isKindOfClass:NSNumber.class]) {
+                    [detail appendFormat:@" · available +%.1f%%/hr",
+                        available.doubleValue];
+                }
+            }
+        }
+        NSNumber *reset = forecast[@"reset_at"];
+        NSString *resetText = [ClaudeStatusBar
+            compactResetDateTimeFromTimestamp:reset];
+        if (resetText.length > 0) {
+            [detail appendFormat:@" · reset %@", resetText];
+        }
+        [summary appendAttributedString:[[NSAttributedString alloc]
+            initWithString:detail attributes:bodyAttributes]];
+
+        if ([forecast[@"warning"] boolValue] &&
+            ![forecast[@"stale"] boolValue]) {
+            NSTimeInterval eta = [forecast[@"eta_seconds"] doubleValue];
+            NSString *projected = [ClaudeStatusBar
+                compactDateTimeFromTimestamp:forecast[@"projected_at"]];
+            NSString *warning = eta <= 1.0
+                ? @" · ⚠ limit reached"
+                : [NSString stringWithFormat:
+                    @" · ⚠ limit ~%@%@",
+                    [ClaudeStatusBar compactDurationFromSeconds:eta],
+                    projected.length > 0
+                        ? [@" · " stringByAppendingString:projected] : @""];
+            BOOL critical =
+                [forecast[@"severity"] isEqualToString:@"critical"];
+            [summary appendAttributedString:[[NSAttributedString alloc]
+                initWithString:warning
+                    attributes:@{
+                        NSFontAttributeName : headingFont,
+                        NSForegroundColorAttributeName : critical
+                            ? self.theme.ansiColors[1]
+                            : self.theme.ansiColors[3],
+                    }]];
+        }
+        if (index + 1 < self.currentUsageForecasts.count) {
+            [summary appendAttributedString:[[NSAttributedString alloc]
+                initWithString:@"\n\n" attributes:bodyAttributes]];
+        }
+    }
+    return summary;
 }
 
 - (void)refreshUsageWindowContents {
@@ -407,25 +506,15 @@ static double ClaudeUsageClampedPercent(double percent) {
         self.accountIsLoggedIn
             ? self.theme.terminalForeground : self.theme.ansiColors[3];
 
-    NSString *usage = self.usageLabel.stringValue.length > 0
-        ? self.usageLabel.stringValue : @"Usage unavailable";
-    NSString *resetDetails = self.usageLabel.toolTip.length > 0
-        ? self.usageLabel.toolTip : @"Reset timestamps are not available.";
-    self.usageWindowUsageLabel.stringValue = [NSString stringWithFormat:
-        @"%@\n%@", usage, resetDetails];
+    self.usageWindowUsageLabel.attributedStringValue =
+        [self usagePanelForecastSummary];
 
-    NSMutableArray<NSString *> *accounts = [NSMutableArray array];
     [self.usageWindowProfilePopup removeAllItems];
     for (ClaudeProfile *profile in self.profileManager.profiles) {
-        BOOL selected = [profile.identifier
-            isEqualToString:self.selectedProfile.identifier];
         [self.usageWindowProfilePopup
             addItemWithTitle:[self displayTitleForProfile:profile]];
         self.usageWindowProfilePopup.lastItem.representedObject =
             profile.identifier;
-        [accounts addObject:[NSString stringWithFormat:@"%@  %@",
-            selected ? @"✓" : @" ",
-            [self displayTitleForProfile:profile]]];
     }
     if (self.selectedProfile != nil) {
         for (NSMenuItem *item in
@@ -444,9 +533,6 @@ static double ClaudeUsageClampedPercent(double percent) {
         self.selectedProfile == nil ||
         !self.accountStatusKnown ||
         self.accountIsLoggedIn;
-    self.usageWindowAccountsLabel.stringValue = accounts.count > 0
-        ? [accounts componentsJoinedByString:@"\n"]
-        : @"No accounts yet. Add an account to track subscription usage.";
 }
 
 - (void)selectProfileFromUsageWindow:(NSPopUpButton *)sender {
@@ -599,6 +685,7 @@ static double ClaudeUsageClampedPercent(double percent) {
     [self refreshAccountIfNeeded:YES];
     [self refreshUsage];
     [self refreshUsageIfNeeded:YES];
+    [self refreshUsageWindowContents];
 }
 
 - (void)showEnvironment:(NSString *)environment
@@ -780,6 +867,7 @@ static double ClaudeUsageClampedPercent(double percent) {
     if (launchError != nil || status == nil) {
         self.accountStatusKnown = NO;
         self.profileLabel.toolTip = @"Claude account status unavailable";
+        [self refreshUsageWindowContents];
         return;
     }
     self.accountStatusKnown = YES;
@@ -787,6 +875,7 @@ static double ClaudeUsageClampedPercent(double percent) {
     if (!self.accountIsLoggedIn) {
         self.profileLabel.toolTip =
             @"Not signed in. Use the Claude menu to sign in.";
+        [self refreshUsageWindowContents];
         return;
     }
 
@@ -804,12 +893,278 @@ static double ClaudeUsageClampedPercent(double percent) {
         [status[@"authMethod"] isKindOfClass:NSString.class]
             ? status[@"authMethod"] : @"Claude"];
     [self updateProfileLabel];
+    [self refreshUsageWindowContents];
     [self refreshUsageIfNeeded:self.lastUsageRefreshAttempt == nil];
+}
+
+- (NSArray<NSDictionary *> *)usageHistoryForProfile:(ClaudeProfile *)profile {
+    NSData *data = [NSData dataWithContentsOfFile:profile.usageHistoryPath];
+    NSDictionary *document = data.length > 0
+        ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil]
+        : nil;
+    NSArray *samples = [document[@"samples"] isKindOfClass:NSArray.class]
+        ? document[@"samples"] : @[];
+    NSMutableArray<NSDictionary *> *valid = [NSMutableArray array];
+    for (id sample in samples) {
+        if ([sample isKindOfClass:NSDictionary.class] &&
+            [sample[@"recorded_at"] isKindOfClass:NSNumber.class] &&
+            [sample[@"rate_limits"] isKindOfClass:NSDictionary.class]) {
+            [valid addObject:sample];
+        }
+    }
+    return valid;
+}
+
+- (void)recordUsageSampleForStatus:(NSDictionary *)status
+                  sourceModifiedAt:(NSDate *)sourceModifiedAt
+                           profile:(ClaudeProfile *)profile {
+    NSDictionary *limits = [status[@"rate_limits"]
+        isKindOfClass:NSDictionary.class] ? status[@"rate_limits"] : nil;
+    if (limits == nil) return;
+
+    NSMutableDictionary *recordedLimits = [NSMutableDictionary dictionary];
+    for (NSString *key in @[@"five_hour", @"seven_day", @"fable_five"]) {
+        NSDictionary *window = [limits[key] isKindOfClass:NSDictionary.class]
+            ? limits[key] : nil;
+        NSNumber *percent = [window[@"used_percentage"]
+            isKindOfClass:NSNumber.class] ? window[@"used_percentage"] : nil;
+        if (percent == nil) continue;
+        NSMutableDictionary *recordedWindow = [@{
+            @"used_percentage" :
+                @(ClaudeUsageClampedPercent(percent.doubleValue)),
+        } mutableCopy];
+        NSNumber *reset = [window[@"resets_at"] isKindOfClass:NSNumber.class]
+            ? window[@"resets_at"] : nil;
+        if (reset != nil) recordedWindow[@"resets_at"] = reset;
+        recordedLimits[key] = recordedWindow;
+    }
+    if (recordedLimits.count == 0) return;
+
+    NSDictionary *metadata = [status[@"terminaldb"]
+        isKindOfClass:NSDictionary.class] ? status[@"terminaldb"] : nil;
+    NSNumber *fetchedAt = [metadata[@"fetched_at"] isKindOfClass:NSNumber.class]
+        ? metadata[@"fetched_at"] : nil;
+    NSTimeInterval recordedAt = fetchedAt != nil
+        ? fetchedAt.doubleValue
+        : (sourceModifiedAt != nil
+            ? sourceModifiedAt.timeIntervalSince1970
+            : NSDate.date.timeIntervalSince1970);
+    if (!isfinite(recordedAt) || recordedAt <= 0) return;
+
+    NSDictionary *sample = @{
+        @"recorded_at" : @(recordedAt),
+        @"rate_limits" : recordedLimits,
+    };
+    NSTimeInterval cutoff = NSDate.date.timeIntervalSince1970 -
+        ClaudeUsageHistoryRetention;
+    NSMutableArray<NSDictionary *> *samples = [NSMutableArray array];
+    for (NSDictionary *existing in [self usageHistoryForProfile:profile]) {
+        NSNumber *timestamp = existing[@"recorded_at"];
+        if (timestamp.doubleValue >= cutoff) [samples addObject:existing];
+    }
+    [samples sortUsingComparator:^NSComparisonResult(
+        NSDictionary *left, NSDictionary *right) {
+        return [left[@"recorded_at"] compare:right[@"recorded_at"]];
+    }];
+    NSDictionary *last = samples.lastObject;
+    NSTimeInterval lastTime = [last[@"recorded_at"] doubleValue];
+    if (last != nil && fabs(lastTime - recordedAt) < 1.0) {
+        if ([last[@"rate_limits"] isEqual:recordedLimits]) return;
+        [samples removeLastObject];
+    }
+    [samples addObject:sample];
+    if (samples.count > 4096) {
+        [samples removeObjectsInRange:
+            NSMakeRange(0, samples.count - 4096)];
+    }
+    NSData *historyData = [NSJSONSerialization dataWithJSONObject:@{
+        @"version" : @1,
+        @"samples" : samples,
+    } options:0 error:nil];
+    if ([historyData writeToFile:profile.usageHistoryPath atomically:YES]) {
+        [NSFileManager.defaultManager
+            setAttributes:@{NSFilePosixPermissions : @0600}
+            ofItemAtPath:profile.usageHistoryPath
+            error:nil];
+    }
+}
+
++ (NSDictionary *)usageForecastForSamples:(NSArray *)samples
+                                 windowKey:(NSString *)windowKey
+                             currentWindow:(NSDictionary *)currentWindow
+                                       now:(NSTimeInterval)now {
+    NSNumber *currentValue = [currentWindow[@"used_percentage"]
+        isKindOfClass:NSNumber.class]
+        ? currentWindow[@"used_percentage"] : nil;
+    if (currentValue == nil) return nil;
+    double currentPercent =
+        ClaudeUsageClampedPercent(currentValue.doubleValue);
+    NSNumber *resetValue = [currentWindow[@"resets_at"]
+        isKindOfClass:NSNumber.class] ? currentWindow[@"resets_at"] : nil;
+    double currentReset = resetValue.doubleValue;
+
+    NSMutableDictionary *result = [@{
+        @"key" : windowKey,
+        @"percent" : @(currentPercent),
+        @"ready" : @NO,
+        @"warning" : @NO,
+        @"stale" : @NO,
+    } mutableCopy];
+    if (resetValue != nil) result[@"reset_at"] = resetValue;
+
+    NSMutableArray<NSDictionary *> *points = [NSMutableArray array];
+    for (NSDictionary *sample in samples) {
+        NSNumber *timestamp = [sample[@"recorded_at"]
+            isKindOfClass:NSNumber.class] ? sample[@"recorded_at"] : nil;
+        NSDictionary *limits = [sample[@"rate_limits"]
+            isKindOfClass:NSDictionary.class] ? sample[@"rate_limits"] : nil;
+        NSDictionary *window = [limits[windowKey]
+            isKindOfClass:NSDictionary.class] ? limits[windowKey] : nil;
+        NSNumber *percent = [window[@"used_percentage"]
+            isKindOfClass:NSNumber.class] ? window[@"used_percentage"] : nil;
+        if (timestamp == nil || percent == nil ||
+            timestamp.doubleValue < now - ClaudeUsageForecastLookback ||
+            timestamp.doubleValue > now + 60.0) {
+            continue;
+        }
+        NSNumber *sampleReset = [window[@"resets_at"]
+            isKindOfClass:NSNumber.class] ? window[@"resets_at"] : nil;
+        if (resetValue != nil &&
+            (sampleReset == nil ||
+             fabs(sampleReset.doubleValue - currentReset) > 120.0)) {
+            continue;
+        }
+        [points addObject:@{
+            @"time" : timestamp,
+            @"percent" :
+                @(ClaudeUsageClampedPercent(percent.doubleValue)),
+        }];
+    }
+    [points sortUsingComparator:^NSComparisonResult(
+        NSDictionary *left, NSDictionary *right) {
+        return [left[@"time"] compare:right[@"time"]];
+    }];
+
+    NSUInteger cycleStart = 0;
+    for (NSUInteger index = 1; index < points.count; index++) {
+        if ([points[index][@"percent"] doubleValue] + 0.5 <
+            [points[index - 1][@"percent"] doubleValue]) {
+            cycleStart = index;
+        }
+    }
+    if (cycleStart > 0) {
+        [points removeObjectsInRange:NSMakeRange(0, cycleStart)];
+    }
+    if (points.count == 0) return result;
+
+    NSTimeInterval latestTime = [points.lastObject[@"time"] doubleValue];
+    result[@"sample_count"] = @(points.count);
+    result[@"sample_span"] = @(
+        latestTime - [points.firstObject[@"time"] doubleValue]);
+    if (now - latestTime > ClaudeUsageRefreshInterval * 2.0) {
+        result[@"stale"] = @YES;
+        return result;
+    }
+    if (currentPercent >= 100.0) {
+        result[@"ready"] = @YES;
+        result[@"warning"] = @YES;
+        result[@"severity"] = @"critical";
+        result[@"eta_seconds"] = @0;
+        result[@"projected_at"] = @(now);
+        return result;
+    }
+    NSTimeInterval span = [result[@"sample_span"] doubleValue];
+    if (points.count < ClaudeUsageForecastMinimumSamples ||
+        span < ClaudeUsageForecastMinimumSpan) {
+        return result;
+    }
+
+    double meanTime = 0;
+    double meanPercent = 0;
+    NSTimeInterval origin = [points.firstObject[@"time"] doubleValue];
+    for (NSDictionary *point in points) {
+        meanTime += ([point[@"time"] doubleValue] - origin) / 3600.0;
+        meanPercent += [point[@"percent"] doubleValue];
+    }
+    meanTime /= points.count;
+    meanPercent /= points.count;
+    double covariance = 0;
+    double variance = 0;
+    for (NSDictionary *point in points) {
+        double x = ([point[@"time"] doubleValue] - origin) / 3600.0;
+        double y = [point[@"percent"] doubleValue];
+        covariance += (x - meanTime) * (y - meanPercent);
+        variance += (x - meanTime) * (x - meanTime);
+    }
+    double rate = variance > 0 ? covariance / variance : 0;
+    double movement = [points.lastObject[@"percent"] doubleValue] -
+        [points.firstObject[@"percent"] doubleValue];
+    if (!isfinite(rate) || rate < 0 || movement < 0.5) rate = 0;
+    result[@"ready"] = @YES;
+    result[@"rate_per_hour"] = @(rate);
+
+    double remaining = MAX(0, 100.0 - currentPercent);
+    if (resetValue != nil && currentReset > now) {
+        double hoursToReset = (currentReset - now) / 3600.0;
+        double sustainableRate = hoursToReset > 0
+            ? remaining / hoursToReset : 0;
+        result[@"sustainable_rate_per_hour"] = @(sustainableRate);
+        if (rate > 0) {
+            NSTimeInterval eta = remaining / rate * 3600.0;
+            NSTimeInterval projectedAt = now + eta;
+            result[@"eta_seconds"] = @(eta);
+            result[@"projected_at"] = @(projectedAt);
+            if (sustainableRate > 0) {
+                result[@"pace_multiple"] = @(rate / sustainableRate);
+            }
+            BOOL warning = projectedAt < currentReset - 60.0;
+            result[@"warning"] = @(warning);
+            if (warning) {
+                result[@"severity"] = eta <= 30.0 * 60.0
+                    ? @"critical" : @"warning";
+            }
+        }
+    }
+    return result;
+}
+
+- (NSArray<NSDictionary *> *)forecastsForStatus:(NSDictionary *)status
+                                        history:(NSArray *)history
+                                            now:(NSTimeInterval)now {
+    NSDictionary *limits = [status[@"rate_limits"]
+        isKindOfClass:NSDictionary.class] ? status[@"rate_limits"] : @{};
+    NSArray<NSDictionary *> *definitions = @[
+        @{@"key" : @"five_hour", @"label" : @"5h",
+          @"detail_label" : @"5-HOUR"},
+        @{@"key" : @"seven_day", @"label" : @"7d",
+          @"detail_label" : @"7-DAY"},
+        @{@"key" : @"fable_five", @"label" : @"Fable",
+          @"detail_label" : @"FABLE"},
+    ];
+    NSMutableArray<NSDictionary *> *forecasts = [NSMutableArray array];
+    for (NSDictionary *definition in definitions) {
+        NSDictionary *window = [limits[definition[@"key"]]
+            isKindOfClass:NSDictionary.class]
+            ? limits[definition[@"key"]] : nil;
+        if (window == nil) continue;
+        NSDictionary *forecast = [ClaudeStatusBar
+            usageForecastForSamples:history
+                           windowKey:definition[@"key"]
+                       currentWindow:window
+                                 now:now];
+        if (forecast == nil) continue;
+        NSMutableDictionary *decorated = [forecast mutableCopy];
+        decorated[@"label"] = definition[@"label"];
+        decorated[@"detail_label"] = definition[@"detail_label"];
+        [forecasts addObject:decorated];
+    }
+    return forecasts;
 }
 
 - (void)refreshUsage {
     ClaudeProfile *profile = self.selectedProfile;
     if (profile == nil) {
+        self.currentUsageForecasts = @[];
         self.usageLabel.stringValue = @"Usage  Select or add an account";
         self.usageLabel.textColor = self.theme.statusBarForeground;
         return;
@@ -847,6 +1202,7 @@ static double ClaudeUsageClampedPercent(double percent) {
         }
     }
     if (status == nil) {
+        self.currentUsageForecasts = @[];
         self.usageLabel.stringValue = self.usageRefreshInFlight
             ? @"Usage  Refreshing…"
             : (self.accountIsLoggedIn
@@ -858,6 +1214,14 @@ static double ClaudeUsageClampedPercent(double percent) {
             : @"Current Claude Code usage is not available yet.";
         return;
     }
+
+    [self recordUsageSampleForStatus:status
+                    sourceModifiedAt:sourceModifiedAt
+                             profile:profile];
+    NSArray<NSDictionary *> *history = [self usageHistoryForProfile:profile];
+    self.currentUsageForecasts = [self forecastsForStatus:status
+                                                  history:history
+                                                      now:NSDate.date.timeIntervalSince1970];
 
     NSDictionary *limits = [status[@"rate_limits"] isKindOfClass:NSDictionary.class]
         ? status[@"rate_limits"] : nil;
@@ -877,6 +1241,7 @@ static double ClaudeUsageClampedPercent(double percent) {
             ? fableWeekly[@"used_percentage"] : nil;
 
     if (fivePercent == nil && weekPercent == nil && fablePercent == nil) {
+        self.currentUsageForecasts = @[];
         self.usageLabel.stringValue = @"Usage  Waiting for Claude response";
         self.usageLabel.textColor = self.theme.statusBarForeground;
         return;
@@ -914,6 +1279,38 @@ static double ClaudeUsageClampedPercent(double percent) {
         [styled appendAttributedString:[self usageSegment:@"Fable"
                                                  percent:fablePercent.doubleValue]];
     }
+    NSDictionary *urgent = nil;
+    for (NSDictionary *forecast in self.currentUsageForecasts) {
+        if (![forecast[@"warning"] boolValue] ||
+            [forecast[@"stale"] boolValue]) {
+            continue;
+        }
+        if (urgent == nil ||
+            [forecast[@"eta_seconds"] doubleValue] <
+                [urgent[@"eta_seconds"] doubleValue]) {
+            urgent = forecast;
+        }
+    }
+    if (urgent != nil) {
+        [styled appendAttributedString:[[NSAttributedString alloc]
+            initWithString:@" · " attributes:muted]];
+        BOOL critical = [urgent[@"severity"] isEqualToString:@"critical"];
+        NSTimeInterval eta = [urgent[@"eta_seconds"] doubleValue];
+        NSString *forecastText = eta <= 1.0
+            ? [NSString stringWithFormat:@"⚠ %@ limit reached",
+                urgent[@"label"]]
+            : [NSString stringWithFormat:@"⚠ %@ ~%@",
+                urgent[@"label"],
+                [ClaudeStatusBar compactDurationFromSeconds:eta]];
+        [styled appendAttributedString:[[NSAttributedString alloc]
+            initWithString:forecastText
+                attributes:@{
+                    NSFontAttributeName : self.usageLabel.font,
+                    NSForegroundColorAttributeName : critical
+                        ? self.theme.ansiColors[1]
+                        : self.theme.ansiColors[3],
+                }]];
+    }
     self.usageLabel.attributedStringValue = styled;
     [self setNeedsLayout:YES];
 
@@ -923,6 +1320,25 @@ static double ClaudeUsageClampedPercent(double percent) {
     [self appendResetDescription:@"Fable 5 weekly"
                           window:fableWeekly
                               to:details];
+    for (NSDictionary *forecast in self.currentUsageForecasts) {
+        if (![forecast[@"warning"] boolValue] ||
+            [forecast[@"stale"] boolValue]) {
+            continue;
+        }
+        NSTimeInterval eta = [forecast[@"eta_seconds"] doubleValue];
+        double rate = [forecast[@"rate_per_hour"] doubleValue];
+        NSString *projected = [ClaudeStatusBar
+            compactDateTimeFromTimestamp:forecast[@"projected_at"]];
+        [details addObject:eta <= 1.0
+            ? [NSString stringWithFormat:@"%@ allowance is exhausted",
+                forecast[@"label"]]
+            : [NSString stringWithFormat:
+                @"%@ pace is +%.1f%%/hr; limit estimated in %@%@",
+                forecast[@"label"], rate,
+                [ClaudeStatusBar compactDurationFromSeconds:eta],
+                projected.length > 0
+                    ? [NSString stringWithFormat:@" (%@)", projected] : @""]];
+    }
     NSDate *updated = sourceModifiedAt;
     if (updated != nil) {
         NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
@@ -1331,7 +1747,126 @@ static double ClaudeUsageClampedPercent(double percent) {
         [compactSummary containsString:@"5h 12%"] &&
         [compactSummary containsString:@"7d 34%"] &&
         [compactSummary containsString:@"Fable 56%"] &&
-        ![compactSummary containsString:@"↻"];
+        ![compactSummary containsString:@"⚠"];
+
+    NSTimeInterval forecastNow = NSDate.date.timeIntervalSince1970;
+    NSNumber *forecastReset = @(forecastNow + 2.0 * 60.0 * 60.0);
+    NSArray *fastHistory = @[
+        @{@"recorded_at" : @(forecastNow - 20.0 * 60.0),
+          @"rate_limits" : @{@"five_hour" : @{
+              @"used_percentage" : @20, @"resets_at" : forecastReset}}},
+        @{@"recorded_at" : @(forecastNow - 10.0 * 60.0),
+          @"rate_limits" : @{@"five_hour" : @{
+              @"used_percentage" : @30, @"resets_at" : forecastReset}}},
+        @{@"recorded_at" : @(forecastNow),
+          @"rate_limits" : @{@"five_hour" : @{
+              @"used_percentage" : @40, @"resets_at" : forecastReset}}},
+    ];
+    NSDictionary *fastForecast = [self
+        usageForecastForSamples:fastHistory
+                       windowKey:@"five_hour"
+                   currentWindow:@{@"used_percentage" : @40,
+                                   @"resets_at" : forecastReset}
+                             now:forecastNow];
+    NSArray *safeHistory = @[
+        @{@"recorded_at" : @(forecastNow - 20.0 * 60.0),
+          @"rate_limits" : @{@"five_hour" : @{
+              @"used_percentage" : @20, @"resets_at" : forecastReset}}},
+        @{@"recorded_at" : @(forecastNow - 10.0 * 60.0),
+          @"rate_limits" : @{@"five_hour" : @{
+              @"used_percentage" : @21, @"resets_at" : forecastReset}}},
+        @{@"recorded_at" : @(forecastNow),
+          @"rate_limits" : @{@"five_hour" : @{
+              @"used_percentage" : @22, @"resets_at" : forecastReset}}},
+    ];
+    NSDictionary *safeForecast = [self
+        usageForecastForSamples:safeHistory
+                       windowKey:@"five_hour"
+                   currentWindow:@{@"used_percentage" : @22,
+                                   @"resets_at" : forecastReset}
+                             now:forecastNow];
+    NSDictionary *learningForecast = [self
+        usageForecastForSamples:[fastHistory subarrayWithRange:NSMakeRange(1, 2)]
+                       windowKey:@"five_hour"
+                   currentWindow:@{@"used_percentage" : @40,
+                                   @"resets_at" : forecastReset}
+                             now:forecastNow];
+    NSDictionary *resetChangedForecast = [self
+        usageForecastForSamples:fastHistory
+                       windowKey:@"five_hour"
+                   currentWindow:@{
+                       @"used_percentage" : @3,
+                       @"resets_at" : @(forecastReset.doubleValue + 3600.0),
+                   }
+                             now:forecastNow];
+    NSDictionary *exhaustedForecast = [self
+        usageForecastForSamples:@[
+            @{@"recorded_at" : @(forecastNow),
+              @"rate_limits" : @{@"five_hour" : @{
+                  @"used_percentage" : @100,
+                  @"resets_at" : forecastReset}}},
+        ]
+                       windowKey:@"five_hour"
+                   currentWindow:@{@"used_percentage" : @100,
+                                   @"resets_at" : forecastReset}
+                             now:forecastNow];
+    NSDictionary *staleForecast = [self
+        usageForecastForSamples:@[
+            @{@"recorded_at" : @(forecastNow - 40.0 * 60.0),
+              @"rate_limits" : @{@"five_hour" : @{
+                  @"used_percentage" : @20,
+                  @"resets_at" : forecastReset}}},
+            @{@"recorded_at" : @(forecastNow - 30.0 * 60.0),
+              @"rate_limits" : @{@"five_hour" : @{
+                  @"used_percentage" : @30,
+                  @"resets_at" : forecastReset}}},
+            @{@"recorded_at" : @(forecastNow - 20.0 * 60.0),
+              @"rate_limits" : @{@"five_hour" : @{
+                  @"used_percentage" : @40,
+                  @"resets_at" : forecastReset}}},
+        ]
+                       windowKey:@"five_hour"
+                   currentWindow:@{@"used_percentage" : @40,
+                                   @"resets_at" : forecastReset}
+                             now:forecastNow];
+
+    NSNumber *fixtureFetchedAt = normalized[@"terminaldb"][@"fetched_at"];
+    NSMutableArray *riskSamples = [NSMutableArray array];
+    for (NSUInteger index = 0; index < 3; index++) {
+        [riskSamples addObject:@{
+            @"recorded_at" : @(fixtureFetchedAt.doubleValue -
+                (2 - index) * 10.0 * 60.0),
+            @"rate_limits" : @{
+                @"five_hour" : @{
+                    @"used_percentage" : @12,
+                    @"resets_at" : fiveHourReset,
+                },
+                @"seven_day" : @{
+                    @"used_percentage" : @34,
+                    @"resets_at" : sevenDayReset,
+                },
+                @"fable_five" : @{
+                    @"used_percentage" : @([@[@40, @48, @56][index]
+                        doubleValue]),
+                    @"resets_at" : limits[@"fable_five"][@"resets_at"],
+                },
+            },
+        }];
+    }
+    NSData *riskData = [NSJSONSerialization dataWithJSONObject:@{
+        @"version" : @1, @"samples" : riskSamples,
+    } options:0 error:nil];
+    [riskData writeToFile:fixtureProfile.usageHistoryPath atomically:YES];
+    [NSFileManager.defaultManager
+        setAttributes:@{NSFilePosixPermissions : @0600}
+        ofItemAtPath:fixtureProfile.usageHistoryPath
+        error:nil];
+    [fixtureBar refreshUsage];
+    BOOL showsRiskOnlyWhenForecasted =
+        [fixtureBar.usageLabel.stringValue containsString:@"⚠ Fable"];
+    NSNumber *historyPermissions = [NSFileManager.defaultManager
+        attributesOfItemAtPath:fixtureProfile.usageHistoryPath error:nil]
+        [NSFilePosixPermissions];
     [NSFileManager.defaultManager removeItemAtPath:fixtureRoot error:nil];
     return [limits[@"five_hour"][@"used_percentage"] isEqual:@12] &&
         [fiveHourReset isKindOfClass:NSNumber.class] &&
@@ -1358,7 +1893,20 @@ static double ClaudeUsageClampedPercent(double percent) {
             isEqual:@100] &&
         [clamped[@"rate_limits"][@"seven_day"][@"used_percentage"]
             isEqual:@0] &&
-        showsEveryWindow;
+        showsEveryWindow &&
+        [fastForecast[@"ready"] boolValue] &&
+        [fastForecast[@"warning"] boolValue] &&
+        [fastForecast[@"rate_per_hour"] doubleValue] > 55.0 &&
+        [safeForecast[@"ready"] boolValue] &&
+        ![safeForecast[@"warning"] boolValue] &&
+        ![learningForecast[@"ready"] boolValue] &&
+        ![resetChangedForecast[@"ready"] boolValue] &&
+        ![resetChangedForecast[@"warning"] boolValue] &&
+        [exhaustedForecast[@"warning"] boolValue] &&
+        [exhaustedForecast[@"severity"] isEqualToString:@"critical"] &&
+        [staleForecast[@"stale"] boolValue] &&
+        showsRiskOnlyWhenForecasted &&
+        historyPermissions.unsignedIntegerValue == 0600;
 }
 
 + (nullable NSNumber *)timestampFromUsageResetValue:(id)value {
@@ -1427,6 +1975,26 @@ static double ClaudeUsageClampedPercent(double percent) {
     NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
     [formatter setLocalizedDateFormatFromTemplate:@"Mdjmm"];
     return [formatter stringFromDate:date];
+}
+
++ (NSString *)compactDurationFromSeconds:(NSTimeInterval)seconds {
+    if (!isfinite(seconds) || seconds <= 60.0) return @"now";
+    NSInteger totalMinutes = MAX(1, (NSInteger)llround(seconds / 60.0));
+    if (totalMinutes < 60) {
+        NSInteger rounded = MAX(1, (NSInteger)llround(totalMinutes / 5.0) * 5);
+        return [NSString stringWithFormat:@"%ldm", (long)rounded];
+    }
+    NSInteger hours = totalMinutes / 60;
+    NSInteger minutes = totalMinutes % 60;
+    minutes = (NSInteger)llround(minutes / 5.0) * 5;
+    if (minutes >= 60) {
+        hours += 1;
+        minutes = 0;
+    }
+    return minutes > 0
+        ? [NSString stringWithFormat:@"%ldh %ldm",
+            (long)hours, (long)minutes]
+        : [NSString stringWithFormat:@"%ldh", (long)hours];
 }
 
 - (void)appendResetDescription:(NSString *)label
