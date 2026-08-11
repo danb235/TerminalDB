@@ -1241,6 +1241,23 @@ p {
   padding: calc(32px + var(--tdb-safe-top)) 0 calc(32px + var(--tdb-safe-bottom));
 }
 
+.pairing-view:has(.account-enrollment) {
+  width: min(calc(100% - 32px), 620px);
+}
+
+.pairing-view:has(.account-enrollment) > .app-mark,
+.pairing-view:has(.account-enrollment) > .eyebrow,
+.pairing-view:has(.account-enrollment) > h1,
+.pairing-view:has(.account-enrollment) > p,
+.pairing-view:has(.account-enrollment) > .pairing-proof,
+.pairing-view:has(.account-enrollment) > small {
+  display: none;
+}
+
+.pairing-view:has(.account-enrollment) > .account-enrollment {
+  margin: 0;
+}
+
 .pairing-view > .app-mark {
   width: 48px;
   height: 48px;
@@ -1538,6 +1555,29 @@ p {
   text-align: center;
   font-size: 18px;
   letter-spacing: 0.32em;
+}
+
+.account-signin > span,
+.account-signin > h2,
+.account-signin > p {
+  text-align: center;
+}
+
+.account-signin input[inputmode="numeric"] {
+  text-align: center;
+  font-size: 18px;
+  letter-spacing: 0.32em;
+}
+
+@media (min-width: 600px) {
+  .account-totp-setup {
+    grid-template-columns: minmax(0, 248px) minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .account-totp-key {
+    align-content: center;
+  }
 }
 
 .account-success {

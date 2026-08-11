@@ -92,7 +92,9 @@ without creating an email or phone attribute. The setup screen centers the QR
 code beside an always-visible, copyable manual setup key. Email, SMS, passkeys,
 and backup codes are not alternatives. The screen recommends a securely synced
 authenticator copy because losing every copy requires operator assistance.
-Returning sign-in uses Cognito managed login with authorization code and PKCE.
+Returning sign-in stays on the TerminalDB app origin and submits password and
+TOTP challenges directly to Cognito's public user-pool API. This preserves one
+password-manager origin and avoids Cognito's fixed MFA-enrollment layout.
 After authentication, the web app atomically binds the Cognito `sub` to the
 waiting Mac and consumes the grant. The agent polls with the grant, replaces an
 active guest session if necessary, and starts the account-owned session without
@@ -102,7 +104,8 @@ the Mac can start over instead of waiting for expiry.
 From then on, every enrolled Mac appears under **Your Macs** after login on a
 phone or another browser. Online Macs show their available terminals; offline
 Macs stay in the inventory with a last-seen time. Account authentication is
-hosted by Cognito, so the user can still sign in and see the offline inventory
+enforced by Cognito independently of the Mac, so the user can still sign in
+and see the offline inventory
 when no TerminalDB app is running. Starting TerminalDB automatically reconnects
 an enrolled Mac. Selecting an online session registers that browser's own
 non-exportable controller keys and opens the encrypted terminal. Adding a Mac

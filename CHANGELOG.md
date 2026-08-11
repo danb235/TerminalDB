@@ -42,6 +42,11 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Account enrollment and returning password-plus-TOTP sign-in now remain on
+  `app.terminaldb.app`. The centered enrollment screen shows the QR code beside
+  an always-visible, selectable setup key with a copy action, while incomplete
+  legacy accounts are directed back to Mac-approved setup instead of Cognito's
+  fixed, scrolling MFA page.
 - Account creation now brings the macOS Keychain approval forward when a
   moved or updated local build needs permission to reuse the Mac's existing
   non-exportable identity. The native window explains the approval instead of

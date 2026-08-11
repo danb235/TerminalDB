@@ -40,8 +40,9 @@ Remote supports two independent access grants:
 - **One-time link:** the existing possession-based pairing flow works without
   an account and grants access only to the session named by the opaque link.
 - **Account:** first-time signup and authenticator enrollment use Cognito's
-  public user-pool API directly from the TerminalDB web app; returning sign-in
-  uses Cognito managed login with authorization code and PKCE. API Gateway
+  public user-pool API directly from the TerminalDB web app; returning
+  password-plus-TOTP sign-in uses the same direct Cognito API from the same app
+  origin. API Gateway
   validates either Cognito access-token scope, and the control Lambda derives
   the tenant exclusively from Cognito's immutable `sub` claim. A signed-in
   browser can discover and register a controller only for sessions indexed

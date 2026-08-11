@@ -21,18 +21,20 @@ import QRCode from "qrcode";
 import { clearControllerSession, loadControllerSession } from "./identity";
 import {
   accountAccessToken,
-  beginAccountSignIn,
+  beginAccountPasswordSignIn,
   beginAccountTotpEnrollment,
   changeAccountPassword,
   clearAccountCredentials,
   clearPendingAccountBootstrap,
   completeAccountSignIn,
   completeAccountTotpEnrollment,
+  completeAccountTotpSignIn,
   hasRecentAccountAuthentication,
   pendingAccountBootstrap,
   savePendingAccountBootstrap,
   signOutAccount,
   type AccountTotpEnrollment,
+  type AccountTotpSignIn,
 } from "./account-auth";
 import { accounts as mockAccounts, mockInventory, terminalFixture } from "./mock-data";
 import { AcknowledgedInputQueue } from "./ordered-input";
@@ -331,6 +333,145 @@ export function accountDeviceActivityLabel(
   if (seconds < 60 * 60) return `Last seen ${Math.floor(seconds / 60)}m ago`;
   if (seconds < 24 * 60 * 60) return `Last seen ${Math.floor(seconds / (60 * 60))}h ago`;
   return `Last seen ${Math.floor(seconds / (24 * 60 * 60))}d ago`;
+}
+
+function AccountSignIn({
+  configuration,
+  onComplete,
+  onCancel,
+}: {
+  readonly configuration: NonNullable<RemotePublicConfiguration["accountAuth"]>;
+  readonly onComplete: (accessToken: string) => void;
+  readonly onCancel: () => void;
+}) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [authenticatorCode, setAuthenticatorCode] = useState("");
+  const [signIn, setSignIn] = useState<AccountTotpSignIn>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+
+  const submitPassword = async () => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      const challenge = await beginAccountPasswordSignIn({
+        configuration,
+        username,
+        password,
+      });
+      setUsername(challenge.username);
+      setPassword("");
+      setSignIn(challenge);
+    } catch (signInError) {
+      setError(signInError instanceof Error ? signInError.message : "Sign-in could not start.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitAuthenticator = async () => {
+    if (!signIn) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      const token = await completeAccountTotpSignIn({
+        configuration,
+        signIn,
+        code: authenticatorCode,
+      });
+      setAuthenticatorCode("");
+      onComplete(token);
+    } catch (signInError) {
+      setError(signInError instanceof Error ? signInError.message : "The code could not be verified.");
+      setBusy(false);
+    }
+  };
+
+  if (signIn) {
+    return (
+      <section className="account-access account-signup account-enrollment account-signin">
+        <span>PASSWORD ACCEPTED · AUTHENTICATOR REQUIRED</span>
+        <h2>Enter your authenticator code</h2>
+        <p>Enter the current six-digit code for <strong>{signIn.username}</strong>.</p>
+        <form onSubmit={(event) => {
+          event.preventDefault();
+          void submitAuthenticator();
+        }}>
+          <label htmlFor="account-signin-code">Six-digit code</label>
+          <input
+            id="account-signin-code"
+            autoComplete="one-time-code"
+            autoFocus
+            disabled={busy}
+            inputMode="numeric"
+            maxLength={6}
+            pattern="[0-9]{6}"
+            required
+            value={authenticatorCode}
+            onChange={(event) => setAuthenticatorCode(event.target.value.replace(/\D/gu, ""))}
+          />
+          <small>Codes change every 30 seconds. If one expires, enter the next code.</small>
+          <button disabled={busy} type="submit">
+            {busy ? "Verifying…" : "Sign in"}
+          </button>
+        </form>
+        <button
+          className="text-button"
+          disabled={busy}
+          onClick={() => {
+            setSignIn(undefined);
+            setAuthenticatorCode("");
+            setError(undefined);
+          }}
+        >
+          Back
+        </button>
+        <button className="text-button" disabled={busy} onClick={onCancel}>Cancel</button>
+        {error ? <small role="alert">{error}</small> : null}
+      </section>
+    );
+  }
+
+  return (
+    <section className="account-access account-signup account-enrollment account-signin">
+      <span>TERMINALDB ACCOUNT</span>
+      <h2>Sign in to TerminalDB</h2>
+      <p>Your password and authenticator code go directly from this browser to AWS Cognito. TerminalDB’s backend never receives them.</p>
+      <form onSubmit={(event) => {
+        event.preventDefault();
+        void submitPassword();
+      }}>
+        <label htmlFor="account-signin-username">Username</label>
+        <input
+          id="account-signin-username"
+          autoCapitalize="none"
+          autoComplete="username"
+          autoCorrect="off"
+          autoFocus
+          disabled={busy}
+          required
+          value={username}
+          onChange={(event) => setUsername(event.target.value)}
+        />
+        <label htmlFor="account-signin-password">Password</label>
+        <input
+          id="account-signin-password"
+          autoComplete="current-password"
+          disabled={busy}
+          required
+          type="password"
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
+        />
+        <button disabled={busy} type="submit">
+          {busy ? "Checking…" : "Continue"}
+        </button>
+      </form>
+      <button className="text-button" disabled={busy} onClick={onCancel}>Cancel</button>
+      {error ? <small role="alert">{error}</small> : null}
+    </section>
+  );
 }
 
 function AccountEnrollment({
@@ -641,6 +782,9 @@ function AccountAccess({
       ? initialAccountAction
       : undefined,
   );
+  const [signInPurpose, setSignInPurpose] = useState<
+    "default" | "connect" | "password" | "delete" | undefined
+  >();
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [currentPassword, setCurrentPassword] = useState("");
   const [nextPassword, setNextPassword] = useState("");
@@ -714,10 +858,7 @@ function AccountAccess({
       if (bootstrapReauthenticationRequestedRef.current) return;
       bootstrapReauthenticationRequestedRef.current = true;
       savePendingAccountBootstrap(bootstrapToken);
-      void beginAccountSignIn(configuration, undefined, {
-        returnTo: `/?account=finish&intent=${bootstrapIntent}`,
-        forceReauthentication: true,
-      });
+      setSignInPurpose("connect");
       return;
     }
     bootstrapCompletionRequestedRef.current = true;
@@ -740,11 +881,8 @@ function AccountAccess({
     }
     if (securityReauthenticationRequestedRef.current) return;
     securityReauthenticationRequestedRef.current = true;
-    void beginAccountSignIn(configuration, undefined, {
-      returnTo: `/?account=${securityAction}&source=desktop`,
-      forceReauthentication: true,
-    });
-  }, [accessToken, configuration, loading, securityAction]);
+    setSignInPurpose(securityAction);
+  }, [accessToken, loading, securityAction]);
 
   const cancelAccountSetup = async () => {
     if (!bootstrapToken) return;
@@ -817,10 +955,7 @@ function AccountAccess({
     history.replaceState({}, "", `/?account=${action}`);
     if (accessToken && hasRecentAccountAuthentication(accessToken)) return;
     securityReauthenticationRequestedRef.current = true;
-    await beginAccountSignIn(configuration, undefined, {
-      returnTo: `/?account=${action}`,
-      forceReauthentication: true,
-    });
+    setSignInPurpose(action);
   };
 
   const cancelSecurityAction = () => {
@@ -864,6 +999,32 @@ function AccountAccess({
     }
   };
 
+  const finishSignIn = (token: string) => {
+    setAccessToken(token);
+    setSignInPurpose(undefined);
+    setError(undefined);
+    void listAccountDevices(token).then(setDevices).catch((refreshError: unknown) => {
+      setError(refreshError instanceof Error ? refreshError.message : "Your Macs could not be loaded.");
+    });
+  };
+
+  if (signInPurpose) {
+    return (
+      <AccountSignIn
+        configuration={configuration}
+        onComplete={finishSignIn}
+        onCancel={() => {
+          const securitySignIn = signInPurpose === "password" || signInPurpose === "delete";
+          setSignInPurpose(undefined);
+          if (signInPurpose === "connect") {
+            bootstrapReauthenticationRequestedRef.current = false;
+          }
+          if (securitySignIn) cancelSecurityAction();
+        }}
+      />
+    );
+  }
+
   if (!accessToken) {
     if (bootstrapToken) {
       if (bootstrapIntent === "connect") {
@@ -880,10 +1041,7 @@ function AccountAccess({
               disabled={loading || accountActionBusy}
               onClick={() => {
                 savePendingAccountBootstrap(bootstrapToken);
-                void beginAccountSignIn(configuration, undefined, {
-                  returnTo: "/?account=finish&intent=connect",
-                  forceReauthentication: true,
-                });
+                setSignInPurpose("connect");
               }}
             >
               Sign in & connect this Mac
@@ -905,13 +1063,10 @@ function AccountAccess({
           bootstrapToken={bootstrapToken}
           configuration={configuration}
           onCancel={cancelAccountSetup}
-          onComplete={(token) => setAccessToken(token)}
+          onComplete={finishSignIn}
           onExistingAccount={() => {
             savePendingAccountBootstrap(bootstrapToken);
-            void beginAccountSignIn(configuration, undefined, {
-              returnTo: "/?account=finish&intent=connect",
-              forceReauthentication: true,
-            });
+            setSignInPurpose("connect");
           }}
         />
       );
@@ -935,11 +1090,7 @@ function AccountAccess({
           </a>
           <button
             disabled={loading}
-            onClick={() => void beginAccountSignIn(
-              configuration,
-              undefined,
-              { returnTo: "/" },
-            )}
+            onClick={() => setSignInPurpose("default")}
           >
             Already have an account? Log in
           </button>
@@ -961,11 +1112,7 @@ function AccountAccess({
         <div className="account-auth-actions">
           <button
             disabled={loading}
-            onClick={() => void beginAccountSignIn(
-              configuration,
-              undefined,
-              { returnTo: context === "session" ? "/?account=complete&source=session" : "/" },
-            )}
+            onClick={() => setSignInPurpose("default")}
           >
             Sign in
           </button>

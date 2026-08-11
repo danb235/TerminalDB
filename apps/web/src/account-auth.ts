@@ -45,6 +45,11 @@ export interface AccountTotpEnrollment {
   readonly session: string;
 }
 
+export interface AccountTotpSignIn {
+  readonly username: string;
+  readonly session: string;
+}
+
 const TOKEN_KEY = "terminaldb.account.tokens.v1";
 const STATE_KEY = "terminaldb.account.oauth-state.v1";
 const VERIFIER_KEY = "terminaldb.account.pkce-verifier.v1";
@@ -140,20 +145,11 @@ export async function beginAccountSignIn(
   navigate: (url: URL) => void = (url) => location.assign(url),
   options: AccountAuthorizationOptions = {},
 ): Promise<void> {
-  await beginAccountAuthorization(configuration, "/oauth2/authorize", navigate, options);
-}
-
-export async function beginAccountSignUp(
-  configuration: AccountAuthConfiguration,
-  navigate: (url: URL) => void = (url) => location.assign(url),
-  options: AccountAuthorizationOptions = {},
-): Promise<void> {
-  await beginAccountAuthorization(configuration, "/signup", navigate, options);
+  await beginAccountAuthorization(configuration, navigate, options);
 }
 
 async function beginAccountAuthorization(
   configuration: AccountAuthConfiguration,
-  path: "/oauth2/authorize" | "/signup",
   navigate: (url: URL) => void,
   options: AccountAuthorizationOptions,
 ): Promise<void> {
@@ -163,7 +159,7 @@ async function beginAccountAuthorization(
   sessionStorage.setItem(VERIFIER_KEY, verifier);
   if (options.returnTo) sessionStorage.setItem(RETURN_TO_KEY, options.returnTo);
   else sessionStorage.removeItem(RETURN_TO_KEY);
-  const url = new URL(`${trimSlash(configuration.domain)}${path}`);
+  const url = new URL(`${trimSlash(configuration.domain)}/oauth2/authorize`);
   url.searchParams.set("client_id", configuration.clientId);
   url.searchParams.set("response_type", "code");
   url.searchParams.set("scope", "openid profile aws.cognito.signin.user.admin");
@@ -200,7 +196,7 @@ function friendlyCognitoError(failure: CognitoFailure, status: number): Error {
     case "EnableSoftwareTokenMFAException":
       return new Error("That code was not accepted. Wait for a new code and try again.");
     case "NotAuthorizedException":
-      return new Error("That username is already registered, or the password was not accepted.");
+      return new Error("The username or password was not accepted.");
     case "LimitExceededException":
     case "TooManyRequestsException":
       return new Error("Too many attempts. Wait a moment and try again.");
@@ -301,6 +297,54 @@ export async function completeAccountTotpEnrollment(input: {
   });
   const tokens = saveCognitoTokens(completion.AuthenticationResult ?? {});
   return tokens.accessToken;
+}
+
+export async function beginAccountPasswordSignIn(input: {
+  readonly configuration: AccountAuthConfiguration;
+  readonly username: string;
+  readonly password: string;
+}): Promise<AccountTotpSignIn> {
+  const username = input.username.trim();
+  if (!username) throw new Error("Enter your username.");
+  if (!input.password) throw new Error("Enter your password.");
+
+  const authentication = await cognitoRequest(input.configuration, "InitiateAuth", {
+    AuthFlow: "USER_AUTH",
+    ClientId: input.configuration.clientId,
+    AuthParameters: {
+      USERNAME: username,
+      PASSWORD: input.password,
+      PREFERRED_CHALLENGE: "PASSWORD",
+    },
+  });
+  if (authentication.ChallengeName === "MFA_SETUP") {
+    throw new Error(
+      "Authenticator setup is not finished. Open TerminalDB on your Mac, choose Create Account, and resume setup there to see the QR code and copyable setup key.",
+    );
+  }
+  if (authentication.ChallengeName !== "SOFTWARE_TOKEN_MFA" || !authentication.Session) {
+    throw new Error("Cognito did not request the required authenticator code. Try again.");
+  }
+  return { username, session: authentication.Session };
+}
+
+export async function completeAccountTotpSignIn(input: {
+  readonly configuration: AccountAuthConfiguration;
+  readonly signIn: AccountTotpSignIn;
+  readonly code: string;
+}): Promise<string> {
+  const code = input.code.replace(/\s/gu, "");
+  if (!/^\d{6}$/u.test(code)) throw new Error("Enter the six-digit code from your authenticator app.");
+  const completion = await cognitoRequest(input.configuration, "RespondToAuthChallenge", {
+    ChallengeName: "SOFTWARE_TOKEN_MFA",
+    ChallengeResponses: {
+      USERNAME: input.signIn.username,
+      SOFTWARE_TOKEN_MFA_CODE: code,
+    },
+    ClientId: input.configuration.clientId,
+    Session: input.signIn.session,
+  });
+  return saveCognitoTokens(completion.AuthenticationResult ?? {}).accessToken;
 }
 
 export async function changeAccountPassword(input: {
