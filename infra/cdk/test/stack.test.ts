@@ -128,7 +128,7 @@ describe("TerminalDB Remote infrastructure", () => {
     template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
       RouteKey: "ANY /api/v1/account/{proxy+}",
       AuthorizationType: "JWT",
-      AuthorizationScopes: ["openid"],
+      AuthorizationScopes: ["openid", "aws.cognito.signin.user.admin"],
     });
     template.hasResourceProperties("AWS::Lambda::Function", {
       FunctionName: "terminaldb-remote-dev-control",
@@ -145,7 +145,7 @@ describe("TerminalDB Remote infrastructure", () => {
     template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
       RouteKey: "DELETE /api/v1/account",
       AuthorizationType: "JWT",
-      AuthorizationScopes: ["openid"],
+      AuthorizationScopes: ["openid", "aws.cognito.signin.user.admin"],
     });
     const policies = Object.values(template.findResources("AWS::IAM::Policy"))
       .map((resource) => JSON.stringify(resource));

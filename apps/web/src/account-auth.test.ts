@@ -5,9 +5,11 @@ import {
   accountTokenIssuedAt,
   beginAccountSignIn,
   beginAccountSignUp,
+  beginAccountTotpEnrollment,
   changeAccountPassword,
   clearAccountCredentials,
   completeAccountSignIn,
+  completeAccountTotpEnrollment,
   hasRecentAccountAuthentication,
   signOutAccount,
   type AccountAuthConfiguration,
@@ -18,6 +20,11 @@ const configuration: AccountAuthConfiguration = {
   domain: "https://login.example.invalid",
   issuer: "https://issuer.example.invalid/pool",
   callbackPath: "/auth/callback",
+};
+
+const cognitoConfiguration: AccountAuthConfiguration = {
+  ...configuration,
+  issuer: "https://cognito-idp.us-west-2.amazonaws.com/us-west-2_pool",
 };
 
 describe("Cognito account OAuth", () => {
@@ -105,6 +112,85 @@ describe("Cognito account OAuth", () => {
       .toBe("/?account=finish&intent=create");
   });
 
+  it("starts first-party signup and receives a Cognito TOTP secret without a TerminalDB API", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ChallengeName: "MFA_SETUP",
+        Session: "password-session",
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        SecretCode: "BASE32SECRET",
+        Session: "totp-session",
+      }), { status: 200 }));
+
+    await expect(beginAccountTotpEnrollment({
+      configuration: cognitoConfiguration,
+      username: "new-user",
+      password: "Unique-Password-42!",
+      bootstrapToken: "mac-approved-token",
+    })).resolves.toEqual({
+      username: "new-user",
+      secret: "BASE32SECRET",
+      session: "totp-session",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls.map((call) =>
+      (call[1]?.headers as Record<string, string>)["x-amz-target"]
+    )).toEqual([
+      "AWSCognitoIdentityProviderService.SignUp",
+      "AWSCognitoIdentityProviderService.InitiateAuth",
+      "AWSCognitoIdentityProviderService.AssociateSoftwareToken",
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      ClientId: "web-client",
+      Username: "new-user",
+      ClientMetadata: { bootstrapToken: "mac-approved-token" },
+    });
+    expect(fetchMock.mock.calls.every((call) =>
+      call[0] === "https://cognito-idp.us-west-2.amazonaws.com"
+    )).toBe(true);
+  });
+
+  it("verifies TOTP and stores Cognito tokens without exposing the setup key", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        Status: "SUCCESS",
+        Session: "verified-session",
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        AuthenticationResult: {
+          AccessToken: "direct-access",
+          RefreshToken: "direct-refresh",
+          ExpiresIn: 3_600,
+        },
+      }), { status: 200 }));
+
+    await expect(completeAccountTotpEnrollment({
+      configuration: cognitoConfiguration,
+      enrollment: {
+        username: "new-user",
+        secret: "BASE32SECRET",
+        session: "totp-session",
+      },
+      code: "123456",
+    })).resolves.toBe("direct-access");
+
+    expect(fetchMock.mock.calls.map((call) =>
+      (call[1]?.headers as Record<string, string>)["x-amz-target"]
+    )).toEqual([
+      "AWSCognitoIdentityProviderService.VerifySoftwareToken",
+      "AWSCognitoIdentityProviderService.RespondToAuthChallenge",
+    ]);
+    expect(String(fetchMock.mock.calls[0]?.[1]?.body)).not.toContain("BASE32SECRET");
+    expect(JSON.parse(localStorage.getItem("terminaldb.account.tokens.v1") ?? "{}")).toMatchObject({
+      accessToken: "direct-access",
+      refreshToken: "direct-refresh",
+      refreshMode: "cognito",
+    });
+  });
+
   it("changes the password directly with Cognito instead of the TerminalDB API", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response("{}", { status: 200 }),
@@ -182,6 +268,30 @@ describe("Cognito account OAuth", () => {
     expect(body).toContain("grant_type=refresh_token");
     expect(body).toContain("refresh_token=refresh-secret");
     expect(String(fetchMock.mock.calls[0]?.[0])).not.toContain("refresh-secret");
+  });
+
+  it("refreshes a direct Cognito signup session with the user-pool API", async () => {
+    localStorage.setItem("terminaldb.account.tokens.v1", JSON.stringify({
+      accessToken: "expired-access",
+      refreshToken: "direct-refresh-secret",
+      expiresAt: Date.now() - 1,
+      refreshMode: "cognito",
+    }));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        AuthenticationResult: { AccessToken: "fresh-direct-access", ExpiresIn: 3_600 },
+      }), { status: 200 }),
+    );
+
+    await expect(accountAccessToken(cognitoConfiguration)).resolves.toBe("fresh-direct-access");
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://cognito-idp.us-west-2.amazonaws.com");
+    const request = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(request).toEqual({
+      AuthFlow: "REFRESH_TOKEN_AUTH",
+      ClientId: "web-client",
+      AuthParameters: { REFRESH_TOKEN: "direct-refresh-secret" },
+    });
   });
 
   it("revokes the refresh token before navigating to Cognito logout", async () => {

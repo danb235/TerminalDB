@@ -163,6 +163,26 @@ npm run live:totp -w @terminaldb/test-harness -- \
 Record CloudFormation stack IDs, test-user IDs, timestamps, and pass/fail only.
 Never record pairing URLs, enrollment codes, OAuth tokens, or terminal output.
 
+## First-party authenticator enrollment execution record — 2026-08-10
+
+Status: **deployed and visible-product gates passed**.
+
+- Started from a live one-time Mac session in Codex's isolated in-app browser,
+  opened Accounts, and created a disposable account through the visible forms.
+- Confirmed the enrollment card, QR code, setup key, copy action, code field,
+  and help text remained centered and non-overlapping at desktop size. The QR
+  and manual setup key were both visible without changing screens.
+- Clicked **Copy setup key** and observed the visible success state. Completed
+  mandatory TOTP, signed out, then signed back in through Cognito managed login
+  with password and a fresh authenticator code.
+- Found the enrolled Mac online under **Your Macs**, opened its session, and
+  permanently deleted the disposable account through the visible confirmation
+  flow. Cognito returned to zero matching QA users.
+- The full Playwright responsive suite, repository tests, production build,
+  dependency audit, macOS suite, and deployed live TOTP qualification passed.
+- No password, authenticator secret, pairing link, token, terminal content, or
+  enrollment code was retained in screenshots, logs, or the repository.
+
 ## Managed-login branding execution record — 2026-08-10
 
 Status: **deployed and visible-product gates passed**.

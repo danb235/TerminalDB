@@ -11,12 +11,38 @@ interface StoredTokens {
   readonly accessToken: string;
   readonly refreshToken?: string;
   readonly expiresAt: number;
+  readonly refreshMode?: "oauth" | "cognito";
 }
 
 interface TokenResponse {
   readonly access_token?: string;
   readonly refresh_token?: string;
   readonly expires_in?: number;
+}
+
+interface CognitoAuthenticationResult {
+  readonly AccessToken?: string;
+  readonly RefreshToken?: string;
+  readonly ExpiresIn?: number;
+}
+
+interface CognitoChallengeResponse {
+  readonly ChallengeName?: string;
+  readonly Session?: string;
+  readonly SecretCode?: string;
+  readonly Status?: string;
+  readonly AuthenticationResult?: CognitoAuthenticationResult;
+}
+
+interface CognitoFailure {
+  readonly __type?: string;
+  readonly message?: string;
+}
+
+export interface AccountTotpEnrollment {
+  readonly username: string;
+  readonly secret: string;
+  readonly session: string;
 }
 
 const TOKEN_KEY = "terminaldb.account.tokens.v1";
@@ -74,6 +100,23 @@ function saveTokens(response: TokenResponse, previous?: StoredTokens): StoredTok
     accessToken: response.access_token,
     ...(refreshToken ? { refreshToken } : {}),
     expiresAt: Date.now() + Math.max(60, response.expires_in ?? 3_600) * 1_000,
+    refreshMode: previous?.refreshMode ?? "oauth",
+  };
+  localStorage.setItem(TOKEN_KEY, JSON.stringify(tokens));
+  return tokens;
+}
+
+function saveCognitoTokens(
+  response: CognitoAuthenticationResult,
+  previous?: StoredTokens,
+): StoredTokens {
+  if (!response.AccessToken) throw new Error("Cognito did not return an access token");
+  const refreshToken = response.RefreshToken ?? previous?.refreshToken;
+  const tokens: StoredTokens = {
+    accessToken: response.AccessToken,
+    ...(refreshToken ? { refreshToken } : {}),
+    expiresAt: Date.now() + Math.max(60, response.ExpiresIn ?? 3_600) * 1_000,
+    refreshMode: "cognito",
   };
   localStorage.setItem(TOKEN_KEY, JSON.stringify(tokens));
   return tokens;
@@ -139,6 +182,125 @@ function cognitoApiEndpoint(configuration: AccountAuthConfiguration): string {
     throw new Error("Account signup is not configured correctly");
   }
   return issuer.origin;
+}
+
+function cognitoFailureName(failure: CognitoFailure): string | undefined {
+  return failure.__type?.split("#").at(-1);
+}
+
+function friendlyCognitoError(failure: CognitoFailure, status: number): Error {
+  switch (cognitoFailureName(failure)) {
+    case "UsernameExistsException":
+      return new Error("That username is already registered. Sign in instead.");
+    case "InvalidPasswordException":
+      return new Error(
+        "Use at least 12 characters with upper and lowercase letters, a number, and a symbol.",
+      );
+    case "CodeMismatchException":
+    case "EnableSoftwareTokenMFAException":
+      return new Error("That code was not accepted. Wait for a new code and try again.");
+    case "NotAuthorizedException":
+      return new Error("That username is already registered, or the password was not accepted.");
+    case "LimitExceededException":
+    case "TooManyRequestsException":
+      return new Error("Too many attempts. Wait a moment and try again.");
+    default:
+      return new Error(failure.message ?? `Account setup failed (${status})`);
+  }
+}
+
+async function cognitoRequest(
+  configuration: AccountAuthConfiguration,
+  operation: string,
+  body: Record<string, unknown>,
+): Promise<CognitoChallengeResponse> {
+  const response = await fetch(cognitoApiEndpoint(configuration), {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-amz-json-1.1",
+      "x-amz-target": `AWSCognitoIdentityProviderService.${operation}`,
+    },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => ({})) as CognitoChallengeResponse & CognitoFailure;
+  if (!response.ok) throw friendlyCognitoError(payload, response.status);
+  return payload;
+}
+
+export async function beginAccountTotpEnrollment(input: {
+  readonly configuration: AccountAuthConfiguration;
+  readonly username: string;
+  readonly password: string;
+  readonly bootstrapToken: string;
+}): Promise<AccountTotpEnrollment> {
+  const username = input.username.trim();
+  if (!username) throw new Error("Choose a username.");
+  if (!input.password) throw new Error("Choose a password.");
+
+  try {
+    await cognitoRequest(input.configuration, "SignUp", {
+      ClientId: input.configuration.clientId,
+      Username: username,
+      Password: input.password,
+      ClientMetadata: { bootstrapToken: input.bootstrapToken },
+    });
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== "That username is already registered. Sign in instead.") {
+      throw error;
+    }
+    // A browser may have closed after Cognito created the account but before
+    // TOTP enrollment finished. The same password can safely resume that
+    // incomplete ceremony; a completed account is directed to normal sign-in.
+  }
+
+  const authentication = await cognitoRequest(input.configuration, "InitiateAuth", {
+    AuthFlow: "USER_AUTH",
+    ClientId: input.configuration.clientId,
+    AuthParameters: {
+      USERNAME: username,
+      PASSWORD: input.password,
+      PREFERRED_CHALLENGE: "PASSWORD",
+    },
+  });
+  if (authentication.ChallengeName !== "MFA_SETUP" || !authentication.Session) {
+    throw new Error("That account is already configured. Sign in instead.");
+  }
+  const association = await cognitoRequest(input.configuration, "AssociateSoftwareToken", {
+    Session: authentication.Session,
+  });
+  if (!association.SecretCode || !association.Session) {
+    throw new Error("Cognito could not start authenticator setup. Try again.");
+  }
+  return {
+    username,
+    secret: association.SecretCode,
+    session: association.Session,
+  };
+}
+
+export async function completeAccountTotpEnrollment(input: {
+  readonly configuration: AccountAuthConfiguration;
+  readonly enrollment: AccountTotpEnrollment;
+  readonly code: string;
+}): Promise<string> {
+  const code = input.code.replace(/\s/gu, "");
+  if (!/^\d{6}$/u.test(code)) throw new Error("Enter the six-digit code from your authenticator app.");
+  const verification = await cognitoRequest(input.configuration, "VerifySoftwareToken", {
+    Session: input.enrollment.session,
+    UserCode: code,
+    FriendlyDeviceName: "TerminalDB",
+  });
+  if (verification.Status !== "SUCCESS" || !verification.Session) {
+    throw new Error("That code was not accepted. Wait for a new code and try again.");
+  }
+  const completion = await cognitoRequest(input.configuration, "RespondToAuthChallenge", {
+    ClientId: input.configuration.clientId,
+    ChallengeName: "MFA_SETUP",
+    ChallengeResponses: { USERNAME: input.enrollment.username },
+    Session: verification.Session,
+  });
+  const tokens = saveCognitoTokens(completion.AuthenticationResult ?? {});
+  return tokens.accessToken;
 }
 
 export async function changeAccountPassword(input: {
@@ -268,6 +430,14 @@ export async function accountAccessToken(
     return undefined;
   }
   try {
+    if (current.refreshMode === "cognito") {
+      const response = await cognitoRequest(configuration, "InitiateAuth", {
+        AuthFlow: "REFRESH_TOKEN_AUTH",
+        ClientId: configuration.clientId,
+        AuthParameters: { REFRESH_TOKEN: current.refreshToken },
+      });
+      return saveCognitoTokens(response.AuthenticationResult ?? {}, current).accessToken;
+    }
     const response = await tokenRequest(
       configuration,
       new URLSearchParams({

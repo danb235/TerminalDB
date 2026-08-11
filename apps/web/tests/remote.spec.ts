@@ -879,16 +879,15 @@ test("requires a Mac approval for account creation and keeps sign-in available",
   await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeVisible();
 
   await page.goto("/?unpaired=1&account=create#account-bootstrap=approved-mac-token");
+  const appOrigin = new URL(page.url()).origin;
   await expect(page.getByRole("heading", { name: "Create your TerminalDB account" })).toBeVisible();
   await expect.poll(() => page.url()).not.toContain("approved-mac-token");
-  await page.getByRole("button", { name: "Continue to secure account creation" }).click();
-  await page.waitForURL("https://login.example.invalid/**");
-  const signupUrl = new URL(page.url());
-  expect(signupUrl.pathname).toBe("/signup");
-  expect(signupUrl.searchParams.get("client_id")).toBe("web-client");
-  expect(signupUrl.searchParams.get("response_type")).toBe("code");
-  expect(signupUrl.searchParams.get("code_challenge_method")).toBe("S256");
-  expect(signupUrl.searchParams.get("code_challenge")).toBeTruthy();
+  await page.getByRole("button", { name: "Create account", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Choose your credentials" })).toBeVisible();
+  await expect(page.getByLabel("Username")).toHaveAttribute("autocomplete", "username");
+  await expect(page.getByLabel("Password", { exact: true }))
+    .toHaveAttribute("autocomplete", "new-password");
+  expect(new URL(page.url()).origin).toBe(appOrigin);
   expect(page.url()).not.toContain("approved-mac-token");
   await page.goto("/");
   await page.evaluate(() => sessionStorage.removeItem("terminaldb.account.bootstrap.v1"));

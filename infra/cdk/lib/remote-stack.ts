@@ -504,14 +504,14 @@ export class TerminalDBRemoteStack extends Stack {
       methods: [apigatewayv2.HttpMethod.ANY],
       integration: httpIntegration,
       authorizer: accountAuthorizer,
-      authorizationScopes: ["openid"],
+      authorizationScopes: ["openid", "aws.cognito.signin.user.admin"],
     });
     httpApi.addRoutes({
       path: "/api/v1/account",
       methods: [apigatewayv2.HttpMethod.DELETE],
       integration: httpIntegration,
       authorizer: accountAuthorizer,
-      authorizationScopes: ["openid"],
+      authorizationScopes: ["openid", "aws.cognito.signin.user.admin"],
     });
     controlFunction.addEnvironment("COGNITO_AUTH_ENABLED", "true");
     controlFunction.addEnvironment("COGNITO_CLIENT_ID", userPoolClient.userPoolClientId);
