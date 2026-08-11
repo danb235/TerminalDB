@@ -115,14 +115,14 @@ one native window:
 
 - Live **READY**, **RUNNING**, and exit-state header above the terminal
 - Current command, directory, inferred environment, exit status, and duration
-- One-click **Ask AI**, **Explain / Fix**, **Paste**, **Rerun**, **Bookmark**,
-  **Runbook**, **Details**, and **History** actions
+- Quick **Run again**, **Paste to edit**, **Save as Playbook**, **Details**,
+  and **Command History** actions, with secondary tools grouped under **More**
 - Search across commands, paths, output, projects, status, date, environment,
   and bookmarks
-- Full inspector with metadata, output, approvals, annotations, related
+- In-window inspector with metadata, output, approvals, annotations, related
   history, and JSON/text export
-- Natural-language filter phrases, structured `status:`, `project:`, `host:`,
-  and `env:` queries, reusable saved searches, and recent directories
+- Plain-language search plus simple **All commands**, **Failed**, and
+  **Bookmarked** scopes
 - Local JSON persistence with bounded records and output
 - Best-effort redaction of common API keys, bearer tokens, and password
   assignments before history is written
@@ -144,7 +144,7 @@ one native window:
 - Monitor Center follows running commands, retains completed output in memory,
   marks commands stalled after three minutes, and notifies on failures or
   commands lasting at least 30 seconds
-- Parameterized multi-step runbooks can be created or edited, previewed,
+- Parameterized multi-step playbooks can be created or edited, previewed,
   pasted for review, or sent through permissioned execution
 - Workspaces save and restore tabs, splits, directories, Claude Code account
   selection, model, AI-pane state, and conversation context
@@ -168,7 +168,7 @@ current project does not have Apple Developer ID notarization, a migration
 guarantee, or a stable public API.
 
 The design source covers the broader product direction, interaction states,
-menus, accessibility behavior, environment safety, history, runbooks, and
+menus, accessibility behavior, environment safety, history, playbooks, and
 monitoring surfaces:
 
 - [Interactive desktop design export](design/desktop/TerminalDB.dc.html)
@@ -371,8 +371,10 @@ Completed records contain:
 - timestamp, host, and inferred environment; and
 - a stable record identifier.
 
-Open **View → History** or press **Command-Y** to search and inspect
-records. Clearing TerminalDB history does not change `.zsh_history`.
+Open **View → Command History** or press **Command-Y** to search and inspect
+records inside the active terminal window. Run a command again, paste it for
+editing, or save it as a Playbook from the same view. Clearing TerminalDB
+history does not change `.zsh_history`.
 
 ## Keyboard shortcuts
 
@@ -387,7 +389,7 @@ records. Clearing TerminalDB history does not change `.zsh_history`.
 | Close window | Shift-Command-W |
 | Show or hide AI chat | Shift-Command-L |
 | Command history | Command-Y |
-| Runbooks | Command-R |
+| Playbooks | Command-R |
 | Run last command again | Shift-Command-R |
 | Monitor Center | Option-Command-M |
 | Clear scrollback | Command-K |
@@ -411,9 +413,9 @@ TerminalDB deliberately keeps its implementation small and inspectable:
 | `apps/macos/src/TerminalInspector.*` | Read-only command validation and sandboxed inspection |
 | `apps/macos/src/ClaudeProfile.*` | Isolated Claude Code profiles and local profile persistence |
 | `apps/macos/src/ClaudeStatusBar.*` | Active account, sign-in state, usage normalization and refresh |
-| `apps/macos/src/TerminalLedger.*` | Command lifecycle header, redacted history store, history window |
+| `apps/macos/src/TerminalLedger.*` | Command lifecycle header, redacted history store, in-window history panel |
 | `apps/macos/src/TerminalPermissions.*` | Risk classification, approvals, and production confirmation |
-| `apps/macos/src/TerminalProduct.*` | Runbooks, monitors, workspaces, project/environment/settings views |
+| `apps/macos/src/TerminalProduct.*` | Playbooks, monitors, workspaces, project/environment/settings views |
 | `apps/macos/src/TerminalTheme.*` | Graphite Ledger colors, type, and terminal appearance |
 | `apps/macos/Resources/` | Font, license, icon, and shell bridge assets |
 | `apps/web/` | Mobile-first React/PWA controller |
@@ -436,7 +438,7 @@ for ephemeral trust and routing metadata while enabled.
 | --- | --- | --- |
 | AI provider, API key, and models | TerminalDB `NSUserDefaults` preferences | Key is masked in the UI but is not Keychain-protected |
 | Command ledger | `~/Library/Application Support/TerminalDB/command-history.json` | Mode `0600`, capped at 5,000 records |
-| Runbooks and workspaces | `~/Library/Application Support/TerminalDB/product-state.json` | Local persistent workflow state |
+| Playbooks and workspaces | `~/Library/Application Support/TerminalDB/product-state.json` | Local persistent workflow state |
 | Claude profiles | `~/Library/Application Support/TerminalDB/ClaudeProfiles/` | Separate configuration directory per profile |
 | Claude Code credentials | macOS Keychain | Created and read through the profile's Claude Code flow |
 | Temporary shell markers | A TerminalDB-created temporary directory | Removed with the terminal session |
@@ -514,7 +516,7 @@ make clean           # Remove the generated build directory
 clipboard and control-key behavior, output following, code-block extraction,
 AI transcript and terminal context, inspection validation and rendering,
 per-command Paste/Run and patch actions, permission risk classification,
-ledger redaction/environment handling, runbook/workspace/monitor persistence,
+ledger redaction/environment handling, playbook/workspace/monitor persistence,
 usage normalization, profile authentication/removal, code signing, and
 background AppKit tab integration.
 
@@ -617,12 +619,12 @@ proportionate regression test.
 ## Roadmap
 
 - virtualized structured command blocks embedded throughout terminal
-  scrollback rather than only the active ledger header and history window;
+  scrollback rather than only the active ledger header and history panel;
 - interactive agent responses to long-running process prompts and notification
   actions;
 - richer multi-file editing, conflict resolution, and durable revert
   checkpoints across app launches;
-- optional encrypted sync and team-shared runbook governance;
+- optional encrypted sync and team-shared playbook governance;
 - Apple Developer ID signing and notarization, migration tooling, and optional
   privacy preserving diagnostics; and
 - broader terminal-protocol compatibility.

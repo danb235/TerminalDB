@@ -11,6 +11,7 @@ extern NSNotificationName const TerminalLedgerDidChangeNotification;
 @property(nonatomic, copy, readonly) NSArray<NSDictionary *> *records;
 
 + (instancetype)sharedStore;
++ (instancetype)ephemeralStoreForTesting;
 + (BOOL)runPrivacyAndEnvironmentSelfTests;
 - (NSDictionary *)addCommand:(NSString *)command
                     directory:(NSString *)directory
@@ -60,9 +61,11 @@ extern NSNotificationName const TerminalLedgerDidChangeNotification;
 
 @end
 
-@interface TerminalLedgerWindowController
-    : NSWindowController <NSTableViewDataSource, NSTableViewDelegate,
-                          NSSearchFieldDelegate>
+@interface TerminalHistoryController
+    : NSObject <NSTableViewDataSource, NSTableViewDelegate,
+                NSSearchFieldDelegate>
+
+@property(nonatomic, strong, readonly) NSView *panelView;
 
 @property(nonatomic, copy, nullable) void (^pasteHandler)(NSString *command);
 @property(nonatomic, copy, nullable) void (^askHandler)(NSString *command);
@@ -72,6 +75,7 @@ extern NSNotificationName const TerminalLedgerDidChangeNotification;
 
 - (instancetype)initWithStore:(TerminalLedgerStore *)store
                          theme:(TerminalTheme *)theme;
++ (BOOL)runInterfaceSelfTests;
 - (void)reload;
 
 @end

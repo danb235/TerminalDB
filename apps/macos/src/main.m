@@ -543,7 +543,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
 @property(nonatomic, strong) TerminalLedgerBar *ledgerBar;
 @property(nonatomic, strong) TerminalLedgerStore *ledgerStore;
 @property(nonatomic, strong, nullable)
-    TerminalLedgerWindowController *ledgerWindowController;
+    TerminalHistoryController *historyController;
 @property(nonatomic, strong, nullable)
     TerminalCommandInspectorController *commandInspectorController;
 @property(nonatomic, copy) NSString *activeLedgerCommand;
@@ -666,6 +666,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
     BOOL visualQA = [NSProcessInfo.processInfo.arguments
         containsObject:@"--visual-qa"];
     if (visualQA) {
+        self.productStore = [TerminalProductStore ephemeralStoreForTesting];
         NSString *fixtureRoot = [NSTemporaryDirectory()
             stringByAppendingPathComponent:@"terminaldb-visual-qa"];
         NSString *profilesRoot =
@@ -805,6 +806,12 @@ static BOOL TerminalDBWriteAll(int descriptor,
                     @"bookmarked" : @NO,
                     @"annotations" : @[],
                 };
+                [controller.ledgerStore
+                    addCommand:visualRecord[@"command"]
+                     directory:visualRecord[@"directory"]
+                        output:visualRecord[@"output"]
+                      exitCode:[visualRecord[@"exit_code"] integerValue]
+                      duration:[visualRecord[@"duration"] doubleValue]];
                 [controller.ledgerBar displayRecord:visualRecord];
                 if ([NSProcessInfo.processInfo.arguments
                         containsObject:@"--visual-qa-scrollback"]) {
@@ -861,7 +868,6 @@ static BOOL TerminalDBWriteAll(int descriptor,
                 if ([NSProcessInfo.processInfo.arguments
                         containsObject:@"--visual-qa-section=history"]) {
                     [controller showCommandHistory:nil];
-                    [controller.ledgerWindowController.window orderBack:nil];
                 } else if ([NSProcessInfo.processInfo.arguments
                                containsObject:
                                    @"--visual-qa-section=inspector"]) {
@@ -1057,7 +1063,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
                       keyEquivalent:@""];
     saveWorkspace.target = self;
     NSMenuItem *runbooks =
-        [shellMenu addItemWithTitle:@"Runbooks…"
+        [shellMenu addItemWithTitle:@"Playbooks…"
                              action:@selector(showRunbooksFromMenu:)
                       keyEquivalent:@"r"];
     runbooks.target = self;
@@ -1185,7 +1191,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
     initialChatToggle.keyEquivalentModifierMask =
         NSEventModifierFlagCommand | NSEventModifierFlagShift;
     NSMenuItem *history = [self.viewMenu
-        addItemWithTitle:@"History"
+        addItemWithTitle:@"Command History"
                   action:@selector(showCommandHistory:)
            keyEquivalent:@"y"];
     history.target = self;
@@ -1256,19 +1262,12 @@ static BOOL TerminalDBWriteAll(int descriptor,
     self.historyMenu = [[NSMenu alloc] initWithTitle:@"History"];
     NSMenu *historyMenu = self.historyMenu;
     NSMenuItem *searchHistory =
-        [historyMenu addItemWithTitle:@"Search History…"
+        [historyMenu addItemWithTitle:@"Command History"
                                action:@selector(showCommandHistory:)
                         keyEquivalent:@"y"];
     searchHistory.target = self;
-    NSMenuItem *bookmarks =
-        [historyMenu addItemWithTitle:@"Bookmarks"
-                               action:@selector(showCommandHistory:)
-                        keyEquivalent:@"b"];
-    bookmarks.target = self;
-    bookmarks.keyEquivalentModifierMask =
-        NSEventModifierFlagCommand | NSEventModifierFlagOption;
     NSMenuItem *saveLast =
-        [historyMenu addItemWithTitle:@"Save Last Command as Runbook…"
+        [historyMenu addItemWithTitle:@"Save Last Command as Playbook"
                                action:@selector(saveLastCommandAsRunbook:)
                         keyEquivalent:@""];
     saveLast.target = self;
@@ -1309,11 +1308,6 @@ static BOOL TerminalDBWriteAll(int descriptor,
         }
     }
     recentDirectories.submenu = recentMenu;
-    NSMenuItem *savedSearches =
-        [historyMenu addItemWithTitle:@"Saved Searches…"
-                               action:@selector(showCommandHistory:)
-                        keyEquivalent:@""];
-    savedSearches.target = self;
     [historyMenu addItem:NSMenuItem.separatorItem];
     NSMenuItem *clearHistory =
         [historyMenu addItemWithTitle:@"Clear History…"
@@ -2551,23 +2545,17 @@ static BOOL TerminalDBWriteAll(int descriptor,
 - (void)saveRunbookFromRecord:(NSDictionary *)record {
     NSString *command = record[@"command"];
     if (command.length == 0) return;
-    NSAlert *alert = [[NSAlert alloc] init];
-    alert.messageText = @"Save command as a runbook";
-    alert.informativeText =
-        @"Give this reusable workflow a short, memorable name.";
-    [alert addButtonWithTitle:@"Save Runbook"];
-    [alert addButtonWithTitle:@"Cancel"];
-    NSTextField *nameField =
-        [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 420, 24)];
-    NSString *firstWord =
+    NSString *firstLine =
         [command componentsSeparatedByCharactersInSet:
-            NSCharacterSet.whitespaceCharacterSet].firstObject;
-    nameField.stringValue = firstWord.length > 0
-        ? [NSString stringWithFormat:@"%@ workflow", firstWord]
-        : @"Command workflow";
-    alert.accessoryView = nameField;
-    if ([alert runModal] != NSAlertFirstButtonReturn) return;
-    [[self productStore] saveRunbookNamed:nameField.stringValue
+            NSCharacterSet.newlineCharacterSet].firstObject ?: @"";
+    firstLine = [firstLine stringByTrimmingCharactersInSet:
+        NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (firstLine.length > 48) {
+        firstLine = [[firstLine substringToIndex:47]
+            stringByAppendingString:@"…"];
+    }
+    NSString *name = firstLine.length > 0 ? firstLine : @"Saved command";
+    [[self productStore] saveRunbookNamed:name
                                   command:command
                                 directory:record[@"directory"] ?:
                                     [self currentAssistantDirectory]];
@@ -2606,7 +2594,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
     alert.messageText = @"Clear TerminalDB history?";
     alert.informativeText =
         @"This permanently removes command blocks, bookmarks, and annotations "
-         "from this Mac. Runbooks and workspaces are kept.";
+         "from this Mac. Playbooks and workspaces are kept.";
     [alert addButtonWithTitle:@"Clear History"];
     [alert addButtonWithTitle:@"Cancel"];
     if ([alert runModal] == NSAlertFirstButtonReturn) {
@@ -3591,26 +3579,28 @@ static BOOL TerminalDBWriteAll(int descriptor,
 - (void)showCommandHistory:(id)sender {
     (void)sender;
     AppDelegate *controller = [self activeTerminalController] ?: self;
-    if (controller.ledgerWindowController == nil) {
-        controller.ledgerWindowController =
-            [[TerminalLedgerWindowController alloc]
+    if (controller.historyController == nil) {
+        controller.historyController =
+            [[TerminalHistoryController alloc]
                 initWithStore:controller.ledgerStore ?:
                     [TerminalLedgerStore sharedStore]
                        theme:controller.theme ?: [TerminalTheme preferredTheme]];
         __weak AppDelegate *weakController = controller;
-        controller.ledgerWindowController.pasteHandler =
+        controller.historyController.pasteHandler =
             ^(NSString *command) {
                 AppDelegate *strongController = weakController;
                 if (strongController == nil) return;
+                [strongController hideUtilityPanel:nil];
                 [strongController pasteCommandForReview:command];
             };
-        controller.ledgerWindowController.rerunHandler =
+        controller.historyController.rerunHandler =
             ^(NSString *command) {
                 AppDelegate *strongController = weakController;
                 if (strongController == nil) return;
+                [strongController hideUtilityPanel:nil];
                 [strongController requestExecutionForCommand:command];
             };
-        controller.ledgerWindowController.askHandler =
+        controller.historyController.askHandler =
             ^(NSString *command) {
                 AppDelegate *strongController = weakController;
                 if (strongController == nil) return;
@@ -3621,15 +3611,16 @@ static BOOL TerminalDBWriteAll(int descriptor,
                         command]];
                 [strongController.window makeKeyAndOrderFront:nil];
             };
-        controller.ledgerWindowController.runbookHandler =
+        controller.historyController.runbookHandler =
             ^(NSDictionary *record) {
                 [weakController saveRunbookFromRecord:record];
             };
     }
-    [controller.ledgerWindowController reload];
-    [controller.ledgerWindowController.window center];
-    [controller.ledgerWindowController showWindow:nil];
-    [controller.ledgerWindowController.window makeKeyAndOrderFront:nil];
+    [controller.historyController reload];
+    [controller showUtilityPanelView:controller.historyController.panelView
+                               title:@"Command History"
+                           fullWidth:YES
+                      dismissHandler:nil];
 }
 
 - (AppDelegate *)rootController {
@@ -4138,7 +4129,10 @@ static BOOL TerminalDBWriteAll(int descriptor,
     self.terminalInspector = [[TerminalInspector alloc] init];
     self.permissionCenter =
         [[TerminalPermissionCenter alloc] initWithTheme:self.theme];
-    self.ledgerStore = [TerminalLedgerStore sharedStore];
+    self.ledgerStore = [NSProcessInfo.processInfo.arguments
+        containsObject:@"--visual-qa"]
+        ? [TerminalLedgerStore ephemeralStoreForTesting]
+        : [TerminalLedgerStore sharedStore];
     self.activeLedgerCommand = @"";
     self.activeLedgerDirectory = @"";
     self.activeLedgerOutputStart = 0;
@@ -4508,6 +4502,12 @@ static BOOL TerminalDBWriteAll(int descriptor,
                        MAX(self.utilityPanelMinimumContentHeight,
                            viewport.height));
         [utilityContent layoutSubtreeIfNeeded];
+        if (NSHeight(utilityContent.frame) <= viewport.height + 0.5) {
+            [self.utilityPanelScrollView.contentView
+                scrollToPoint:NSZeroPoint];
+            [self.utilityPanelScrollView reflectScrolledClipView:
+                self.utilityPanelScrollView.contentView];
+        }
     }
     self.ledgerBar.hidden = self.focusMode;
     self.claudeStatusBar.hidden = self.focusMode;
@@ -8741,6 +8741,10 @@ static BOOL TerminalDBWriteAll(int descriptor,
         fprintf(stderr, "FAIL embedded command details interface\n");
         failures++;
     }
+    if (![TerminalHistoryController runInterfaceSelfTests]) {
+        fprintf(stderr, "FAIL embedded command history interface\n");
+        failures++;
+    }
     if (![TerminalPermissionCenter runSelfTests]) {
         fprintf(stderr, "FAIL command permission risk classification\n");
         failures++;
@@ -8748,7 +8752,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
     TerminalProductStore *testProductStore =
         [TerminalProductStore ephemeralStoreForTesting];
     if (![testProductStore runSelfTests]) {
-        fprintf(stderr, "FAIL runbook/workspace/monitor product store\n");
+        fprintf(stderr, "FAIL playbook/workspace/monitor product store\n");
         failures++;
     }
     if (![TerminalProductWindowController
