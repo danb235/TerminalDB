@@ -80,7 +80,26 @@ static BOOL ClaudeProfileIdentifierIsSafe(NSString *identifier) {
 @implementation ClaudeProfileManager
 
 + (BOOL)runStorageSelfTests {
-    return ClaudeProfileIdentifierIsSafe(
+    NSString *testRoot = [NSTemporaryDirectory()
+        stringByAppendingPathComponent:[NSString stringWithFormat:
+            @"terminaldb-profile-manager-%@", NSUUID.UUID.UUIDString]];
+    ClaudeProfileManager *manager =
+        [self managerForTestingAtRoot:testRoot];
+    NSError *error = nil;
+    ClaudeProfile *profile = [manager createProfileWithLabel:@"Isolated"
+                                                       error:&error];
+    NSString *expectedStore =
+        [testRoot stringByAppendingPathComponent:@"profiles.json"];
+    NSString *expectedDirectory = [[testRoot
+        stringByAppendingPathComponent:@"ClaudeProfiles"]
+        stringByAppendingPathComponent:profile.identifier ?: @""];
+    BOOL isolated = error == nil && profile != nil &&
+        [manager.storePath isEqualToString:expectedStore] &&
+        [profile.profileDirectory isEqualToString:expectedDirectory] &&
+        [NSFileManager.defaultManager fileExistsAtPath:expectedStore];
+    [NSFileManager.defaultManager removeItemAtPath:testRoot error:nil];
+
+    return isolated && ClaudeProfileIdentifierIsSafe(
                @"01234567-89ab-cdef-0123-456789abcdef") &&
         ClaudeProfileIdentifierIsSafe(@"work-profile-2") &&
         !ClaudeProfileIdentifierIsSafe(@"../../outside") &&
@@ -93,15 +112,24 @@ static BOOL ClaudeProfileIdentifierIsSafe(NSString *identifier) {
 }
 
 - (instancetype)init {
-    self = [super init];
-    if (self == nil) return nil;
-
     NSString *applicationSupport =
         NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory,
                                              NSUserDomainMask,
                                              YES).firstObject;
     NSString *root =
         [applicationSupport stringByAppendingPathComponent:@"TerminalDB"];
+    return [self initWithStorageRoot:root];
+}
+
++ (instancetype)managerForTestingAtRoot:(NSString *)root {
+    NSParameterAssert(root.length > 0);
+    return [[self alloc] initWithStorageRoot:root];
+}
+
+- (instancetype)initWithStorageRoot:(NSString *)root {
+    self = [super init];
+    if (self == nil) return nil;
+
     _profilesRoot =
         [root stringByAppendingPathComponent:@"ClaudeProfiles"];
     _storePath = [root stringByAppendingPathComponent:@"profiles.json"];

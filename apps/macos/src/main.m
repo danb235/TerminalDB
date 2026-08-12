@@ -646,7 +646,20 @@ static BOOL TerminalDBWriteAll(int descriptor,
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     (void)notification;
-    self.profileManager = [[ClaudeProfileManager alloc] init];
+    BOOL backgroundTabQA = [NSProcessInfo.processInfo.arguments
+        containsObject:@"--background-tab-qa"];
+    BOOL visualQA = [NSProcessInfo.processInfo.arguments
+        containsObject:@"--visual-qa"];
+    NSString *launchFixtureRoot = nil;
+    if (backgroundTabQA || visualQA) {
+        launchFixtureRoot = [NSTemporaryDirectory()
+            stringByAppendingPathComponent:[NSString stringWithFormat:
+                @"terminaldb-launch-qa-%@", NSUUID.UUID.UUIDString]];
+        self.profileManager =
+            [ClaudeProfileManager managerForTestingAtRoot:launchFixtureRoot];
+    } else {
+        self.profileManager = [[ClaudeProfileManager alloc] init];
+    }
     self.apiConfiguration = [[ClaudeAPIConfiguration alloc] init];
     self.theme = [TerminalTheme preferredTheme];
     self.productStore = [TerminalProductStore sharedStore];
@@ -661,17 +674,13 @@ static BOOL TerminalDBWriteAll(int descriptor,
     self.remoteInstanceIdentifier = NSUUID.UUID.UUIDString.lowercaseString;
     NSWindow.allowsAutomaticWindowTabbing = YES;
     [self installApplicationMenu];
-    BOOL backgroundTabQA = [NSProcessInfo.processInfo.arguments
-        containsObject:@"--background-tab-qa"];
-    BOOL visualQA = [NSProcessInfo.processInfo.arguments
-        containsObject:@"--visual-qa"];
     if (visualQA) {
         self.productStore = [TerminalProductStore ephemeralStoreForTesting];
         NSString *fixtureRoot = [NSTemporaryDirectory()
             stringByAppendingPathComponent:@"terminaldb-visual-qa"];
         [NSFileManager.defaultManager removeItemAtPath:fixtureRoot error:nil];
         NSString *profilesRoot =
-            [fixtureRoot stringByAppendingPathComponent:@"profiles"];
+            [fixtureRoot stringByAppendingPathComponent:@"ClaudeProfiles"];
         NSArray<NSDictionary *> *fixtureAccounts = @[
             @{
                 @"id" : @"demo-team",
@@ -791,15 +800,13 @@ static BOOL TerminalDBWriteAll(int descriptor,
         }
 
         ClaudeProfileManager *fixtureManager =
-            [[ClaudeProfileManager alloc] init];
-        [fixtureManager setValue:profilesRoot forKey:@"profilesRoot"];
-        [fixtureManager
-            setValue:[fixtureRoot stringByAppendingPathComponent:@"profiles.json"]
-              forKey:@"storePath"];
+            [ClaudeProfileManager managerForTestingAtRoot:fixtureRoot];
         [fixtureManager setValue:fixtureProfiles forKey:@"profiles"];
         [fixtureManager setValue:fixtureProfiles.firstObject
                           forKey:@"lastSelectedProfile"];
         self.profileManager = fixtureManager;
+        [NSFileManager.defaultManager removeItemAtPath:launchFixtureRoot
+                                                  error:nil];
     }
     if (!backgroundTabQA && !visualQA &&
         self.apiConfiguration.hasAPIKey) {
@@ -812,6 +819,8 @@ static BOOL TerminalDBWriteAll(int descriptor,
     }
     if (backgroundTabQA) {
         [self runBackgroundTabQA];
+        [NSFileManager.defaultManager removeItemAtPath:launchFixtureRoot
+                                                  error:nil];
     } else {
         [self newTerminalWindow:nil];
         if (!visualQA) {
@@ -3725,6 +3734,17 @@ static BOOL TerminalDBWriteAll(int descriptor,
 }
 
 - (void)runBackgroundTabQA {
+    if (self.profileManager.profiles.count == 0) {
+        NSError *fixtureError = nil;
+        [self.profileManager createProfileWithLabel:@"QA Account"
+                                              error:&fixtureError];
+        if (fixtureError != nil) {
+            fprintf(stderr, "FAIL background tab profile fixture\n");
+            TerminalDBExitStatus = 1;
+            [NSApp terminate:nil];
+            return;
+        }
+    }
     AppDelegate *first = [self createTerminalController];
     AppDelegate *second = [self createTerminalController];
     // QA must never add its synthetic commands to the user's local ledger.
@@ -8523,7 +8543,8 @@ static BOOL TerminalDBWriteAll(int descriptor,
     [testProfile setValue:@"Test" forKey:@"label"];
     [testProfile setValue:testProfileRoot forKey:@"profileDirectory"];
     ClaudeProfileManager *testProfileManager =
-        [[ClaudeProfileManager alloc] init];
+        [ClaudeProfileManager managerForTestingAtRoot:
+            [testProfileRoot stringByAppendingPathComponent:@"manager"]];
     [testProfileManager markProfileReadyForInteractiveClaude:testProfile];
 
     NSData *readyData = [NSData dataWithContentsOfFile:testStatePath];
@@ -8550,7 +8571,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
             @"terminaldb-profile-removal-test-%@",
             NSUUID.UUID.UUIDString]];
     NSString *removalProfilesRoot =
-        [removalRoot stringByAppendingPathComponent:@"profiles"];
+        [removalRoot stringByAppendingPathComponent:@"ClaudeProfiles"];
     NSString *removalProfileDirectory =
         [removalProfilesRoot stringByAppendingPathComponent:@"remove-me"];
     [NSFileManager.defaultManager
@@ -8565,11 +8586,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
     [removableProfile setValue:removalProfileDirectory
                         forKey:@"profileDirectory"];
     ClaudeProfileManager *removalManager =
-        [[ClaudeProfileManager alloc] init];
-    [removalManager setValue:removalProfilesRoot forKey:@"profilesRoot"];
-    [removalManager
-        setValue:[removalRoot stringByAppendingPathComponent:@"profiles.json"]
-          forKey:@"storePath"];
+        [ClaudeProfileManager managerForTestingAtRoot:removalRoot];
     [removalManager setValue:@[removableProfile] forKey:@"profiles"];
     [removalManager setValue:removableProfile
                       forKey:@"lastSelectedProfile"];
