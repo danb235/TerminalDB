@@ -8,6 +8,17 @@
 static NSTimeInterval const ClaudeUsageRefreshInterval = 5.0 * 60.0;
 static NSTimeInterval const ClaudeUsageFreshnessInterval = 10.0 * 60.0;
 static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
+
+static dispatch_queue_t ClaudeUsageRefreshQueue(void) {
+    static dispatch_queue_t queue;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        queue = dispatch_queue_create(
+            "com.terminaldb.app.claude-usage-refresh",
+            DISPATCH_QUEUE_SERIAL);
+    });
+    return queue;
+}
 static NSTimeInterval const ClaudeUsageForecastMinimumSpan = 15.0 * 60.0;
 static NSTimeInterval const ClaudeUsageForecastLookback = 60.0 * 60.0;
 static NSTimeInterval const ClaudeUsageHistoryRetention =
@@ -273,18 +284,6 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         self.usagePanelView = content;
     }
     [self refreshUsageWindowContents];
-    BOOL dashboardRefreshDue =
-        self.claudeExecutable.length > 0 &&
-        self.profileManager.profiles.count > 0 &&
-        !self.usageDashboardRefreshInFlight &&
-        (self.lastUsageDashboardRefreshAttempt == nil ||
-         -self.lastUsageDashboardRefreshAttempt.timeIntervalSinceNow >=
-             ClaudeUsageRefreshInterval);
-    if (dashboardRefreshDue) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self refreshUsageWindow:nil];
-        });
-    }
     return self.usagePanelView;
 }
 
@@ -334,7 +333,6 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         [self.profileManager.profiles copy];
     if (profiles.count == 0) return;
     self.usageDashboardRefreshInFlight = YES;
-    self.lastUsageDashboardRefreshAttempt = [NSDate date];
     [self refreshUsageWindowContents];
     NSString *executable = self.claudeExecutable;
     NSMutableArray<NSDictionary *> *requests = [NSMutableArray array];
@@ -345,12 +343,10 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         }];
     }
     __weak typeof(self) weakSelf = self;
-    dispatch_group_t group = dispatch_group_create();
-    dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
-    NSMutableDictionary<NSString *, NSDictionary *> *results =
-        [NSMutableDictionary dictionary];
-    for (NSDictionary *request in requests) {
-        dispatch_group_async(group, queue, ^{
+    dispatch_async(ClaudeUsageRefreshQueue(), ^{
+        NSMutableDictionary<NSString *, NSDictionary *> *results =
+            [NSMutableDictionary dictionary];
+        for (NSDictionary *request in requests) {
             ClaudeProfile *profile = request[@"profile"];
             NSDictionary *environment = request[@"environment"];
             NSMutableDictionary *result = [[ClaudeStatusBar
@@ -369,37 +365,35 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
                     [result removeObjectForKey:@"status_error"];
                 }
             }
-            @synchronized (results) {
-                results[profile.identifier] = [result copy];
-            }
-        });
-    }
-    dispatch_group_notify(group, dispatch_get_main_queue(), ^{
-        ClaudeStatusBar *strongSelf = weakSelf;
-        if (strongSelf == nil) return;
-        strongSelf.usageDashboardRefreshInFlight = NO;
-        strongSelf.usageDashboardResults = [results copy];
-        NSString *selectedIdentifier =
-            strongSelf.selectedProfile.identifier;
-        NSDictionary *selectedResult = selectedIdentifier.length > 0
-            ? strongSelf.usageDashboardResults[selectedIdentifier] : nil;
-        NSString *selectedState = selectedResult[@"account_state"];
-        if ([selectedState isEqualToString:@"signed_out"]) {
-            strongSelf.accountStatusKnown = YES;
-            strongSelf.accountIsLoggedIn = NO;
-            strongSelf.usageRefreshError = @"Sign in to refresh this account’s usage.";
-        } else if ([selectedState isEqualToString:@"signed_in"]) {
-            strongSelf.accountStatusKnown = YES;
-            strongSelf.accountIsLoggedIn = YES;
-            strongSelf.usageRefreshError = selectedResult[@"refresh_error"];
-        } else if (selectedResult != nil) {
-            strongSelf.accountStatusKnown = NO;
-            strongSelf.accountIsLoggedIn = NO;
-            strongSelf.usageRefreshError = selectedResult[@"status_error"]
-                ?: selectedResult[@"refresh_error"];
+            results[profile.identifier] = [result copy];
         }
-        [strongSelf refreshUsage];
-        [strongSelf refreshUsageWindowContents];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ClaudeStatusBar *strongSelf = weakSelf;
+            if (strongSelf == nil) return;
+            strongSelf.usageDashboardRefreshInFlight = NO;
+            strongSelf.usageDashboardResults = [results copy];
+            NSString *selectedIdentifier =
+                strongSelf.selectedProfile.identifier;
+            NSDictionary *selectedResult = selectedIdentifier.length > 0
+                ? strongSelf.usageDashboardResults[selectedIdentifier] : nil;
+            NSString *selectedState = selectedResult[@"account_state"];
+            if ([selectedState isEqualToString:@"signed_out"]) {
+                strongSelf.accountStatusKnown = YES;
+                strongSelf.accountIsLoggedIn = NO;
+                strongSelf.usageRefreshError = @"Sign in to refresh this account’s usage.";
+            } else if ([selectedState isEqualToString:@"signed_in"]) {
+                strongSelf.accountStatusKnown = YES;
+                strongSelf.accountIsLoggedIn = YES;
+                strongSelf.usageRefreshError = selectedResult[@"refresh_error"];
+            } else if (selectedResult != nil) {
+                strongSelf.accountStatusKnown = NO;
+                strongSelf.accountIsLoggedIn = NO;
+                strongSelf.usageRefreshError = selectedResult[@"status_error"]
+                    ?: selectedResult[@"refresh_error"];
+            }
+            [strongSelf refreshUsage];
+            [strongSelf refreshUsageWindowContents];
+        });
     });
 }
 
@@ -1094,7 +1088,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     NSString *executable = self.claudeExecutable;
     NSDictionary *environment = [self environmentForProfile:profile];
     __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    dispatch_async(ClaudeUsageRefreshQueue(), ^{
         NSString *temporaryPath = [NSTemporaryDirectory()
             stringByAppendingPathComponent:[NSString stringWithFormat:
                 @"terminaldb-claude-auth-%@.json", NSUUID.UUID.UUIDString]];
@@ -1898,7 +1892,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     NSString *executable = self.claudeExecutable;
     NSDictionary *environment = [self environmentForProfile:profile];
     __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    dispatch_async(ClaudeUsageRefreshQueue(), ^{
         NSString *refreshError = [ClaudeStatusBar
             refreshUsageCacheWithExecutable:executable
                                  environment:environment
