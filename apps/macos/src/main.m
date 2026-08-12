@@ -973,9 +973,6 @@ static BOOL TerminalDBWriteAll(int descriptor,
                                 setValue:@YES forKey:@"accountIsLoggedIn"];
                             [controller.claudeStatusBar
                                 setValue:@YES forKey:@"accountStatusKnown"];
-                            [controller.claudeStatusBar
-                                setValue:[NSDate date]
-                                  forKey:@"lastUsageDashboardRefreshAttempt"];
                             [controller.claudeStatusBar setValue:@{
                                 @"demo-team" : @{
                                     @"account_state" : @"signed_in",
