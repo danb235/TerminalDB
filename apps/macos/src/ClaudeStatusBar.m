@@ -1963,7 +1963,9 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
     [secondProfile setValue:@"Team" forKey:@"subscriptionType"];
     [secondProfile setValue:[fixtureRoot stringByAppendingPathComponent:@"second"]
                       forKey:@"profileDirectory"];
-    ClaudeProfileManager *fixtureManager = [[ClaudeProfileManager alloc] init];
+    ClaudeProfileManager *fixtureManager =
+        [ClaudeProfileManager managerForTestingAtRoot:
+            [fixtureRoot stringByAppendingPathComponent:@"manager"]];
     [fixtureManager setValue:@[fixtureProfile, secondProfile] forKey:@"profiles"];
     [fixtureManager setValue:fixtureProfile forKey:@"lastSelectedProfile"];
     ClaudeStatusBar *fixtureBar = [[ClaudeStatusBar alloc]
