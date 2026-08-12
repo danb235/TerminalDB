@@ -39,6 +39,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)refreshNow;
 - (void)presentUsageWindow;
 - (NSView *)prepareUsagePanel;
+- (void)refreshUsageDashboard;
 - (void)didDismissUsagePanel;
 - (void)showEnvironment:(NSString *)environment
                    host:(nullable NSString *)host
