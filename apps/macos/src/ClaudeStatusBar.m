@@ -6,6 +6,7 @@
 #import <math.h>
 
 static NSTimeInterval const ClaudeUsageRefreshInterval = 5.0 * 60.0;
+static NSTimeInterval const ClaudeUsageFreshnessInterval = 10.0 * 60.0;
 static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
 static NSTimeInterval const ClaudeUsageForecastMinimumSpan = 15.0 * 60.0;
 static NSTimeInterval const ClaudeUsageForecastLookback = 60.0 * 60.0;
@@ -84,6 +85,7 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
 @property(nonatomic, strong) NSTimer *timer;
 @property(nonatomic, strong, nullable) NSDate *lastAccountRefresh;
 @property(nonatomic, strong, nullable) NSDate *lastUsageRefreshAttempt;
+@property(nonatomic, strong, nullable) NSDate *lastUsageDashboardRefreshAttempt;
 @property(nonatomic, copy, nullable) NSString *usageRefreshError;
 @property(nonatomic) BOOL accountRefreshInFlight;
 @property(nonatomic) BOOL usageRefreshInFlight;
@@ -94,6 +96,7 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
 @property(nonatomic, strong, nullable) NSScrollView *usageWindowScrollView;
 @property(nonatomic, strong, nullable) ClaudeUsageDocumentView *usageWindowDocumentView;
 @property(nonatomic) BOOL usageDashboardRefreshInFlight;
+@property(nonatomic, copy) NSDictionary<NSString *, NSDictionary *> *usageDashboardResults;
 @property(nonatomic) CGFloat usageDashboardViewportWidth;
 @property(nonatomic) BOOL usageDashboardResizeScheduled;
 + (nullable NSNumber *)nextResetTimestamp:(nullable NSNumber *)timestamp
@@ -117,6 +120,8 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
 + (nullable NSString *)refreshUsageCacheWithExecutable:(NSString *)executable
                                             environment:(NSDictionary *)environment
                                          statusCachePath:(NSString *)statusCachePath;
++ (NSDictionary *)accountRefreshResultWithExecutable:(NSString *)executable
+                                          environment:(NSDictionary *)environment;
 @end
 
 @implementation ClaudeStatusBar
@@ -134,6 +139,7 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
     _selectedProfile = selectedProfile;
     _theme = theme;
     _currentUsageForecasts = @[];
+    _usageDashboardResults = @{};
     self.wantsLayer = YES;
     self.layer.backgroundColor = theme.statusBarBackground.CGColor;
 
@@ -280,6 +286,18 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
         self.usagePanelView = content;
     }
     [self refreshUsageWindowContents];
+    BOOL dashboardRefreshDue =
+        self.claudeExecutable.length > 0 &&
+        self.profileManager.profiles.count > 0 &&
+        !self.usageDashboardRefreshInFlight &&
+        (self.lastUsageDashboardRefreshAttempt == nil ||
+         -self.lastUsageDashboardRefreshAttempt.timeIntervalSinceNow >=
+             ClaudeUsageRefreshInterval);
+    if (dashboardRefreshDue) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self refreshUsageWindow:nil];
+        });
+    }
     return self.usagePanelView;
 }
 
@@ -325,6 +343,7 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
         [self.profileManager.profiles copy];
     if (profiles.count == 0) return;
     self.usageDashboardRefreshInFlight = YES;
+    self.lastUsageDashboardRefreshAttempt = [NSDate date];
     [self refreshUsageWindowContents];
     NSString *executable = self.claudeExecutable;
     NSMutableArray<NSDictionary *> *requests = [NSMutableArray array];
@@ -337,20 +356,57 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
     __weak typeof(self) weakSelf = self;
     dispatch_group_t group = dispatch_group_create();
     dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
+    NSMutableDictionary<NSString *, NSDictionary *> *results =
+        [NSMutableDictionary dictionary];
     for (NSDictionary *request in requests) {
         dispatch_group_async(group, queue, ^{
             ClaudeProfile *profile = request[@"profile"];
-            [ClaudeStatusBar
-                refreshUsageCacheWithExecutable:executable
-                                     environment:request[@"environment"]
-                                  statusCachePath:profile.statusCachePath];
+            NSDictionary *environment = request[@"environment"];
+            NSMutableDictionary *result = [[ClaudeStatusBar
+                accountRefreshResultWithExecutable:executable
+                                       environment:environment] mutableCopy];
+            NSString *state = result[@"account_state"];
+            if (![state isEqualToString:@"signed_out"]) {
+                NSString *refreshError = [ClaudeStatusBar
+                    refreshUsageCacheWithExecutable:executable
+                                         environment:environment
+                                      statusCachePath:profile.statusCachePath];
+                if (refreshError.length > 0) {
+                    result[@"refresh_error"] = refreshError;
+                } else {
+                    result[@"account_state"] = @"signed_in";
+                    [result removeObjectForKey:@"status_error"];
+                }
+            }
+            @synchronized (results) {
+                results[profile.identifier] = [result copy];
+            }
         });
     }
     dispatch_group_notify(group, dispatch_get_main_queue(), ^{
         ClaudeStatusBar *strongSelf = weakSelf;
         if (strongSelf == nil) return;
         strongSelf.usageDashboardRefreshInFlight = NO;
-        strongSelf.lastUsageRefreshAttempt = [NSDate date];
+        strongSelf.usageDashboardResults = [results copy];
+        NSString *selectedIdentifier =
+            strongSelf.selectedProfile.identifier;
+        NSDictionary *selectedResult = selectedIdentifier.length > 0
+            ? strongSelf.usageDashboardResults[selectedIdentifier] : nil;
+        NSString *selectedState = selectedResult[@"account_state"];
+        if ([selectedState isEqualToString:@"signed_out"]) {
+            strongSelf.accountStatusKnown = YES;
+            strongSelf.accountIsLoggedIn = NO;
+            strongSelf.usageRefreshError = @"Sign in to refresh this account’s usage.";
+        } else if ([selectedState isEqualToString:@"signed_in"]) {
+            strongSelf.accountStatusKnown = YES;
+            strongSelf.accountIsLoggedIn = YES;
+            strongSelf.usageRefreshError = selectedResult[@"refresh_error"];
+        } else if (selectedResult != nil) {
+            strongSelf.accountStatusKnown = NO;
+            strongSelf.accountIsLoggedIn = NO;
+            strongSelf.usageRefreshError = selectedResult[@"status_error"]
+                ?: selectedResult[@"refresh_error"];
+        }
         [strongSelf refreshUsage];
         [strongSelf refreshUsageWindowContents];
     });
@@ -507,6 +563,15 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
     for (NSDictionary *entry in entries) {
         ClaudeProfile *profile = entry[@"profile"];
         NSArray<NSDictionary *> *forecasts = entry[@"forecasts"];
+        BOOL signedOut = [entry[@"account_state"]
+            isEqualToString:@"signed_out"];
+        BOOL sourceStale = [entry[@"source_stale"] boolValue];
+        NSString *refreshError = [entry[@"refresh_error"]
+            isKindOfClass:NSString.class] ? entry[@"refresh_error"] : nil;
+        NSString *statusError = [entry[@"status_error"]
+            isKindOfClass:NSString.class] ? entry[@"status_error"] : nil;
+        BOOL statusUnavailable = [entry[@"account_state"]
+            isEqualToString:@"unknown"] && statusError.length > 0;
         BOOL active = [profile.identifier
             isEqualToString:self.selectedProfile.identifier];
         NSView *card = [[NSView alloc]
@@ -530,13 +595,14 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
         accountTitle.selectable = NO;
         [card addSubview:accountTitle];
         NSString *identity = profile.email.length > 0
-            ? [NSString stringWithFormat:@"%@ · %@", profile.email, plan]
+            ? [NSString stringWithFormat:@"%@ · %@%@", profile.email, plan,
+                signedOut ? @" · Sign-in required" : @""]
             : @"Not signed in";
         NSTextField *accountDetail = [self
             usageWindowLabel:identity
                          size:11.5
                        weight:NSFontWeightRegular
-                        color:profile.email.length > 0
+                        color:profile.email.length > 0 && !signedOut
                             ? self.theme.statusBarActiveForeground
                             : self.theme.ansiColors[3]
                         frame:NSMakeRect(20, 142, columnWidth - 206, 20)];
@@ -545,8 +611,12 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
 
         NSDate *modifiedAt = [entry[@"modified_at"]
             isKindOfClass:NSDate.class] ? entry[@"modified_at"] : nil;
-        NSString *freshness = @"No usage snapshot yet";
-        if (modifiedAt != nil) {
+        NSString *freshness = statusUnavailable
+            ? @"Account status unavailable · cached usage hidden"
+            : (signedOut
+            ? @"Signed out · cached usage hidden"
+            : @"No usage snapshot yet");
+        if (modifiedAt != nil && !statusUnavailable) {
             NSTimeInterval age = MAX(0, -modifiedAt.timeIntervalSinceNow);
             NSString *ageText = age < 60
                 ? @"just now"
@@ -555,8 +625,19 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
                         (unsigned long)floor(age / 60.0)]
                     : [NSString stringWithFormat:@"%luh ago",
                         (unsigned long)floor(age / 3600.0)]);
-            freshness = [NSString stringWithFormat:@"Updated %@%@", ageText,
-                age > ClaudeUsageRefreshInterval * 2.0 ? @" · cached" : @""];
+            if (signedOut) {
+                freshness = [NSString stringWithFormat:
+                    @"Signed out · %@ snapshot hidden", ageText];
+            } else if (sourceStale) {
+                freshness = [NSString stringWithFormat:
+                    @"Last updated %@ · stale snapshot hidden", ageText];
+            } else {
+                freshness = refreshError.length > 0
+                    ? [NSString stringWithFormat:
+                        @"Updated %@ · refresh failed — %@", ageText,
+                        refreshError]
+                    : [NSString stringWithFormat:@"Updated %@", ageText];
+            }
         }
         NSTextField *freshnessLabel = [self
             usageWindowLabel:freshness
@@ -570,16 +651,17 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
         freshnessLabel.selectable = NO;
         [card addSubview:freshnessLabel];
 
+        BOOL requiresSignIn = signedOut || profile.email.length == 0;
         NSButton *use = [NSButton
-            buttonWithTitle:active ? @"Active on This Tab"
-                : (profile.email.length > 0 ? @"Use on This Tab" : @"Sign In…")
+            buttonWithTitle:requiresSignIn ? @"Sign In…"
+                : (active ? @"Active on This Tab" : @"Use on This Tab")
                      target:self
-                     action:profile.email.length > 0
-                        ? @selector(selectProfileFromUsageCard:)
-                        : @selector(signInProfileFromUsageCard:)];
+                     action:requiresSignIn
+                        ? @selector(signInProfileFromUsageCard:)
+                        : @selector(selectProfileFromUsageCard:)];
         use.frame = NSMakeRect(columnWidth - 166, 158, 146, 30);
         use.identifier = profile.identifier;
-        use.enabled = !active || profile.email.length == 0;
+        use.enabled = requiresSignIn || !active;
         [card addSubview:use];
         NSButton *remove = [NSButton buttonWithTitle:@"Remove…"
                                               target:self
@@ -589,44 +671,61 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
         remove.contentTintColor = self.theme.ansiColors[1];
         [card addSubview:remove];
 
-        NSBox *divider = [[NSBox alloc]
-            initWithFrame:NSMakeRect(20, 107, columnWidth - 40, 1)];
-        divider.boxType = NSBoxSeparator;
-        [card addSubview:divider];
-        NSArray<NSDictionary *> *columns = @[
-            @{@"title" : @"ALLOWANCE", @"x" : @20, @"width" : @84},
-            @{@"title" : @"USED", @"x" : @112, @"width" : @72},
-            @{@"title" : @"BURN", @"x" : @198, @"width" : @102},
-            @{@"title" : @"AVAILABLE PACE", @"x" : @310, @"width" : @124},
-            @{@"title" : @"RESET", @"x" : @444, @"width" : @176},
-            @{@"title" : @"FORECAST", @"x" : @632,
-              @"width" : @(MAX(100, columnWidth - 652))},
-        ];
-        for (NSDictionary *column in columns) {
-            NSTextField *label = [self
-                usageWindowLabel:column[@"title"]
-                             size:9
-                           weight:NSFontWeightSemibold
-                            color:self.theme.statusBarActiveForeground
-                            frame:NSMakeRect([column[@"x"] doubleValue], 87,
-                                [column[@"width"] doubleValue], 16)];
-            label.font = [NSFont fontWithName:self.theme.fontName size:9]
-                ?: [NSFont monospacedSystemFontOfSize:9
-                                               weight:NSFontWeightSemibold];
-            label.selectable = NO;
-            [card addSubview:label];
-        }
-
         if (forecasts.count == 0) {
+            NSString *unavailableText = nil;
+            if (signedOut) {
+                unavailableText =
+                    @"Usage unavailable while this account is signed out. Sign in to refresh its allowances.";
+            } else if (sourceStale) {
+                unavailableText = refreshError.length > 0
+                    ? [NSString stringWithFormat:
+                        @"Usage snapshot is too old to trust. %@", refreshError]
+                    : @"Usage snapshot is too old to trust. Refresh this account to update its allowances.";
+            } else if (refreshError.length > 0) {
+                unavailableText = refreshError;
+            } else if (statusError.length > 0) {
+                unavailableText = statusError;
+            } else {
+                unavailableText =
+                    @"Usage unavailable. Sign in or refresh after Claude Code reports the account’s allowances.";
+            }
             NSTextField *unavailable = [self
-                usageWindowLabel:
-                    @"Usage unavailable. Sign in or refresh after Claude Code reports the account’s allowances."
+                usageWindowLabel:unavailableText
                              size:11.5
                            weight:NSFontWeightRegular
-                            color:self.theme.statusBarActiveForeground
-                            frame:NSMakeRect(20, 29, columnWidth - 40, 40)];
+                            color:(signedOut || sourceStale || refreshError.length > 0)
+                                ? self.theme.ansiColors[3]
+                                : self.theme.statusBarActiveForeground
+                            frame:NSMakeRect(20, 35, columnWidth - 40, 58)];
             [card addSubview:unavailable];
         } else {
+            NSBox *divider = [[NSBox alloc]
+                initWithFrame:NSMakeRect(20, 107, columnWidth - 40, 1)];
+            divider.boxType = NSBoxSeparator;
+            [card addSubview:divider];
+            NSArray<NSDictionary *> *columns = @[
+                @{@"title" : @"ALLOWANCE", @"x" : @20, @"width" : @84},
+                @{@"title" : @"USED", @"x" : @112, @"width" : @72},
+                @{@"title" : @"BURN", @"x" : @198, @"width" : @102},
+                @{@"title" : @"AVAILABLE PACE", @"x" : @310, @"width" : @124},
+                @{@"title" : @"RESET", @"x" : @444, @"width" : @176},
+                @{@"title" : @"FORECAST", @"x" : @632,
+                  @"width" : @(MAX(100, columnWidth - 652))},
+            ];
+            for (NSDictionary *column in columns) {
+                NSTextField *label = [self
+                    usageWindowLabel:column[@"title"]
+                                 size:9
+                               weight:NSFontWeightSemibold
+                                color:self.theme.statusBarActiveForeground
+                                frame:NSMakeRect([column[@"x"] doubleValue], 87,
+                                    [column[@"width"] doubleValue], 16)];
+                label.font = [NSFont fontWithName:self.theme.fontName size:9]
+                    ?: [NSFont monospacedSystemFontOfSize:9
+                                                   weight:NSFontWeightSemibold];
+                label.selectable = NO;
+                [card addSubview:label];
+            }
             for (NSUInteger index = 0; index < forecasts.count; index++) {
                 NSDictionary *forecast = forecasts[index];
                 CGFloat rowY = 62 - index * 25;
@@ -875,7 +974,6 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
     [self updateProfileLabel];
     [self refreshAccountIfNeeded:YES];
     [self refreshUsage];
-    [self refreshUsageIfNeeded:YES];
     [self refreshUsageWindowContents];
 }
 
@@ -1058,15 +1156,31 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
     if (profile == nil) return;
     if (launchError != nil || status == nil) {
         self.accountStatusKnown = NO;
+        NSMutableDictionary *results =
+            [self.usageDashboardResults mutableCopy];
+        results[profile.identifier] = @{
+            @"account_state" : @"unknown",
+            @"status_error" : @"Claude account status is unavailable.",
+        };
+        self.usageDashboardResults = results;
         self.profileLabel.toolTip = @"Claude account status unavailable";
+        [self refreshUsage];
         [self refreshUsageWindowContents];
         return;
     }
     self.accountStatusKnown = YES;
     self.accountIsLoggedIn = [status[@"loggedIn"] boolValue];
+    NSMutableDictionary *results =
+        [self.usageDashboardResults mutableCopy];
+    results[profile.identifier] = @{
+        @"account_state" : self.accountIsLoggedIn
+            ? @"signed_in" : @"signed_out",
+    };
+    self.usageDashboardResults = results;
     if (!self.accountIsLoggedIn) {
         self.profileLabel.toolTip =
             @"Not signed in. Use the Claude menu to sign in.";
+        [self refreshUsage];
         [self refreshUsageWindowContents];
         return;
     }
@@ -1394,8 +1508,25 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
     NSDate *modifiedAt = nil;
     NSDictionary *status = [self usageStatusForProfile:profile
                                       sourceModifiedAt:&modifiedAt];
+    NSDictionary *refreshResult =
+        self.usageDashboardResults[profile.identifier];
+    NSString *accountState = [refreshResult[@"account_state"]
+        isKindOfClass:NSString.class] ? refreshResult[@"account_state"] : @"unknown";
+    NSString *refreshError = [refreshResult[@"refresh_error"]
+        isKindOfClass:NSString.class] ? refreshResult[@"refresh_error"] : nil;
+    NSString *statusError = [refreshResult[@"status_error"]
+        isKindOfClass:NSString.class] ? refreshResult[@"status_error"] : nil;
+    BOOL sourceStale = status != nil &&
+        (modifiedAt == nil ||
+         -modifiedAt.timeIntervalSinceNow > ClaudeUsageFreshnessInterval);
+    BOOL signedOut = [accountState isEqualToString:@"signed_out"];
+    BOOL accountCheckFailed = refreshResult != nil &&
+        [accountState isEqualToString:@"unknown"] &&
+        statusError.length > 0;
+    BOOL suppressMetrics = status == nil || sourceStale || signedOut ||
+        accountCheckFailed;
     NSArray<NSDictionary *> *forecasts = @[];
-    if (status != nil) {
+    if (!suppressMetrics) {
         [self recordUsageSampleForStatus:status
                         sourceModifiedAt:modifiedAt
                                  profile:profile];
@@ -1406,7 +1537,12 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
     NSMutableDictionary *entry = [@{
         @"profile" : profile,
         @"forecasts" : forecasts,
+        @"account_state" : accountState,
+        @"source_stale" : @(sourceStale),
+        @"suppress_metrics" : @(suppressMetrics),
     } mutableCopy];
+    if (refreshError.length > 0) entry[@"refresh_error"] = refreshError;
+    if (statusError.length > 0) entry[@"status_error"] = statusError;
     if (modifiedAt != nil) entry[@"modified_at"] = modifiedAt;
     return entry;
 }
@@ -1420,9 +1556,44 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
         return;
     }
 
+    if (!self.accountStatusKnown) {
+        self.currentUsageForecasts = @[];
+        self.usageLabel.stringValue = self.accountRefreshInFlight
+            ? @"Usage  Checking account…"
+            : @"Usage  Account status unavailable";
+        self.usageLabel.textColor = self.theme.statusBarForeground;
+        self.usageLabel.toolTip = self.accountRefreshInFlight
+            ? @"Checking whether this Claude account is signed in."
+            : @"TerminalDB could not verify this Claude account, so cached percentages are hidden.";
+        return;
+    }
+
     NSDate *sourceModifiedAt = nil;
     NSDictionary *status = [self usageStatusForProfile:profile
                                       sourceModifiedAt:&sourceModifiedAt];
+    BOOL signedOut = self.accountStatusKnown && !self.accountIsLoggedIn;
+    BOOL sourceIsStale = sourceModifiedAt == nil ||
+        -sourceModifiedAt.timeIntervalSinceNow > ClaudeUsageFreshnessInterval;
+    if (signedOut) {
+        self.currentUsageForecasts = @[];
+        self.usageLabel.stringValue = @"Usage  Sign in required";
+        self.usageLabel.textColor = self.theme.statusBarForeground;
+        self.usageLabel.toolTip =
+            @"Sign in to this Claude account to refresh its usage. Cached percentages are hidden.";
+        return;
+    }
+    if (status != nil && sourceIsStale) {
+        self.currentUsageForecasts = @[];
+        self.usageLabel.stringValue = self.usageRefreshInFlight
+            ? @"Usage  Refreshing…" : @"Usage  Refresh required";
+        self.usageLabel.textColor = self.theme.statusBarForeground;
+        self.usageLabel.toolTip = self.usageRefreshError.length > 0
+            ? [NSString stringWithFormat:
+                @"%@\nThe last usage snapshot is too old to trust, so cached percentages are hidden.",
+                self.usageRefreshError]
+            : @"The last usage snapshot is too old to trust, so cached percentages are hidden.";
+        return;
+    }
     if (status == nil) {
         self.currentUsageForecasts = @[];
         self.usageLabel.stringValue = self.usageRefreshInFlight
@@ -1474,12 +1645,8 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
         NSFontAttributeName : self.usageLabel.font,
         NSForegroundColorAttributeName : self.theme.statusBarActiveForeground,
     };
-    BOOL sourceIsStale =
-        sourceModifiedAt != nil &&
-        -sourceModifiedAt.timeIntervalSinceNow >
-            ClaudeUsageRefreshInterval * 2.0;
     [styled appendAttributedString:[[NSAttributedString alloc]
-        initWithString:sourceIsStale ? @"Usage cached  " : @"Usage  "
+        initWithString:@"Usage  "
             attributes:muted]];
     if (fivePercent != nil) {
         [styled appendAttributedString:
@@ -1568,16 +1735,75 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
         formatter.dateStyle = NSDateFormatterNoStyle;
         [details addObject:[NSString stringWithFormat:@"Updated %@",
             [formatter stringFromDate:updated]]];
-        if (sourceIsStale) {
-            [details addObject:
-                @"Cached usage is stale; TerminalDB is requesting a refresh."];
-        }
     }
     if (self.usageRefreshError.length > 0) {
         [details addObject:self.usageRefreshError];
     }
     [details addObject:@"Refreshes every 5 minutes"];
     self.usageLabel.toolTip = [details componentsJoinedByString:@"\n"];
+}
+
++ (NSDictionary *)accountRefreshResultWithExecutable:(NSString *)executable
+                                          environment:(NSDictionary *)environment {
+    NSString *temporaryPath = [NSTemporaryDirectory()
+        stringByAppendingPathComponent:[NSString stringWithFormat:
+            @"terminaldb-claude-auth-%@.json", NSUUID.UUID.UUIDString]];
+    [NSFileManager.defaultManager
+        createFileAtPath:temporaryPath
+                contents:nil
+              attributes:@{NSFilePosixPermissions : @0600}];
+    NSFileHandle *output =
+        [NSFileHandle fileHandleForWritingAtPath:temporaryPath];
+    NSTask *task = [[NSTask alloc] init];
+    task.executableURL = [NSURL fileURLWithPath:executable];
+    task.arguments = @[@"auth", @"status", @"--json"];
+    task.environment = environment;
+    task.standardOutput = output;
+    task.standardError = [NSFileHandle fileHandleWithNullDevice];
+
+    NSError *launchError = nil;
+    BOOL launched = [task launchAndReturnError:&launchError];
+    BOOL timedOut = NO;
+    if (launched) {
+        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:10.0];
+        while (task.running && [deadline timeIntervalSinceNow] > 0) {
+            [NSThread sleepForTimeInterval:0.05];
+        }
+        if (task.running) {
+            timedOut = YES;
+            [task terminate];
+        }
+        [task waitUntilExit];
+    }
+    [output closeFile];
+    NSData *data = launched && !timedOut
+        ? [NSData dataWithContentsOfFile:temporaryPath] : nil;
+    [NSFileManager.defaultManager removeItemAtPath:temporaryPath error:nil];
+    NSDictionary *status = data.length > 0
+        ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil]
+        : nil;
+    if (launchError != nil || !launched) {
+        return @{
+            @"account_state" : @"unknown",
+            @"status_error" : @"Claude Code could not be launched to check sign-in status.",
+        };
+    }
+    if (timedOut) {
+        return @{
+            @"account_state" : @"unknown",
+            @"status_error" : @"Claude account status check timed out.",
+        };
+    }
+    if (![status isKindOfClass:NSDictionary.class]) {
+        return @{
+            @"account_state" : @"unknown",
+            @"status_error" : @"Claude account status could not be read.",
+        };
+    }
+    return @{
+        @"account_state" : [status[@"loggedIn"] boolValue]
+            ? @"signed_in" : @"signed_out",
+    };
 }
 
 + (nullable NSString *)refreshUsageCacheWithExecutable:(NSString *)executable
@@ -1646,10 +1872,10 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
         return @"Claude Code could not be launched to refresh usage.";
     }
     if (timedOut) {
-        return @"Claude Code usage refresh timed out; showing cached usage.";
+        return @"Claude Code usage refresh timed out.";
     }
     if (task.terminationStatus != 0 || !wroteCache) {
-        return @"Claude Code did not return current usage; showing cached usage.";
+        return @"Claude Code did not return current usage.";
     }
     return nil;
 }
@@ -1718,10 +1944,14 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
         @{@"prefix" : @"Current week (Fable):",
           @"key" : @"fable_five"},
     ];
-    NSRegularExpression *expression = [NSRegularExpression
+    NSRegularExpression *percentExpression = [NSRegularExpression
         regularExpressionWithPattern:
-            @"([0-9]+(?:\\.[0-9]+)?)%\\s+used\\s*(?:·|-)\\s*"
-             "resets\\s+(.+?)\\s+\\(([^)]+)\\)\\s*$"
+            @"([0-9]+(?:\\.[0-9]+)?)%\\s+used"
+                             options:NSRegularExpressionCaseInsensitive
+                               error:nil];
+    NSRegularExpression *resetExpression = [NSRegularExpression
+        regularExpressionWithPattern:
+            @"(?:·|-)\\s*resets\\s+(.+?)\\s+\\(([^)]+)\\)\\s*$"
                              options:NSRegularExpressionCaseInsensitive
                                error:nil];
     NSMutableDictionary *limits = [NSMutableDictionary dictionary];
@@ -1740,25 +1970,31 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
         }
         if (definition == nil) continue;
 
-        NSTextCheckingResult *match =
-            [expression firstMatchInString:line
-                                   options:0
-                                     range:NSMakeRange(0, line.length)];
-        if (match.numberOfRanges < 4) continue;
+        NSTextCheckingResult *percentMatch =
+            [percentExpression firstMatchInString:line
+                                          options:0
+                                            range:NSMakeRange(0, line.length)];
+        if (percentMatch.numberOfRanges < 2) continue;
         double percent =
-            [[line substringWithRange:[match rangeAtIndex:1]] doubleValue];
-        NSString *dateText =
-            [line substringWithRange:[match rangeAtIndex:2]];
-        NSString *timeZoneName =
-            [line substringWithRange:[match rangeAtIndex:3]];
+            [[line substringWithRange:[percentMatch rangeAtIndex:1]] doubleValue];
         NSMutableDictionary *window = [@{
             @"used_percentage" :
                 @(ClaudeUsageClampedPercent(percent)),
         } mutableCopy];
-        NSNumber *reset = [self
-            timestampFromUsageCommandDate:dateText
-                             timeZoneName:timeZoneName];
-        if (reset != nil) window[@"resets_at"] = reset;
+        NSTextCheckingResult *resetMatch =
+            [resetExpression firstMatchInString:line
+                                        options:0
+                                          range:NSMakeRange(0, line.length)];
+        if (resetMatch.numberOfRanges >= 3) {
+            NSString *dateText =
+                [line substringWithRange:[resetMatch rangeAtIndex:1]];
+            NSString *timeZoneName =
+                [line substringWithRange:[resetMatch rangeAtIndex:2]];
+            NSNumber *reset = [self
+                timestampFromUsageCommandDate:dateText
+                                 timeZoneName:timeZoneName];
+            if (reset != nil) window[@"resets_at"] = reset;
+        }
         if ([definition[@"key"] isEqualToString:@"fable_five"]) {
             window[@"display_name"] = @"Fable";
         }
@@ -1927,6 +2163,15 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
     NSDictionary *commandStatus =
         [self normalizedStatusFromUsageCommandResult:commandResult];
     NSDictionary *commandLimits = commandStatus[@"rate_limits"];
+    NSDictionary *zeroSessionStatus =
+        [self normalizedStatusFromUsageCommandResult:
+            @"Current session: 0% used\n"
+             "Current week (all models): 20% used · resets Dec 31 at 2pm "
+             "(America/Los_Angeles)\n"
+             "Current week (Fable): 14% used · resets Dec 31 at 1:59pm "
+             "(America/Los_Angeles)"];
+    NSDictionary *zeroSession =
+        zeroSessionStatus[@"rate_limits"][@"five_hour"];
     NSNumber *fiveHourReset = limits[@"five_hour"][@"resets_at"];
     NSNumber *sevenDayReset = limits[@"seven_day"][@"resets_at"];
     NSNumber *pastReset =
@@ -1974,6 +2219,8 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
         profileManager:fixtureManager
         selectedProfile:fixtureProfile
         theme:[TerminalTheme preferredTheme]];
+    [fixtureBar setValue:@YES forKey:@"accountStatusKnown"];
+    [fixtureBar setValue:@YES forKey:@"accountIsLoggedIn"];
     [fixtureBar refreshUsage];
     NSString *compactSummary = fixtureBar.usageLabel.stringValue;
     BOOL showsEveryWindow =
@@ -2106,6 +2353,36 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
         ClaudeUsageViewContainsText(dashboard, @"AVAILABLE PACE") &&
         ClaudeUsageViewContainsText(dashboard, @"RESET") &&
         ClaudeUsageViewContainsText(dashboard, @"Use on This Tab");
+    [NSFileManager.defaultManager setAttributes:@{
+        NSFileModificationDate :
+            [NSDate dateWithTimeIntervalSinceNow:
+                -(ClaudeUsageFreshnessInterval + 60.0)],
+    } ofItemAtPath:fixtureProfile.statusCachePath error:nil];
+    [fixtureBar refreshUsage];
+    NSView *staleDashboard = [fixtureBar prepareUsagePanel];
+    BOOL hidesStaleUsage =
+        [fixtureBar.usageLabel.stringValue isEqualToString:
+            @"Usage  Refresh required"] &&
+        ClaudeUsageViewContainsText(staleDashboard,
+            @"stale snapshot hidden") &&
+        ClaudeUsageViewContainsText(staleDashboard,
+            @"too old to trust");
+    [fixtureBar setValue:@{
+        fixtureProfile.identifier : @{
+            @"account_state" : @"signed_out",
+        },
+    } forKey:@"usageDashboardResults"];
+    [fixtureBar setValue:@YES forKey:@"accountStatusKnown"];
+    [fixtureBar setValue:@NO forKey:@"accountIsLoggedIn"];
+    [fixtureBar refreshUsage];
+    NSView *signedOutDashboard = [fixtureBar prepareUsagePanel];
+    BOOL hidesSignedOutUsage =
+        [fixtureBar.usageLabel.stringValue isEqualToString:
+            @"Usage  Sign in required"] &&
+        ClaudeUsageViewContainsText(signedOutDashboard,
+            @"Signed out") &&
+        ClaudeUsageViewContainsText(signedOutDashboard,
+            @"Sign In…");
     NSNumber *historyPermissions = [NSFileManager.defaultManager
         attributesOfItemAtPath:fixtureProfile.usageHistoryPath error:nil]
         [NSFilePosixPermissions];
@@ -2125,6 +2402,8 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
             isKindOfClass:NSNumber.class] &&
         [commandLimits[@"fable_five"][@"resets_at"]
             isKindOfClass:NSNumber.class] &&
+        [zeroSession[@"used_percentage"] isEqual:@0] &&
+        zeroSession[@"resets_at"] == nil &&
         [self compactResetDateTimeFromTimestamp:fiveHourReset].length > 0 &&
         [self compactResetDateTimeFromTimestamp:sevenDayReset].length > 0 &&
         [self compactResetDateTimeFromTimestamp:pastReset] == nil &&
@@ -2149,6 +2428,8 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
         [staleForecast[@"stale"] boolValue] &&
         showsRiskOnlyWhenForecasted &&
         dashboardShowsAllAccounts &&
+        hidesStaleUsage &&
+        hidesSignedOutUsage &&
         historyPermissions.unsignedIntegerValue == 0600;
 }
 

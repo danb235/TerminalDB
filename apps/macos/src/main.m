@@ -754,6 +754,12 @@ static BOOL TerminalDBWriteAll(int descriptor,
                 dataWithJSONObject:fixtureUsage options:0 error:nil];
             [usageData writeToFile:fixtureProfile.statusCachePath
                         atomically:YES];
+            if ([account[@"id"] isEqualToString:@"demo-personal"]) {
+                [NSFileManager.defaultManager setAttributes:@{
+                    NSFileModificationDate :
+                        [NSDate dateWithTimeIntervalSinceNow:-11.0 * 60.0],
+                } ofItemAtPath:fixtureProfile.statusCachePath error:nil];
+            }
             if (atRisk) {
                 NSArray<NSNumber *> *fiveHourValues = @[@35, @37, @40, @42];
                 NSArray<NSNumber *> *sevenDayValues = @[@18, @19, @20, @21];
@@ -967,7 +973,40 @@ static BOOL TerminalDBWriteAll(int descriptor,
                                 setValue:@YES forKey:@"accountIsLoggedIn"];
                             [controller.claudeStatusBar
                                 setValue:@YES forKey:@"accountStatusKnown"];
+                            [controller.claudeStatusBar
+                                setValue:[NSDate date]
+                                  forKey:@"lastUsageDashboardRefreshAttempt"];
+                            [controller.claudeStatusBar setValue:@{
+                                @"demo-team" : @{
+                                    @"account_state" : @"signed_in",
+                                },
+                                @"demo-ops" : @{
+                                    @"account_state" : @"signed_out",
+                                },
+                                @"demo-personal" : @{
+                                    @"account_state" : @"unknown",
+                                    @"refresh_error" :
+                                        @"Claude Code did not return current usage.",
+                                },
+                            } forKey:@"usageDashboardResults"];
                             [controller.claudeStatusBar presentUsageWindow];
+                            if ([NSProcessInfo.processInfo.arguments
+                                    containsObject:
+                                        @"--visual-qa-usage-scroll=lower"]) {
+                                dispatch_after(
+                                    dispatch_time(DISPATCH_TIME_NOW,
+                                        (int64_t)(0.4 * NSEC_PER_SEC)),
+                                    dispatch_get_main_queue(), ^{
+                                        NSScrollView *scroll =
+                                            [controller.claudeStatusBar
+                                                valueForKey:
+                                                    @"usageWindowScrollView"];
+                                        [scroll.contentView scrollToPoint:
+                                            NSMakePoint(0, 430)];
+                                        [scroll reflectScrolledClipView:
+                                            scroll.contentView];
+                                    });
+                            }
                         });
                     continue;
                 }
