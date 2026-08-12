@@ -33,11 +33,30 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
     return NO;
 }
 
+static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
+    for (NSView *subview in view.subviews) {
+        if ([subview isKindOfClass:NSScrollView.class] ||
+            ClaudeUsageViewContainsNestedScrollView(subview)) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+@interface ClaudeStatusBar (UsagePanelLayout)
+- (void)usagePanelDidResize;
+@end
+
 @interface ClaudeUsageDocumentView : NSView
+@property(nonatomic, weak) ClaudeStatusBar *statusBar;
 @end
 
 @implementation ClaudeUsageDocumentView
 - (BOOL)isFlipped { return YES; }
+- (void)layout {
+    [super layout];
+    [self.statusBar usagePanelDidResize];
+}
 - (void)setFrameSize:(NSSize)newSize {
     for (NSView *subview in self.subviews) {
         if ([subview.identifier isEqualToString:@"TerminalDBUsageColumn"]) {
@@ -54,21 +73,6 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
         frame.origin.x = floor((newSize.width - NSWidth(frame)) / 2.0);
         subview.frame = frame;
     }
-}
-@end
-
-@interface ClaudeStatusBar (UsagePanelLayout)
-- (void)usagePanelDidResize;
-@end
-
-@interface ClaudeUsagePanelView : NSView
-@property(nonatomic, weak) ClaudeStatusBar *statusBar;
-@end
-
-@implementation ClaudeUsagePanelView
-- (void)layout {
-    [super layout];
-    [self.statusBar usagePanelDidResize];
 }
 @end
 
@@ -93,7 +97,6 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
 @property(nonatomic, readwrite) BOOL accountStatusKnown;
 @property(nonatomic, copy) NSArray<NSDictionary *> *currentUsageForecasts;
 @property(nonatomic, strong, readwrite, nullable) NSView *usagePanelView;
-@property(nonatomic, strong, nullable) NSScrollView *usageWindowScrollView;
 @property(nonatomic, strong, nullable) ClaudeUsageDocumentView *usageWindowDocumentView;
 @property(nonatomic) BOOL usageDashboardRefreshInFlight;
 @property(nonatomic, copy) NSDictionary<NSString *, NSDictionary *> *usageDashboardResults;
@@ -259,30 +262,14 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
 
 - (NSView *)prepareUsagePanel {
     if (self.usagePanelView == nil) {
-        ClaudeUsagePanelView *content = [[ClaudeUsagePanelView alloc]
+        ClaudeUsageDocumentView *content = [[ClaudeUsageDocumentView alloc]
             initWithFrame:NSMakeRect(0, 0, 920, 620)];
         content.statusBar = self;
         content.wantsLayer = YES;
         content.layer.backgroundColor =
             self.theme.terminalBackground.CGColor;
-        NSScrollView *scroll = [[NSScrollView alloc]
-            initWithFrame:content.bounds];
-        scroll.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-        scroll.drawsBackground = NO;
-        scroll.borderType = NSNoBorder;
-        scroll.hasVerticalScroller = YES;
-        scroll.hasHorizontalScroller = YES;
-        scroll.autohidesScrollers = YES;
-        ClaudeUsageDocumentView *document = [[ClaudeUsageDocumentView alloc]
-            initWithFrame:NSMakeRect(0, 0, 920, 620)];
-        document.wantsLayer = YES;
-        document.layer.backgroundColor =
-            self.theme.terminalBackground.CGColor;
-        document.autoresizingMask = NSViewWidthSizable;
-        scroll.documentView = document;
-        [content addSubview:scroll];
-        self.usageWindowScrollView = scroll;
-        self.usageWindowDocumentView = document;
+        content.autoresizingMask = NSViewWidthSizable;
+        self.usageWindowDocumentView = content;
         self.usagePanelView = content;
     }
     [self refreshUsageWindowContents];
@@ -303,7 +290,7 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
 
 - (void)usagePanelDidResize {
     if (self.usagePanelView == nil || self.usageDashboardResizeScheduled) return;
-    CGFloat width = NSWidth(self.usageWindowScrollView.contentView.bounds);
+    CGFloat width = NSWidth(self.usagePanelView.bounds);
     if (width <= 0 || fabs(width - self.usageDashboardViewportWidth) < 2.0) {
         return;
     }
@@ -330,6 +317,10 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
 
 - (void)presentUsageWindow {
     [self showUsageWindow:nil];
+}
+
+- (void)refreshUsageDashboard {
+    [self refreshUsageWindow:nil];
 }
 
 - (void)refreshUsageWindow:(id)sender {
@@ -440,10 +431,8 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
         }
     }
 
-    CGFloat viewportWidth = MAX(800,
-        NSWidth(self.usageWindowScrollView.contentView.bounds));
-    self.usageDashboardViewportWidth =
-        NSWidth(self.usageWindowScrollView.contentView.bounds);
+    CGFloat viewportWidth = MAX(800, NSWidth(document.bounds));
+    self.usageDashboardViewportWidth = NSWidth(document.bounds);
     CGFloat columnWidth = MIN(1040, viewportWidth - 48);
     CGFloat columnX = floor((viewportWidth - columnWidth) / 2.0);
     CGFloat y = 34;
@@ -835,8 +824,7 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
         [column addSubview:subview];
     }
     [document addSubview:column];
-    document.frame = NSMakeRect(0, 0, viewportWidth,
-        MAX(y, NSHeight(self.usageWindowScrollView.contentView.bounds)));
+    document.frame = NSMakeRect(0, 0, viewportWidth, y);
 }
 
 - (void)selectProfileFromUsageCard:(NSButton *)sender {
@@ -2353,6 +2341,9 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
         ClaudeUsageViewContainsText(dashboard, @"AVAILABLE PACE") &&
         ClaudeUsageViewContainsText(dashboard, @"RESET") &&
         ClaudeUsageViewContainsText(dashboard, @"Use on This Tab");
+    BOOL dashboardUsesHostScroller =
+        NSHeight(dashboard.frame) > 620 &&
+        !ClaudeUsageViewContainsNestedScrollView(dashboard);
     [NSFileManager.defaultManager setAttributes:@{
         NSFileModificationDate :
             [NSDate dateWithTimeIntervalSinceNow:
@@ -2428,6 +2419,7 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
         [staleForecast[@"stale"] boolValue] &&
         showsRiskOnlyWhenForecasted &&
         dashboardShowsAllAccounts &&
+        dashboardUsesHostScroller &&
         hidesStaleUsage &&
         hidesSignedOutUsage &&
         historyPermissions.unsignedIntegerValue == 0600;

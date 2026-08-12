@@ -998,9 +998,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
                                         (int64_t)(0.4 * NSEC_PER_SEC)),
                                     dispatch_get_main_queue(), ^{
                                         NSScrollView *scroll =
-                                            [controller.claudeStatusBar
-                                                valueForKey:
-                                                    @"usageWindowScrollView"];
+                                            controller.utilityPanelScrollView;
                                         [scroll.contentView scrollToPoint:
                                             NSMakePoint(0, 430)];
                                         [scroll reflectScrolledClipView:
@@ -7283,7 +7281,12 @@ static BOOL TerminalDBWriteAll(int descriptor,
         [weakStatusBar didDismissUsagePanel];
     }];
     dispatch_async(dispatch_get_main_queue(), ^{
-        [weakStatusBar prepareUsagePanel];
+        if ([NSProcessInfo.processInfo.arguments
+                containsObject:@"--visual-qa"]) {
+            [weakStatusBar prepareUsagePanel];
+        } else {
+            [weakStatusBar refreshUsageDashboard];
+        }
     });
 }
 
