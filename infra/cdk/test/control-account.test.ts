@@ -50,13 +50,14 @@ function event(input: {
   readonly sub?: string;
   readonly tokenUse?: "access" | "id";
   readonly issuedAt?: number;
+  readonly headers?: Record<string, string>;
 }): APIGatewayProxyEventV2 {
   return {
     version: "2.0",
     routeKey: "$default",
     rawPath: input.path,
     rawQueryString: "",
-    headers: {},
+    headers: input.headers ?? {},
     requestContext: {
       accountId: "111111111111",
       apiId: "api",
@@ -140,6 +141,63 @@ describe("account control-plane tenant isolation", () => {
       expect.objectContaining({ PK: expect.stringMatching(/^BOOTSTRAP_NONCE#/u) }),
     ]));
     expect(JSON.stringify(transaction)).not.toContain(responseBody.bootstrapToken);
+  });
+
+  it("mints a one-time password reset only for an enrolled account Mac", async () => {
+    mocks.verifyAuthenticatedRequest.mockResolvedValue({
+      principalId: "mac-a",
+      principal: { deviceId: "mac-a", ownerSub: tenantA },
+    });
+    mocks.send.mockImplementation(async (command: unknown) => {
+      const input = commandInput(command);
+      if (input.Key?.SK === "ACCOUNT#DELETED") return {};
+      if (input.Key?.SK === "ACCOUNT#META") return { Item: { username: "qa-user" } };
+      return {};
+    });
+
+    const response = await invoke({
+      method: "POST",
+      path: "/api/v1/account-password-reset",
+      headers: { "x-terminaldb-principal": "mac-a" },
+    });
+
+    expect(response.statusCode).toBe(201);
+    const body = JSON.parse(response.body ?? "{}") as { resetToken: string };
+    expect(body.resetToken).toMatch(/^[\w-]{40,}$/u);
+    const transaction = mocks.send.mock.calls
+      .map(([command]) => commandInput(command))
+      .find((input) => input.TransactItems);
+    expect(JSON.stringify(transaction)).toContain("ACCOUNT_PASSWORD_RESET#");
+    expect(JSON.stringify(transaction)).not.toContain(body.resetToken);
+  });
+
+  it("consumes a password reset once and forces Cognito password change plus TOTP", async () => {
+    mocks.send.mockImplementation(async (command: unknown) => {
+      const input = commandInput(command);
+      if (input.ReturnValues === "ALL_OLD") {
+        return { Attributes: { ownerSub: tenantA, accountUsername: "qa-user" } };
+      }
+      return {};
+    });
+
+    const response = await invoke({
+      method: "POST",
+      path: "/api/v1/account-password-reset/redeem",
+      body: { resetToken: "single-use-reset" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body ?? "{}") as Record<string, string>;
+    expect(body.username).toBe("qa-user");
+    expect(body.temporaryPassword).toMatch(/^Tdb-/u);
+    expect(mocks.cognitoSend.mock.calls.map(([command]) => command.constructor.name))
+      .toEqual(["AdminSetUserPasswordCommand", "AdminUserGlobalSignOutCommand"]);
+    const setPassword = commandInput(mocks.cognitoSend.mock.calls[0]?.[0]);
+    expect(setPassword).toMatchObject({
+      UserPoolId: "us-west-2_testpool",
+      Username: "qa-user",
+      Permanent: false,
+    });
   });
 
   it("lets the holder of an unused one-time grant cancel account setup", async () => {

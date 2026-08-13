@@ -4,6 +4,7 @@ import {
 } from "@aws-sdk/client-apigatewaymanagementapi";
 import {
   AdminDeleteUserCommand,
+  AdminSetUserPasswordCommand,
   AdminUserGlobalSignOutCommand,
   CognitoIdentityProviderClient,
 } from "@aws-sdk/client-cognito-identity-provider";
@@ -49,6 +50,7 @@ const ACTIVE_SESSION_TTL_SECONDS = 24 * 60 * 60;
 const ENDED_RECORD_TTL_SECONDS = 7 * 24 * 60 * 60;
 const ACCOUNT_DELETION_TTL_SECONDS = 2 * 60 * 60;
 const ACCOUNT_BOOTSTRAP_TTL_SECONDS = 20 * 60;
+const ACCOUNT_PASSWORD_RESET_TTL_SECONDS = 10 * 60;
 const RECENT_ACCOUNT_AUTH_SECONDS = 5 * 60;
 const publicRegion = process.env.AWS_REGION ?? "us-west-2";
 const stage = process.env.STAGE ?? "dev";
@@ -360,6 +362,114 @@ async function cancelAccountBootstrap(
     }
   }
   return json(200, { canceled: true });
+}
+
+async function createAccountPasswordReset(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
+  if (!cognitoUserPoolId) throw new Error("Account recovery is not configured");
+  const { principalId, principal } = await verifyAuthenticatedRequest(event);
+  if (principal.deviceId !== principalId || typeof principal.ownerSub !== "string") {
+    throw new Error("Only an enrolled TerminalDB Mac can reset this account password");
+  }
+  const ownerSub = principal.ownerSub;
+  await assertAccountActive(ownerSub);
+  const account = await dynamo.send(new GetCommand({
+    TableName: tableName,
+    Key: { PK: `USER#${ownerSub}`, SK: "ACCOUNT#META" },
+    ConsistentRead: true,
+  }));
+  const username = account.Item?.username;
+  if (typeof username !== "string" || username.length === 0 || username.length > 128) {
+    throw new Error("This Mac is not connected to an active TerminalDB account");
+  }
+
+  const resetToken = randomSecret(32);
+  const now = nowSeconds();
+  const expiresAt = now + ACCOUNT_PASSWORD_RESET_TTL_SECONDS;
+  await dynamo.send(new TransactWriteCommand({
+    TransactItems: [
+      {
+        ConditionCheck: {
+          TableName: tableName,
+          Key: { PK: `USER#${ownerSub}`, SK: "ACCOUNT#DELETED" },
+          ConditionExpression: "attribute_not_exists(PK)",
+        },
+      },
+      {
+        Put: {
+          TableName: tableName,
+          Item: {
+            PK: `ACCOUNT_PASSWORD_RESET#${sha256(resetToken)}`,
+            SK: "META",
+            ownerSub,
+            accountUsername: username,
+            deviceId: principalId,
+            createdAt: now,
+            expiresAt,
+            ttl: expiresAt,
+          },
+          ConditionExpression: "attribute_not_exists(PK)",
+        },
+      },
+    ],
+  }));
+  return json(201, { resetToken, expiresAt });
+}
+
+async function redeemAccountPasswordReset(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
+  if (!cognitoUserPoolId) throw new Error("Account recovery is not configured");
+  const body = parseBody(event);
+  const resetToken = stringField(body, "resetToken", 256);
+  let grant: Record<string, unknown> | undefined;
+  try {
+    const consumed = await dynamo.send(new DeleteCommand({
+      TableName: tableName,
+      Key: { PK: `ACCOUNT_PASSWORD_RESET#${sha256(resetToken)}`, SK: "META" },
+      ConditionExpression: "#ttl > :now",
+      ExpressionAttributeNames: { "#ttl": "ttl" },
+      ExpressionAttributeValues: { ":now": nowSeconds() },
+      ReturnValues: "ALL_OLD",
+    }));
+    grant = consumed.Attributes;
+  } catch (error) {
+    if ((error as { name?: string }).name !== "ConditionalCheckFailedException") throw error;
+  }
+  if (!grant) {
+    return json(410, { error: "Password reset approval expired or was already used. Start again from TerminalDB on your Mac." });
+  }
+  const username = grant.accountUsername;
+  const ownerSub = grant.ownerSub;
+  if (typeof username !== "string" || typeof ownerSub !== "string") {
+    throw new Error("Password reset approval is invalid");
+  }
+
+  // The browser uses this high-entropy temporary password only to enter
+  // Cognito's NEW_PASSWORD_REQUIRED flow. The user's chosen replacement
+  // password and TOTP code continue to go directly from browser to Cognito.
+  const temporaryPassword = `Tdb-${randomSecret(32)}-9aA!`;
+  await cognito.send(new AdminSetUserPasswordCommand({
+    UserPoolId: cognitoUserPoolId,
+    Username: username,
+    Password: temporaryPassword,
+    Permanent: false,
+  }));
+  await cognito.send(new AdminUserGlobalSignOutCommand({
+    UserPoolId: cognitoUserPoolId,
+    Username: username,
+  }));
+  const changedAt = nowSeconds();
+  await dynamo.send(new UpdateCommand({
+    TableName: tableName,
+    Key: { PK: `USER#${ownerSub}`, SK: "ACCOUNT#META" },
+    UpdateExpression: "SET credentialsChangedAt = :now",
+    ConditionExpression: "attribute_exists(PK) AND username = :username",
+    ExpressionAttributeValues: { ":now": changedAt, ":username": username },
+  }));
+  await revokeAccountControllers(ownerSub);
+  return json(200, { username, temporaryPassword });
 }
 
 async function completeAccountBootstrap(
@@ -2099,6 +2209,12 @@ async function handleHttp(
   }
   if (method === "DELETE" && path === "/api/v1/account-bootstrap") {
     return cancelAccountBootstrap(event);
+  }
+  if (method === "POST" && path === "/api/v1/account-password-reset") {
+    return createAccountPasswordReset(event);
+  }
+  if (method === "POST" && path === "/api/v1/account-password-reset/redeem") {
+    return redeemAccountPasswordReset(event);
   }
   if (path.startsWith("/api/v1/account/") && !(method === "DELETE" && path === "/api/v1/account")) {
     const identity = accountIdentity(event);

@@ -50,6 +50,11 @@ export interface AccountTotpSignIn {
   readonly session: string;
 }
 
+export interface AccountPasswordReset {
+  readonly username: string;
+  readonly session: string;
+}
+
 const TOKEN_KEY = "terminaldb.account.tokens.v1";
 const STATE_KEY = "terminaldb.account.oauth-state.v1";
 const VERIFIER_KEY = "terminaldb.account.pkce-verifier.v1";
@@ -196,7 +201,8 @@ function friendlyCognitoError(failure: CognitoFailure, status: number): Error {
     case "EnableSoftwareTokenMFAException":
       return new Error("That code was not accepted. Wait for a new code and try again.");
     case "NotAuthorizedException":
-      return new Error("The username or password was not accepted.");
+    case "PasswordResetRequiredException":
+      return new Error("Sign-in was not accepted. Check the username and password, or reset the password from an enrolled Mac.");
     case "LimitExceededException":
     case "TooManyRequestsException":
       return new Error("Too many attempts. Wait a moment and try again.");
@@ -345,6 +351,62 @@ export async function completeAccountTotpSignIn(input: {
     Session: input.signIn.session,
   });
   return saveCognitoTokens(completion.AuthenticationResult ?? {}).accessToken;
+}
+
+export async function beginAccountPasswordReset(input: {
+  readonly configuration: AccountAuthConfiguration;
+  readonly resetToken: string;
+  readonly newPassword: string;
+}): Promise<AccountPasswordReset> {
+  if (!input.resetToken) throw new Error("Start password reset again from TerminalDB on your Mac.");
+  if (!input.newPassword) throw new Error("Choose a new password.");
+  if (
+    input.newPassword.length < 12 ||
+    !/[a-z]/u.test(input.newPassword) ||
+    !/[A-Z]/u.test(input.newPassword) ||
+    !/\d/u.test(input.newPassword) ||
+    !/[^A-Za-z0-9]/u.test(input.newPassword)
+  ) {
+    throw new Error("Use at least 12 characters with upper and lowercase letters, a number, and a symbol.");
+  }
+  const approval = await fetch("/api/v1/account-password-reset/redeem", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ resetToken: input.resetToken }),
+  });
+  const reset = await approval.json().catch(() => ({})) as {
+    readonly username?: string;
+    readonly temporaryPassword?: string;
+    readonly error?: string;
+  };
+  if (!approval.ok || !reset.username || !reset.temporaryPassword) {
+    throw new Error(reset.error ?? `Password reset could not start (${approval.status})`);
+  }
+  const authentication = await cognitoRequest(input.configuration, "InitiateAuth", {
+    AuthFlow: "USER_AUTH",
+    ClientId: input.configuration.clientId,
+    AuthParameters: {
+      USERNAME: reset.username,
+      PASSWORD: reset.temporaryPassword,
+      PREFERRED_CHALLENGE: "PASSWORD",
+    },
+  });
+  if (authentication.ChallengeName !== "NEW_PASSWORD_REQUIRED" || !authentication.Session) {
+    throw new Error("Cognito could not start the password reset. Start again from TerminalDB on your Mac.");
+  }
+  const passwordChange = await cognitoRequest(input.configuration, "RespondToAuthChallenge", {
+    ChallengeName: "NEW_PASSWORD_REQUIRED",
+    ChallengeResponses: {
+      USERNAME: reset.username,
+      NEW_PASSWORD: input.newPassword,
+    },
+    ClientId: input.configuration.clientId,
+    Session: authentication.Session,
+  });
+  if (passwordChange.ChallengeName !== "SOFTWARE_TOKEN_MFA" || !passwordChange.Session) {
+    throw new Error("Cognito did not request the required authenticator code. Start again from TerminalDB on your Mac.");
+  }
+  return { username: reset.username, session: passwordChange.Session };
 }
 
 export async function changeAccountPassword(input: {

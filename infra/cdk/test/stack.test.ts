@@ -155,7 +155,7 @@ describe("TerminalDB Remote infrastructure", () => {
     );
     expect(accountDeletionPolicy).toBeDefined();
     expect(accountDeletionPolicy).not.toContain('"Resource":"*"');
-    expect(accountDeletionPolicy).not.toContain("cognito-idp:AdminSetUserPassword");
+    expect(accountDeletionPolicy).toContain("cognito-idp:AdminSetUserPassword");
     template.hasResourceProperties("AWS::Cognito::UserPool", {
       LambdaConfig: {
         PreSignUp: Match.anyValue(),

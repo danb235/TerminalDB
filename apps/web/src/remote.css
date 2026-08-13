@@ -1441,6 +1441,25 @@ p {
   font: 13px/1 var(--tdb-mono);
 }
 
+.account-signup input:-webkit-autofill,
+.account-signup input:-webkit-autofill:hover,
+.account-signup input:-webkit-autofill:focus,
+.account-security-action input:-webkit-autofill,
+.account-security-action input:-webkit-autofill:hover,
+.account-security-action input:-webkit-autofill:focus {
+  box-shadow: 0 0 0 1000px var(--tdb-black) inset;
+  caret-color: var(--tdb-text);
+  -webkit-text-fill-color: var(--tdb-text);
+}
+
+.account-signup input[type="password"]::selection,
+.account-security-action input[type="password"]::selection {
+  background: var(--tdb-cyan);
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  text-shadow: none;
+}
+
 .account-signup form input:focus,
 .account-security-action form input:focus {
   border-color: var(--tdb-cyan);
@@ -1567,6 +1586,38 @@ p {
   text-align: center;
   font-size: 18px;
   letter-spacing: 0.32em;
+}
+
+.account-signin-recovery {
+  display: grid;
+  gap: 8px;
+  padding: 11px;
+  border: 1px solid rgb(239 181 78 / 38%);
+  border-radius: 5px;
+  background: rgb(239 181 78 / 8%);
+}
+
+.account-signin-recovery strong {
+  color: var(--tdb-amber);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.account-signin-recovery button {
+  justify-self: start;
+  color: var(--tdb-cyan);
+}
+
+.account-signin-recovery small {
+  color: var(--tdb-muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.account-reset-page {
+  width: min(100%, 640px);
+  margin-inline: auto;
 }
 
 @media (min-width: 600px) {

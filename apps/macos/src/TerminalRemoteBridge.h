@@ -56,6 +56,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)createPairing;
 - (void)createAccountWithBaseURL:(NSString *)baseURL;
 - (void)connectAccountWithBaseURL:(NSString *)baseURL;
+- (void)resetAccountPasswordWithBaseURL:(NSString *)baseURL;
 - (void)refreshControllers;
 - (void)revokeControllerWithIdentifier:(NSString *)controllerIdentifier;
 - (void)publishOutputData:(NSData *)data

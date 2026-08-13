@@ -333,6 +333,102 @@ test("keeps password and TOTP sign-in inside TerminalDB", async ({ page }) => {
   });
 });
 
+test("offers Mac-approved recovery after a rejected sign-in", async ({ page }) => {
+  await page.route("**/api/config", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        apiBaseUrl: "",
+        websocketUrl: "/socket",
+        protocolVersion: 1,
+        region: "us-west-2",
+        pairingEnabled: true,
+        accountAuth: accountConfiguration,
+        mockMode: false,
+      }),
+    });
+  });
+  await page.route("https://cognito-idp.us-west-2.amazonaws.com/**", async (route) => {
+    await route.fulfill({
+      status: 400,
+      contentType: "application/json",
+      body: JSON.stringify({ __type: "NotAuthorizedException" }),
+    });
+  });
+
+  await page.goto("/?unpaired&account");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.getByLabel("Username").fill("unknown-or-locked");
+  await page.getByLabel("Password", { exact: true }).fill("Not-Accepted-42!");
+  await page.getByRole("button", { name: "Continue" }).click();
+
+  await expect(page.getByRole("alert")).toContainText("Sign-in was not accepted");
+  await expect(page.getByRole("button", { name: "Reset password from an enrolled Mac" }))
+    .toBeEnabled();
+  await expect(page.getByRole("alert")).toContainText("New here?");
+  const securePasswordSelection = await page.getByLabel("Password", { exact: true }).evaluate(
+    (element) => getComputedStyle(element, "::selection").webkitTextFillColor,
+  );
+  expect(securePasswordSelection).toBe("rgba(0, 0, 0, 0)");
+});
+
+test("uses a one-time Mac approval to reset password and require existing TOTP", async ({ page }) => {
+  const directAccessToken = freshAccessToken("reset-access");
+  await page.route("**/api/config", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        apiBaseUrl: "",
+        websocketUrl: "/socket",
+        protocolVersion: 1,
+        region: "us-west-2",
+        pairingEnabled: true,
+        accountAuth: accountConfiguration,
+        mockMode: false,
+      }),
+    });
+  });
+  await page.route("**/api/v1/account-password-reset/redeem", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        username: "returning-user",
+        temporaryPassword: "server-temporary-value",
+      }),
+    });
+  });
+  await page.route("https://cognito-idp.us-west-2.amazonaws.com/**", async (route) => {
+    const target = route.request().headers()["x-amz-target"];
+    const body = route.request().postDataJSON() as { ChallengeName?: string };
+    const response = target === "AWSCognitoIdentityProviderService.InitiateAuth"
+      ? { ChallengeName: "NEW_PASSWORD_REQUIRED", Session: "new-password-session" }
+      : body.ChallengeName === "NEW_PASSWORD_REQUIRED"
+        ? { ChallengeName: "SOFTWARE_TOKEN_MFA", Session: "reset-totp-session" }
+        : {
+            AuthenticationResult: {
+              AccessToken: directAccessToken,
+              RefreshToken: "reset-refresh",
+              ExpiresIn: 3_600,
+            },
+          };
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify(response) });
+  });
+  await page.route("**/api/v1/account/devices", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ devices: [] }) });
+  });
+
+  await page.goto("/?unpaired&account=reset-password#account-password-reset=mac-approved-reset");
+  await expect(page.getByRole("heading", { name: "Choose a new password" })).toBeVisible();
+  await page.getByLabel("New password", { exact: true }).fill("Replacement-Value-42!");
+  await page.getByLabel("Confirm new password").fill("Replacement-Value-42!");
+  await page.getByRole("button", { name: "Continue to authenticator" }).click();
+  await expect(page.getByRole("heading", { name: "Confirm with your authenticator" })).toBeVisible();
+  await page.getByLabel("Six-digit code").fill("123456");
+  await page.getByRole("button", { name: "Finish password reset" }).click();
+  await expect(page.getByRole("heading", { name: "Your Macs" })).toBeVisible();
+  expect(page.url()).not.toContain("account-password-reset");
+});
+
 test("recovers incomplete accounts without opening Cognito's hosted MFA page", async ({ page }) => {
   await page.route("**/api/config", async (route) => {
     await route.fulfill({

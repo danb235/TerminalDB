@@ -21,6 +21,7 @@ import QRCode from "qrcode";
 import { clearControllerSession, loadControllerSession } from "./identity";
 import {
   accountAccessToken,
+  beginAccountPasswordReset,
   beginAccountPasswordSignIn,
   beginAccountTotpEnrollment,
   changeAccountPassword,
@@ -339,10 +340,12 @@ function AccountSignIn({
   configuration,
   onComplete,
   onCancel,
+  onRecover,
 }: {
   readonly configuration: NonNullable<RemotePublicConfiguration["accountAuth"]>;
   readonly onComplete: (accessToken: string) => void;
   readonly onCancel: () => void;
+  readonly onRecover?: () => void;
 }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -468,6 +471,133 @@ function AccountSignIn({
           {busy ? "Checking…" : "Continue"}
         </button>
       </form>
+      <button className="text-button" disabled={busy} onClick={onCancel}>Cancel</button>
+      {error ? (
+        <div className="account-signin-recovery" role="alert">
+          <strong>{error}</strong>
+          {onRecover ? (
+            <button className="text-button" disabled={busy} onClick={onRecover}>
+              Reset password from an enrolled Mac
+            </button>
+          ) : null}
+          <small>New here? Open TerminalDB on your Mac, choose Remote Control, then Create Account.</small>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function AccountPasswordReset({
+  configuration,
+  resetToken,
+  onComplete,
+  onCancel,
+}: {
+  readonly configuration: NonNullable<RemotePublicConfiguration["accountAuth"]>;
+  readonly resetToken: string;
+  readonly onComplete: (accessToken: string) => void;
+  readonly onCancel: () => void;
+}) {
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [resetSignIn, setResetSignIn] = useState<AccountTotpSignIn>();
+  const [authenticatorCode, setAuthenticatorCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+
+  const submitPassword = async () => {
+    if (newPassword !== confirmation) {
+      setError("The new passwords do not match.");
+      return;
+    }
+    setBusy(true);
+    setError(undefined);
+    try {
+      const challenge = await beginAccountPasswordReset({
+        configuration,
+        resetToken,
+        newPassword,
+      });
+      setNewPassword("");
+      setConfirmation("");
+      setResetSignIn(challenge);
+    } catch (resetError) {
+      setError(resetError instanceof Error ? resetError.message : "Password reset could not start.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitAuthenticator = async () => {
+    if (!resetSignIn) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      const token = await completeAccountTotpSignIn({
+        configuration,
+        signIn: resetSignIn,
+        code: authenticatorCode,
+      });
+      onComplete(token);
+    } catch (resetError) {
+      setError(resetError instanceof Error ? resetError.message : "The code could not be verified.");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="account-access account-signup account-enrollment account-signin account-password-reset">
+      <span>APPROVED BY YOUR MAC</span>
+      <h2>{resetSignIn ? "Confirm with your authenticator" : "Choose a new password"}</h2>
+      <p>{resetSignIn
+        ? `Enter the current six-digit code for ${resetSignIn.username}.`
+        : "This one-time approval came from an enrolled TerminalDB Mac. Other browsers will be signed out."}</p>
+      {resetSignIn ? (
+        <form onSubmit={(event) => { event.preventDefault(); void submitAuthenticator(); }}>
+          <label htmlFor="account-reset-code">Six-digit code</label>
+          <input
+            id="account-reset-code"
+            autoComplete="one-time-code"
+            autoFocus
+            disabled={busy}
+            inputMode="numeric"
+            maxLength={6}
+            pattern="[0-9]{6}"
+            required
+            value={authenticatorCode}
+            onChange={(event) => setAuthenticatorCode(event.target.value.replace(/\D/gu, ""))}
+          />
+          <button disabled={busy} type="submit">{busy ? "Verifying…" : "Finish password reset"}</button>
+        </form>
+      ) : (
+        <form onSubmit={(event) => { event.preventDefault(); void submitPassword(); }}>
+          <label htmlFor="account-reset-password">New password</label>
+          <input
+            id="account-reset-password"
+            autoComplete="new-password"
+            autoFocus
+            disabled={busy}
+            minLength={12}
+            required
+            type="password"
+            value={newPassword}
+            onChange={(event) => setNewPassword(event.target.value)}
+          />
+          <small>At least 12 characters with upper and lowercase letters, a number, and a symbol.</small>
+          <label htmlFor="account-reset-password-confirmation">Confirm new password</label>
+          <input
+            id="account-reset-password-confirmation"
+            autoComplete="new-password"
+            disabled={busy}
+            minLength={12}
+            required
+            type="password"
+            value={confirmation}
+            onChange={(event) => setConfirmation(event.target.value)}
+          />
+          <button disabled={busy} type="submit">{busy ? "Resetting…" : "Continue to authenticator"}</button>
+        </form>
+      )}
       <button className="text-button" disabled={busy} onClick={onCancel}>Cancel</button>
       {error ? <small role="alert">{error}</small> : null}
     </section>
@@ -1013,6 +1143,10 @@ function AccountAccess({
       <AccountSignIn
         configuration={configuration}
         onComplete={finishSignIn}
+        onRecover={() => {
+          setSignInPurpose(undefined);
+          setError("Open TerminalDB on an enrolled Mac, choose Remote Control, then Change Password. The Mac will open a one-time reset page here.");
+        }}
         onCancel={() => {
           const securitySignIn = signInPurpose === "password" || signInPurpose === "delete";
           setSignInPurpose(undefined);
@@ -1989,6 +2123,16 @@ export function App() {
     }
     return pendingAccountBootstrap();
   });
+  const [accountPasswordResetToken, setAccountPasswordResetToken] = useState<string | undefined>(() => {
+    const fragment = new URLSearchParams(location.hash.replace(/^#/u, ""));
+    const approved = fragment.get("account-password-reset") ?? undefined;
+    if (approved) {
+      history.replaceState({}, "", `${location.pathname}${location.search}`);
+    }
+    return approved;
+  });
+  const passwordResetRequested =
+    new URLSearchParams(location.search).get("account") === "reset-password";
   const clientRef = useRef<RemoteClient | null>(null);
   const connectionEpochRef = useRef(0);
   const selectedTabRef = useRef(selectedTabId);
@@ -2743,6 +2887,45 @@ export function App() {
     clearPendingAccountBootstrap();
     setAccountBootstrapToken(undefined);
   };
+
+  const finishPasswordReset = (_accessToken: string) => {
+    setAccountPasswordResetToken(undefined);
+    history.replaceState({}, "", "/?account");
+    // The completed Cognito response proves password + existing TOTP. Keep
+    // only the freshly returned session, then load the account dashboard.
+    setView("accounts");
+  };
+
+  if (accountPasswordResetToken && remoteConfiguration?.accountAuth) {
+    return (
+      <main className="pairing-view account-reset-page">
+        <AppMark />
+        <AccountPasswordReset
+          configuration={remoteConfiguration.accountAuth}
+          resetToken={accountPasswordResetToken}
+          onComplete={finishPasswordReset}
+          onCancel={() => {
+            setAccountPasswordResetToken(undefined);
+            history.replaceState({}, "", "/?account");
+          }}
+        />
+      </main>
+    );
+  }
+
+  if (passwordResetRequested && !accountPasswordResetToken && remoteConfiguration?.accountAuth) {
+    return (
+      <main className="pairing-view account-reset-page">
+        <AppMark />
+        <section className="account-access account-enrollment account-signin">
+          <span>RESET APPROVAL REQUIRED</span>
+          <h2>Start again from TerminalDB</h2>
+          <p>This password reset link expired or was already used. On an enrolled Mac, open Remote Control and choose Change Password.</p>
+          <button onClick={() => history.replaceState({}, "", "/?account")}>Return to sign in</button>
+        </section>
+      </main>
+    );
+  }
 
   if (pairingId) {
     return (

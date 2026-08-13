@@ -48,6 +48,19 @@ static NSURL *TerminalRemoteAccountOnboardingURL(NSString *baseURL) {
     return TerminalRemoteAccountURL(baseURL, @"create");
 }
 
+static NSURL *TerminalRemoteValidatedWebURL(NSString *urlValue) {
+    NSURLComponents *components =
+        [NSURLComponents componentsWithString:urlValue];
+    NSString *scheme = components.scheme.lowercaseString;
+    if (components.URL == nil ||
+        !([scheme isEqualToString:@"https"] ||
+          [scheme isEqualToString:@"http"]) ||
+        components.host.length == 0) {
+        return nil;
+    }
+    return components.URL;
+}
+
 static void TerminalRemotePresentKeychainApproval(void) {
     dispatch_after(
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
@@ -461,6 +474,24 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
         }
         return;
     }
+    if ([type isEqualToString:@"accountPasswordReset"]) {
+        NSString *urlValue = [message[@"url"] isKindOfClass:NSString.class]
+            ? message[@"url"] : @"";
+        NSURL *url = TerminalRemoteValidatedWebURL(urlValue);
+        if (url != nil) {
+            [NSWorkspace.sharedWorkspace openURL:url];
+            [self updateState:@"live"
+                      enabled:self.enabled
+                   pairingURL:self.pairingURL
+                        detail:@"Choose a new password in the browser, then enter your existing authenticator code."];
+        } else {
+            [self updateState:@"error"
+                      enabled:self.enabled
+                   pairingURL:self.pairingURL
+                        detail:@"The password reset URL was invalid."];
+        }
+        return;
+    }
     if ([type isEqualToString:@"snapshotRequest"]) {
         NSString *tabIdentifier = message[@"tabId"];
         NSString *controllerIdentifier = message[@"controllerId"];
@@ -738,6 +769,25 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
     }];
 }
 
+- (void)resetAccountPasswordWithBaseURL:(NSString *)baseURL {
+    if (!self.accountBootstrapSupported || !self.accountOwned) {
+        [self updateState:@"error"
+                  enabled:self.enabled
+               pairingURL:self.pairingURL
+                    detail:@"Connect this Mac to your TerminalDB account before resetting its password."];
+        return;
+    }
+    [self start];
+    [self updateState:@"connecting"
+              enabled:self.enabled
+           pairingURL:self.pairingURL
+                detail:@"Preparing secure password reset approval…"];
+    [self sendMessage:@{
+        @"type" : @"resetAccountPassword",
+        @"baseURL" : baseURL,
+    }];
+}
+
 - (void)refreshControllers {
     [self sendMessage:@{@"type" : @"refreshControllers"}];
 }
@@ -901,6 +951,10 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
         [passwordURL.query containsString:@"account=password"] &&
         TerminalRemoteAccountOnboardingURL(@"not a URL") == nil &&
         TerminalRemoteAccountOnboardingURL(@"javascript://example.invalid") == nil &&
+        TerminalRemoteValidatedWebURL(
+            @"https://app.terminaldb.app/?account=reset-password"
+             "#account-password-reset=approval") != nil &&
+        TerminalRemoteValidatedWebURL(@"javascript://example.invalid") == nil &&
         split.length == 0 && invalid.length == 0 &&
         fabs(TerminalRemoteOutputDelay(YES, 1.0) - 0.012) < 0.0001 &&
         fabs(TerminalRemoteOutputDelay(YES, 0.02) - 0.03) < 0.0001 &&
@@ -1721,7 +1775,12 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
 
 - (void)resetAccountLogin:(id)sender {
     (void)sender;
-    [self openAccountSecurityAction:@"password"];
+    NSString *baseURL = [self
+        configuredValueForKey:@"TerminalDBRemoteBaseURL"
+                  defaultValue:TerminalRemoteDefaultBaseURL];
+    self.automaticSetupError = nil;
+    [self.bridge resetAccountPasswordWithBaseURL:baseURL];
+    [self refresh];
 }
 
 - (void)deleteAccount:(id)sender {
