@@ -969,23 +969,67 @@ static BOOL TerminalDBWriteAll(int descriptor,
                         dispatch_time(DISPATCH_TIME_NOW,
                             (int64_t)(0.7 * NSEC_PER_SEC)),
                         dispatch_get_main_queue(), ^{
+                            NSArray<NSString *> *arguments =
+                                NSProcessInfo.processInfo.arguments;
+                            BOOL showStartingRefresh = [arguments
+                                containsObject:
+                                    @"--visual-qa-usage-refresh=starting"];
+                            BOOL showProgressiveRefresh = [arguments
+                                containsObject:
+                                    @"--visual-qa-usage-refresh=progressive"];
                             [controller.claudeStatusBar
                                 setValue:@YES forKey:@"accountIsLoggedIn"];
                             [controller.claudeStatusBar
                                 setValue:@YES forKey:@"accountStatusKnown"];
-                            [controller.claudeStatusBar setValue:@{
+                            NSDictionary *dashboardResults = @{
                                 @"demo-team" : @{
                                     @"account_state" : @"signed_in",
+                                    @"refresh_state" : showProgressiveRefresh
+                                        ? @"complete"
+                                        : (showStartingRefresh
+                                            ? @"refreshing" : @"complete"),
                                 },
                                 @"demo-ops" : @{
-                                    @"account_state" : @"signed_out",
+                                    @"account_state" :
+                                        (showStartingRefresh ||
+                                         showProgressiveRefresh)
+                                            ? @"signed_in" : @"signed_out",
+                                    @"refresh_state" : showProgressiveRefresh
+                                        ? @"refreshing"
+                                        : (showStartingRefresh
+                                            ? @"waiting" : @"complete"),
                                 },
                                 @"demo-personal" : @{
-                                    @"account_state" : @"unknown",
+                                    @"account_state" :
+                                        (showStartingRefresh ||
+                                         showProgressiveRefresh)
+                                            ? @"signed_in" : @"unknown",
+                                    @"refresh_state" :
+                                        (showStartingRefresh ||
+                                         showProgressiveRefresh)
+                                            ? @"waiting" : @"complete",
                                     @"refresh_error" :
-                                        @"Claude Code did not return current usage.",
+                                        (showStartingRefresh ||
+                                         showProgressiveRefresh)
+                                            ? @""
+                                            : @"Claude Code did not return current usage.",
                                 },
-                            } forKey:@"usageDashboardResults"];
+                            };
+                            [controller.claudeStatusBar
+                                setValue:dashboardResults
+                                  forKey:@"usageDashboardResults"];
+                            if (showStartingRefresh ||
+                                showProgressiveRefresh) {
+                                [controller.claudeStatusBar
+                                    setValue:@YES
+                                      forKey:@"usageDashboardRefreshInFlight"];
+                                [controller.claudeStatusBar
+                                    setValue:@3
+                                      forKey:@"usageDashboardRefreshTotalCount"];
+                                [controller.claudeStatusBar
+                                    setValue:(showProgressiveRefresh ? @1 : @0)
+                                      forKey:@"usageDashboardRefreshCompletedCount"];
+                            }
                             [controller.claudeStatusBar presentUsageWindow];
                             if ([NSProcessInfo.processInfo.arguments
                                     containsObject:
@@ -3751,7 +3795,9 @@ static BOOL TerminalDBWriteAll(int descriptor,
 - (void)presentTerminalController:(AppDelegate *)controller {
     BOOL backgroundUIQA = [NSProcessInfo.processInfo.arguments
         containsObject:@"--visual-qa"];
-    if (backgroundUIQA) {
+    BOOL visibleUIQA = [NSProcessInfo.processInfo.arguments
+        containsObject:@"--visual-qa-show-window"];
+    if (backgroundUIQA && !visibleUIQA) {
         [controller.window orderBack:nil];
     } else {
         [controller.window makeKeyAndOrderFront:nil];
@@ -7270,6 +7316,13 @@ static BOOL TerminalDBWriteAll(int descriptor,
     while (host.embeddedSplitOwner != nil) {
         host = host.embeddedSplitOwner;
     }
+    BOOL visualQA = [NSProcessInfo.processInfo.arguments
+        containsObject:@"--visual-qa"];
+    if (!visualQA) {
+        // Initialize the refresh before the panel's first render so stale
+        // snapshots are immediately labeled as waiting or refreshing.
+        [statusBar refreshUsageDashboard];
+    }
     NSView *usageView = [statusBar prepareUsagePanel];
     __weak AppDelegate *weakHost = host;
     __weak ClaudeStatusBar *weakStatusBar = statusBar;
@@ -7282,14 +7335,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
     dismissHandler:^{
         [weakStatusBar didDismissUsagePanel];
     }];
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if ([NSProcessInfo.processInfo.arguments
-                containsObject:@"--visual-qa"]) {
-            [weakStatusBar prepareUsagePanel];
-        } else {
-            [weakStatusBar refreshUsageDashboard];
-        }
-    });
+    if (visualQA) [weakStatusBar prepareUsagePanel];
 }
 
 - (void)claudeStatusBar:(ClaudeStatusBar *)statusBar
@@ -8978,8 +9024,10 @@ int main(void) {
             containsObject:@"--background-tab-qa"];
         BOOL visualQA = [NSProcessInfo.processInfo.arguments
             containsObject:@"--visual-qa"];
+        BOOL visibleVisualQA = [NSProcessInfo.processInfo.arguments
+            containsObject:@"--visual-qa-show-window"];
         [app setActivationPolicy:
-            backgroundTabQA || visualQA
+            backgroundTabQA || (visualQA && !visibleVisualQA)
                 ? NSApplicationActivationPolicyAccessory
                 : NSApplicationActivationPolicyRegular];
         TerminalDBApplicationDelegate = [[AppDelegate alloc] init];

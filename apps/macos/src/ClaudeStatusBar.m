@@ -110,6 +110,8 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 @property(nonatomic, strong, readwrite, nullable) NSView *usagePanelView;
 @property(nonatomic, strong, nullable) ClaudeUsageDocumentView *usageWindowDocumentView;
 @property(nonatomic) BOOL usageDashboardRefreshInFlight;
+@property(nonatomic) NSUInteger usageDashboardRefreshCompletedCount;
+@property(nonatomic) NSUInteger usageDashboardRefreshTotalCount;
 @property(nonatomic, copy) NSDictionary<NSString *, NSDictionary *> *usageDashboardResults;
 @property(nonatomic) CGFloat usageDashboardViewportWidth;
 @property(nonatomic) BOOL usageDashboardResizeScheduled;
@@ -333,6 +335,18 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         [self.profileManager.profiles copy];
     if (profiles.count == 0) return;
     self.usageDashboardRefreshInFlight = YES;
+    self.usageDashboardRefreshCompletedCount = 0;
+    self.usageDashboardRefreshTotalCount = profiles.count;
+    NSMutableDictionary<NSString *, NSDictionary *> *pendingResults =
+        [self.usageDashboardResults mutableCopy];
+    for (ClaudeProfile *profile in profiles) {
+        NSMutableDictionary *pending =
+            [pendingResults[profile.identifier] mutableCopy]
+                ?: [NSMutableDictionary dictionary];
+        pending[@"refresh_state"] = @"waiting";
+        pendingResults[profile.identifier] = [pending copy];
+    }
+    self.usageDashboardResults = [pendingResults copy];
     [self refreshUsageWindowContents];
     NSString *executable = self.claudeExecutable;
     NSMutableArray<NSDictionary *> *requests = [NSMutableArray array];
@@ -349,6 +363,19 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         for (NSDictionary *request in requests) {
             ClaudeProfile *profile = request[@"profile"];
             NSDictionary *environment = request[@"environment"];
+            dispatch_sync(dispatch_get_main_queue(), ^{
+                ClaudeStatusBar *strongSelf = weakSelf;
+                if (strongSelf == nil) return;
+                NSMutableDictionary *dashboardResults =
+                    [strongSelf.usageDashboardResults mutableCopy];
+                NSMutableDictionary *refreshing =
+                    [dashboardResults[profile.identifier] mutableCopy]
+                        ?: [NSMutableDictionary dictionary];
+                refreshing[@"refresh_state"] = @"refreshing";
+                dashboardResults[profile.identifier] = [refreshing copy];
+                strongSelf.usageDashboardResults = [dashboardResults copy];
+                [strongSelf refreshUsageWindowContents];
+            });
             NSMutableDictionary *result = [[ClaudeStatusBar
                 accountRefreshResultWithExecutable:executable
                                        environment:environment] mutableCopy];
@@ -365,12 +392,34 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
                     [result removeObjectForKey:@"status_error"];
                 }
             }
+            result[@"refresh_state"] = @"complete";
             results[profile.identifier] = [result copy];
+            dispatch_sync(dispatch_get_main_queue(), ^{
+                ClaudeStatusBar *strongSelf = weakSelf;
+                if (strongSelf == nil) return;
+                NSMutableDictionary *dashboardResults =
+                    [strongSelf.usageDashboardResults mutableCopy];
+                dashboardResults[profile.identifier] = [result copy];
+                strongSelf.usageDashboardResults = [dashboardResults copy];
+                strongSelf.usageDashboardRefreshCompletedCount += 1;
+                if ([strongSelf.selectedProfile.identifier
+                        isEqualToString:profile.identifier]) {
+                    NSString *state = result[@"account_state"];
+                    strongSelf.accountStatusKnown =
+                        ![state isEqualToString:@"unknown"];
+                    strongSelf.accountIsLoggedIn =
+                        [state isEqualToString:@"signed_in"];
+                    strongSelf.usageRefreshError = result[@"refresh_error"]
+                        ?: result[@"status_error"];
+                }
+                [strongSelf refreshUsageWindowContents];
+            });
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             ClaudeStatusBar *strongSelf = weakSelf;
             if (strongSelf == nil) return;
             strongSelf.usageDashboardRefreshInFlight = NO;
+            strongSelf.usageDashboardRefreshCompletedCount = profiles.count;
             strongSelf.usageDashboardResults = [results copy];
             NSString *selectedIdentifier =
                 strongSelf.selectedProfile.identifier;
@@ -480,7 +529,53 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     [document addSubview:summary];
     y += 30;
 
-    if (mostUrgent != nil) {
+    if (self.usageDashboardRefreshInFlight) {
+        NSUInteger total = MAX((NSUInteger)1,
+                               self.usageDashboardRefreshTotalCount);
+        NSUInteger completed = MIN(self.usageDashboardRefreshCompletedCount,
+                                   total);
+        NSView *progress = [[NSView alloc]
+            initWithFrame:NSMakeRect(columnX, y, columnWidth, 54)];
+        progress.wantsLayer = YES;
+        progress.layer.cornerRadius = 7;
+        progress.layer.borderWidth = 1;
+        progress.layer.borderColor = self.theme.statusBarBorder.CGColor;
+        progress.layer.backgroundColor =
+            self.theme.statusBarBackground.CGColor;
+        progress.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
+        NSString *progressText = completed == 0
+            ? [NSString stringWithFormat:
+                @"Checking %lu subscriptions…", (unsigned long)total]
+            : [NSString stringWithFormat:
+                @"Refreshing subscriptions… %lu of %lu complete",
+                (unsigned long)completed, (unsigned long)total];
+        NSTextField *progressLabel = [self
+            usageWindowLabel:progressText
+                         size:11.5
+                       weight:NSFontWeightSemibold
+                        color:self.theme.ansiColors[6]
+                        frame:NSMakeRect(16, 28, columnWidth - 32, 18)];
+        progressLabel.selectable = NO;
+        [progress addSubview:progressLabel];
+        NSProgressIndicator *indicator = [[NSProgressIndicator alloc]
+            initWithFrame:NSMakeRect(16, 12, columnWidth - 32, 6)];
+        indicator.style = NSProgressIndicatorStyleBar;
+        indicator.indeterminate = NO;
+        indicator.minValue = 0;
+        indicator.maxValue = total;
+        indicator.doubleValue = completed;
+        [indicator setAccessibilityLabel:@"Subscription refresh progress"];
+        [indicator setAccessibilityValue:[NSString stringWithFormat:
+            @"%lu of %lu complete", (unsigned long)completed,
+            (unsigned long)total]];
+        [progress addSubview:indicator];
+        [document addSubview:progress];
+        y += 68;
+    }
+
+    // Do not present a stale forecast as current while the subscriptions are
+    // being checked. The warning returns as soon as fresh results arrive.
+    if (mostUrgent != nil && !self.usageDashboardRefreshInFlight) {
         BOOL critical =
             [mostUrgent[@"severity"] isEqualToString:@"critical"];
         NSView *warning = [[NSView alloc]
@@ -553,6 +648,12 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
             isKindOfClass:NSString.class] ? entry[@"refresh_error"] : nil;
         NSString *statusError = [entry[@"status_error"]
             isKindOfClass:NSString.class] ? entry[@"status_error"] : nil;
+        NSString *refreshState = [entry[@"refresh_state"]
+            isKindOfClass:NSString.class] ? entry[@"refresh_state"] : nil;
+        BOOL waitingForRefresh = self.usageDashboardRefreshInFlight &&
+            [refreshState isEqualToString:@"waiting"];
+        BOOL refreshing = self.usageDashboardRefreshInFlight &&
+            [refreshState isEqualToString:@"refreshing"];
         BOOL statusUnavailable = [entry[@"account_state"]
             isEqualToString:@"unknown"] && statusError.length > 0;
         BOOL active = [profile.identifier
@@ -594,12 +695,17 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 
         NSDate *modifiedAt = [entry[@"modified_at"]
             isKindOfClass:NSDate.class] ? entry[@"modified_at"] : nil;
-        NSString *freshness = statusUnavailable
+        NSString *freshness = refreshing
+            ? @"Refreshing account status and usage…"
+            : (waitingForRefresh
+            ? @"Waiting to refresh…"
+            : (statusUnavailable
             ? @"Account status unavailable · cached usage hidden"
             : (signedOut
             ? @"Signed out · cached usage hidden"
-            : @"No usage snapshot yet");
-        if (modifiedAt != nil && !statusUnavailable) {
+            : @"No usage snapshot yet")));
+        if (modifiedAt != nil && !statusUnavailable &&
+            !waitingForRefresh && !refreshing) {
             NSTimeInterval age = MAX(0, -modifiedAt.timeIntervalSinceNow);
             NSString *ageText = age < 60
                 ? @"just now"
@@ -626,7 +732,9 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
             usageWindowLabel:freshness
                          size:10
                        weight:NSFontWeightMedium
-                        color:self.theme.statusBarActiveForeground
+                        color:(waitingForRefresh || refreshing)
+                            ? self.theme.ansiColors[6]
+                            : self.theme.statusBarActiveForeground
                         frame:NSMakeRect(20, 118, columnWidth - 206, 18)];
         freshnessLabel.font = [NSFont fontWithName:self.theme.fontName size:10]
             ?: [NSFont monospacedSystemFontOfSize:10
@@ -656,7 +764,13 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 
         if (forecasts.count == 0) {
             NSString *unavailableText = nil;
-            if (signedOut) {
+            if (refreshing) {
+                unavailableText =
+                    @"Retrieving current allowances from Claude Code…";
+            } else if (waitingForRefresh) {
+                unavailableText =
+                    @"This subscription will refresh after the account above it completes.";
+            } else if (signedOut) {
                 unavailableText =
                     @"Usage unavailable while this account is signed out. Sign in to refresh its allowances.";
             } else if (sourceStale) {
@@ -1526,6 +1640,9 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     if (refreshError.length > 0) entry[@"refresh_error"] = refreshError;
     if (statusError.length > 0) entry[@"status_error"] = statusError;
     if (modifiedAt != nil) entry[@"modified_at"] = modifiedAt;
+    NSString *refreshState = [refreshResult[@"refresh_state"]
+        isKindOfClass:NSString.class] ? refreshResult[@"refresh_state"] : nil;
+    if (refreshState.length > 0) entry[@"refresh_state"] = refreshState;
     return entry;
 }
 
@@ -2338,6 +2455,45 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     BOOL dashboardUsesHostScroller =
         NSHeight(dashboard.frame) > 620 &&
         !ClaudeUsageViewContainsNestedScrollView(dashboard);
+    [fixtureBar setValue:@YES forKey:@"usageDashboardRefreshInFlight"];
+    [fixtureBar setValue:@0 forKey:@"usageDashboardRefreshCompletedCount"];
+    [fixtureBar setValue:@2 forKey:@"usageDashboardRefreshTotalCount"];
+    [fixtureBar setValue:@{
+        fixtureProfile.identifier : @{
+            @"account_state" : @"signed_in",
+            @"refresh_state" : @"refreshing",
+        },
+        secondProfile.identifier : @{
+            @"account_state" : @"signed_in",
+            @"refresh_state" : @"waiting",
+        },
+    } forKey:@"usageDashboardResults"];
+    NSView *startingRefreshDashboard = [fixtureBar prepareUsagePanel];
+    BOOL dashboardShowsStartingRefresh =
+        ClaudeUsageViewContainsText(startingRefreshDashboard,
+            @"Checking 2 subscriptions…") &&
+        ClaudeUsageViewContainsText(startingRefreshDashboard,
+            @"Refreshing account status and usage…") &&
+        ClaudeUsageViewContainsText(startingRefreshDashboard,
+            @"Waiting to refresh…");
+    [fixtureBar setValue:@1 forKey:@"usageDashboardRefreshCompletedCount"];
+    [fixtureBar setValue:@{
+        fixtureProfile.identifier : @{
+            @"account_state" : @"signed_in",
+            @"refresh_state" : @"complete",
+        },
+        secondProfile.identifier : @{
+            @"account_state" : @"signed_in",
+            @"refresh_state" : @"refreshing",
+        },
+    } forKey:@"usageDashboardResults"];
+    NSView *progressRefreshDashboard = [fixtureBar prepareUsagePanel];
+    BOOL dashboardShowsProgressiveRefresh =
+        ClaudeUsageViewContainsText(progressRefreshDashboard,
+            @"1 of 2 complete") &&
+        ClaudeUsageViewContainsText(progressRefreshDashboard,
+            @"Refreshing account status and usage…");
+    [fixtureBar setValue:@NO forKey:@"usageDashboardRefreshInFlight"];
     [NSFileManager.defaultManager setAttributes:@{
         NSFileModificationDate :
             [NSDate dateWithTimeIntervalSinceNow:
@@ -2414,6 +2570,8 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         showsRiskOnlyWhenForecasted &&
         dashboardShowsAllAccounts &&
         dashboardUsesHostScroller &&
+        dashboardShowsStartingRefresh &&
+        dashboardShowsProgressiveRefresh &&
         hidesStaleUsage &&
         hidesSignedOutUsage &&
         historyPermissions.unsignedIntegerValue == 0600;
