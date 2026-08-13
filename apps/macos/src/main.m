@@ -4463,6 +4463,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
         [NSImage imageWithSystemSymbolName:@"xmark"
                   accessibilityDescription:@"Close control panel"];
     self.utilityPanelCloseButton.imagePosition = NSImageOnly;
+    self.utilityPanelCloseButton.focusRingType = NSFocusRingTypeNone;
     self.utilityPanelCloseButton.contentTintColor =
         [NSColor colorWithWhite:0.65 alpha:1];
     self.utilityPanelCloseButton.target = self;
@@ -4711,7 +4712,11 @@ static BOOL TerminalDBWriteAll(int descriptor,
         MAX(0, NSHeight(view.bounds) - NSHeight(clipView.bounds));
     [clipView scrollToPoint:NSMakePoint(0, topOffset)];
     [host.utilityPanelScrollView reflectScrolledClipView:clipView];
-    [host.window makeFirstResponder:host.utilityPanelCloseButton];
+    // Escape remains available through the button's key equivalent, but the
+    // dismiss control should not look permanently selected when a panel opens.
+    // Clearing the previous terminal responder also prevents keystrokes from
+    // reaching the terminal behind the panel.
+    [host.window makeFirstResponder:nil];
 }
 
 - (void)hideUtilityPanel:(id)sender {
