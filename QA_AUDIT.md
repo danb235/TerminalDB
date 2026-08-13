@@ -40,7 +40,7 @@ command being rendered as an inline selectable terminal block.
 | Inspections | Read-only allowlist, blocked mutations, timeout/output shape, transcript integration | Pass |
 | Directory boundary | `..`, absolute paths, shell expansion, globs, and symbolic-link escape attempts | Pass |
 | Permissions | Read-only, unknown, write, destructive, remote, and production classification; absolute tools, runbooks, redirects, `find -delete`, and `git -C ... reset --hard` | Pass |
-| History privacy | Redaction for Anthropic, GitHub, Slack, AWS, bearer/basic auth, quoted secrets, flags, annotations; private sessions | Pass |
+| History privacy | Redaction for Anthropic, GitHub, Slack, AWS, bearer/basic auth, quoted secrets, and flags; private sessions | Pass |
 | Persistence | Malformed JSON/type sanitization; 0600 files and 0700 support directory | Pass |
 | Models | Malformed cached model filtering, selected model, refresh, key removal clearing stale models | Pass |
 | SSE | Fragmented events and final unterminated event flush | Pass |
@@ -66,7 +66,7 @@ command being rendered as an inline selectable terminal block.
 | Main terminal | Pass | Near | Core layout is close; historical inline block stack is incomplete. |
 | AI pane states | Partial | Near | Conversation, stream, errors, context, commands, and settings work; not every prototype state has a dedicated presentation. |
 | Failure flow | Partial | Partial | Explain/Fix and permissioned retry work; the six-step visual journey is not reproduced as a dedicated view. |
-| Command inspector | Pass | Near | Metadata, output, annotations, actions, export, and bookmark work. |
+| Command inspector | Pass | Near | Metadata, output, actions, export, and bookmark work. |
 | History database | Pass | Near | Search, filters, bookmarks, saved searches, export, and clearing work. |
 | Project tools | Partial | No | Git/file/test actions exist; dedicated tree, diff, and hunk-review layout differs. |
 | Environments | Partial | No | Detection and safety policy exist; dedicated SSH/Kubernetes/production layouts differ. |

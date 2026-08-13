@@ -61,7 +61,7 @@ one native window:
 - Read-only questions can use a constrained inspection sidecar that reports
   the exact command, output, exit status, and duration.
 - Every completed command becomes a structured block with output, target,
-  environment, approval, status, timing, bookmarks, annotations, and actions.
+  environment, approval, status, timing, bookmarks, and actions.
 - AI chat can use either a Claude Code subscription or an Anthropic API key,
   while account identity and usage remain visible and independently managed.
 
@@ -119,8 +119,8 @@ one native window:
   and **Command History** actions, with secondary tools grouped under **More**
 - Search across commands, paths, output, projects, status, date, environment,
   and bookmarks
-- In-window inspector with metadata, output, approvals, annotations, related
-  history, and JSON/text export
+- In-window inspector with metadata, output, approvals, related history, and
+  JSON/text export
 - Plain-language search plus simple **All commands**, **Failed**, and
   **Bookmarked** scopes
 - Local JSON persistence with bounded records and output

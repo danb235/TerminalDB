@@ -82,6 +82,8 @@ static NSDictionary *TerminalLedgerSanitizedRecord(id candidate) {
             [clean removeObjectForKey:key];
         }
     }
+    // Keep legacy note data intact when reading existing history even though
+    // the product no longer creates or displays notes.
     for (NSString *key in @[@"annotations", @"tags"]) {
         if (clean[key] != nil && ![clean[key] isKindOfClass:NSArray.class]) {
             [clean removeObjectForKey:key];
@@ -163,17 +165,12 @@ static NSString *TerminalLedgerCSVCell(id value) {
 @property(nonatomic, strong) NSTextField *statusLabel;
 @property(nonatomic, strong) NSTextField *metadataLabel;
 @property(nonatomic, strong) NSTextField *outputTitleLabel;
-@property(nonatomic, strong) NSTextField *annotationsTitleLabel;
 @property(nonatomic, strong) NSScrollView *outputScroll;
 @property(nonatomic, strong) NSTextView *outputView;
-@property(nonatomic, strong) NSScrollView *annotationScroll;
-@property(nonatomic, strong) NSTextView *annotationsView;
-@property(nonatomic, strong) NSTextField *annotationField;
 @property(nonatomic, strong) NSButton *commandCopyButton;
 @property(nonatomic, strong) NSButton *askButton;
 @property(nonatomic, strong) NSButton *rerunButton;
 @property(nonatomic, strong) NSButton *moreButton;
-@property(nonatomic, strong) NSButton *addAnnotationButton;
 @property(nonatomic, strong) NSTextField *privacyLabel;
 - (void)layoutPanel;
 - (NSMenu *)moreActionsMenu;
@@ -236,7 +233,6 @@ static NSString *TerminalLedgerCSVCell(id value) {
         @"duration" : @0.01,
         @"timestamp" : @([NSDate date].timeIntervalSince1970),
         @"bookmarked" : @NO,
-        @"annotations" : @[],
     }];
     controller.panelView.frame = NSMakeRect(0, 0, 520, 720);
     [controller.panelView layoutSubtreeIfNeeded];
@@ -252,7 +248,11 @@ static NSString *TerminalLedgerCSVCell(id value) {
         [controller.rerunButton.title isEqualToString:@"Run again"] &&
         [controller.moreButton.title isEqualToString:@"More…"] &&
         firstGap >= 12.0 && secondGap >= 12.0 &&
-        NSHeight(controller.outputScroll.frame) >= 210.0 &&
+        NSHeight(controller.outputScroll.frame) >= 410.0 &&
+        NSMaxY(controller.outputScroll.frame) <=
+            NSMinY(controller.privacyLabel.frame) - 10.0 &&
+        [controller.privacyLabel.stringValue
+            isEqualToString:@"LOCAL ONLY · output stays on this Mac"] &&
         controller.panelView.window == nil &&
         [moreTitles containsObject:@"Copy Command"] &&
         [moreTitles containsObject:@"Copy Output"] &&
@@ -265,7 +265,6 @@ static NSString *TerminalLedgerCSVCell(id value) {
         @"output" : @"command failed",
         @"exit_code" : @1,
         @"timestamp" : @([NSDate date].timeIntervalSince1970),
-        @"annotations" : @[],
     }];
     return successState &&
         [controller.askButton.title isEqualToString:@"Explain & fix"] &&
@@ -380,44 +379,8 @@ static NSString *TerminalLedgerCSVCell(id value) {
     self.outputScroll.documentView = self.outputView;
     [content addSubview:self.outputScroll];
 
-    self.annotationsTitleLabel = [self label:@"PRIVATE NOTES"
-        frame:NSZeroRect
-         font:[NSFont systemFontOfSize:10 weight:NSFontWeightSemibold]
-        color:self.theme.ansiColors[3]];
-    [content addSubview:self.annotationsTitleLabel];
-    self.annotationField = [[NSTextField alloc] initWithFrame:NSZeroRect];
-    self.annotationField.placeholderString = @"Add a note to this command";
-    self.annotationField.target = self;
-    self.annotationField.action = @selector(addAnnotation:);
-    [content addSubview:self.annotationField];
-    self.addAnnotationButton = [self button:@"Add note"
-                                      frame:NSZeroRect
-                                     action:@selector(addAnnotation:)];
-    [content addSubview:self.addAnnotationButton];
-    self.annotationScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
-    self.annotationScroll.hasVerticalScroller = YES;
-    self.annotationScroll.autohidesScrollers = YES;
-    self.annotationScroll.borderType = NSBezelBorder;
-    self.annotationsView =
-        [[NSTextView alloc] initWithFrame:self.annotationScroll.bounds];
-    self.annotationsView.editable = NO;
-    self.annotationsView.selectable = YES;
-    self.annotationsView.drawsBackground = YES;
-    self.annotationsView.backgroundColor =
-        [NSColor colorWithSRGBRed:0.075 green:0.086 blue:0.098 alpha:1];
-    self.annotationsView.textColor = self.theme.terminalForeground;
-    self.annotationsView.font =
-        [NSFont systemFontOfSize:11 weight:NSFontWeightRegular];
-    self.annotationsView.textContainerInset = NSMakeSize(10, 10);
-    self.annotationsView.verticallyResizable = YES;
-    self.annotationsView.horizontallyResizable = NO;
-    self.annotationsView.textContainer.widthTracksTextView = YES;
-    self.annotationsView.autoresizingMask = NSViewWidthSizable;
-    self.annotationScroll.documentView = self.annotationsView;
-    [content addSubview:self.annotationScroll];
-
     self.privacyLabel = [self label:
-        @"LOCAL ONLY · output and notes stay on this Mac"
+        @"LOCAL ONLY · output stays on this Mac"
         frame:NSZeroRect
          font:[NSFont fontWithName:self.theme.fontName size:9.5] ?: mono
         color:self.theme.statusBarForeground];
@@ -443,24 +406,13 @@ static NSString *TerminalLedgerCSVCell(id value) {
     self.rerunButton.frame = NSMakeRect(inset + 154, 142, 122, 36);
     self.moreButton.frame = NSMakeRect(inset + 288, 142, 100, 36);
     self.outputTitleLabel.frame = NSMakeRect(inset, 194, contentWidth, 18);
+    CGFloat privacyY = MAX(394, height - 64);
     self.outputScroll.frame = NSMakeRect(inset, 218, contentWidth,
-        MAX(210, height - 468));
+        MAX(160, privacyY - 230));
     NSSize outputSize = self.outputScroll.contentSize;
     self.outputView.frame = NSMakeRect(0, 0, outputSize.width,
                                       MAX(1, outputSize.height));
-    self.annotationsTitleLabel.frame =
-        NSMakeRect(inset, height - 226, contentWidth, 18);
-    self.annotationField.frame = NSMakeRect(inset, height - 200,
-        MAX(1, contentWidth - 96), 32);
-    self.addAnnotationButton.frame =
-        NSMakeRect(width - inset - 84, height - 202, 84, 36);
-    self.annotationScroll.frame =
-        NSMakeRect(inset, height - 156, contentWidth, 104);
-    NSSize annotationSize = self.annotationScroll.contentSize;
-    self.annotationsView.frame = NSMakeRect(0, 0, annotationSize.width,
-                                           MAX(1, annotationSize.height));
-    self.privacyLabel.frame =
-        NSMakeRect(inset, height - 34, contentWidth, 18);
+    self.privacyLabel.frame = NSMakeRect(inset, privacyY, contentWidth, 18);
 }
 
 - (void)presentRecord:(NSDictionary *)record {
@@ -519,16 +471,6 @@ static NSString *TerminalLedgerCSVCell(id value) {
                 approval[@"risk"] ?: @"reviewed"];
     }
     self.outputView.string = record[@"output"] ?: @"(no captured output)";
-    NSMutableArray<NSString *> *lines = [NSMutableArray array];
-    for (NSDictionary *annotation in
-            [record[@"annotations"] isKindOfClass:NSArray.class]
-                ? record[@"annotations"] : @[]) {
-        NSString *text = annotation[@"text"];
-        if (text.length > 0) [lines addObject:[@"• " stringByAppendingString:text]];
-    }
-    self.annotationsView.string = lines.count > 0
-        ? [lines componentsJoinedByString:@"\n\n"]
-        : @"No notes yet.";
     self.askButton.title = exitCode == 0 ? @"Ask AI" : @"Explain & fix";
     [self.panelView setNeedsLayout:YES];
 }
@@ -623,15 +565,6 @@ static NSString *TerminalLedgerCSVCell(id value) {
     if (identifier.length > 0) {
         [self.store toggleBookmarkForRecord:identifier];
     }
-}
-
-- (void)addAnnotation:(id)sender {
-    (void)sender;
-    NSString *annotation = self.annotationField.stringValue;
-    NSString *identifier = self.record[@"id"];
-    if (annotation.length == 0 || identifier.length == 0) return;
-    [self.store addAnnotation:annotation toRecord:identifier];
-    self.annotationField.stringValue = @"";
 }
 
 - (void)exportBlock:(id)sender {
@@ -776,7 +709,6 @@ static NSString *TerminalLedgerCSVCell(id value) {
         @"host" : NSHost.currentHost.localizedName ?: @"Mac",
         @"project" : TerminalLedgerProject(directory),
         @"bookmarked" : @NO,
-        @"annotations" : @[],
         @"tags" : @[],
         @"truncated" : @(truncated),
     };
@@ -859,24 +791,6 @@ static NSString *TerminalLedgerCSVCell(id value) {
     if (record == nil) return;
     [self updateRecord:identifier
                 values:@{@"bookmarked" : @(![record[@"bookmarked"] boolValue])}];
-}
-
-- (void)addAnnotation:(NSString *)annotation
-             toRecord:(NSString *)identifier {
-    NSString *trimmed = [TerminalLedgerRedact(annotation)
-        stringByTrimmingCharactersInSet:
-            NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    NSDictionary *record = [self recordWithIdentifier:identifier];
-    if (record == nil || trimmed.length == 0) return;
-    NSMutableArray *annotations =
-        [record[@"annotations"] isKindOfClass:NSArray.class]
-            ? [record[@"annotations"] mutableCopy]
-            : [NSMutableArray array];
-    [annotations addObject:@{
-        @"text" : TerminalLedgerRedact(trimmed),
-        @"timestamp" : @([NSDate date].timeIntervalSince1970),
-    }];
-    [self updateRecord:identifier values:@{@"annotations" : annotations}];
 }
 
 - (NSArray<NSDictionary *> *)recordsMatching:(NSString *)query {
@@ -1861,20 +1775,9 @@ static NSString *TerminalLedgerCSVCell(id value) {
     NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
     formatter.dateStyle = NSDateFormatterMediumStyle;
     formatter.timeStyle = NSDateFormatterMediumStyle;
-    NSMutableArray<NSString *> *annotations = [NSMutableArray array];
-    for (NSDictionary *annotation in
-            [record[@"annotations"] isKindOfClass:NSArray.class]
-                ? record[@"annotations"] : @[]) {
-        NSString *text = annotation[@"text"];
-        if (text.length > 0) [annotations addObject:[@"• " stringByAppendingString:text]];
-    }
-    NSString *annotationText = annotations.count > 0
-        ? [NSString stringWithFormat:@"\n\nANNOTATIONS\n%@",
-            [annotations componentsJoinedByString:@"\n"]]
-        : @"";
     self.detailView.string = [NSString stringWithFormat:
         @"%@  BLOCK %@\n\n❯ %@\n\n%@ · %@ · %@ · exit %@ · %.2fs\n"
-         "%@\n\n%@%@",
+         "%@\n\n%@",
         [record[@"bookmarked"] boolValue] ? @"★" : @"",
         record[@"id"] ?: @"",
         record[@"command"] ?: @"",
@@ -1884,8 +1787,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
         record[@"exit_code"] ?: @(-1),
         [record[@"duration"] doubleValue],
         [formatter stringFromDate:date],
-        record[@"output"] ?: @"(no captured output)",
-        annotationText];
+        record[@"output"] ?: @"(no captured output)"];
 }
 
 - (void)pasteSelected:(id)sender {

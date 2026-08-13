@@ -868,7 +868,6 @@ static BOOL TerminalDBWriteAll(int descriptor,
                     @"host" : @"Demo Mac",
                     @"project" : @"archive",
                     @"bookmarked" : @NO,
-                    @"annotations" : @[],
                 };
                 [controller.ledgerStore
                     addCommand:visualRecord[@"command"]
@@ -2729,7 +2728,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
     alert.alertStyle = NSAlertStyleCritical;
     alert.messageText = @"Clear TerminalDB history?";
     alert.informativeText =
-        @"This permanently removes command blocks, bookmarks, and annotations "
+        @"This permanently removes command blocks and bookmarks "
          "from this Mac. Playbooks and workspaces are kept.";
     [alert addButtonWithTitle:@"Clear History"];
     [alert addButtonWithTitle:@"Cancel"];
@@ -5430,7 +5429,6 @@ static BOOL TerminalDBWriteAll(int descriptor,
             @"host" : NSHost.currentHost.localizedName ?: @"Mac",
             @"project" : self.activeLedgerDirectory.lastPathComponent ?: @"Shell",
             @"bookmarked" : @NO,
-            @"annotations" : @[],
             @"private" : @YES,
         } mutableCopy];
         if (self.pendingExecutionApproval != nil) {
