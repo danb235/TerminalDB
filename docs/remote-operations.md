@@ -126,13 +126,16 @@ and trusted account browsers, globally signs out the Cognito user, and deletes
 the login. A one-time session that was never connected to the account remains
 independent.
 
-On an enrolled Mac, **Change Password…** and **Delete Account…** open their
-security flows in the browser and require a new Cognito password-plus-TOTP
-sign-in no more than five minutes before the action. A password change sends
-the current and proposed passwords directly from that browser to Cognito,
-rejects pre-change API tokens, revokes account controllers, and globally signs
-out Cognito sessions. The existing TOTP authenticator remains registered and
-is still required at the next sign-in. Account deletion additionally requires
+On an enrolled Mac, **Change Password…** issues a signed, single-use ten-minute
+reset approval. Cognito assigns a random temporary password, the browser sends
+the user's chosen replacement directly to Cognito, and the existing TOTP
+authenticator must still be completed before sign-in succeeds. The reset
+globally signs out browsers and revokes account controllers. This provides
+no-email recovery without letting possession of only a Mac key bypass MFA.
+Signed-in users who still know the current password can also change it from
+the web account view. **Delete Account…** requires a fresh Cognito
+password-plus-TOTP sign-in no more than five minutes before the action and
+additionally requires
 the exact word `DELETE`, then performs the same tenant-scoped cleanup as web
 deletion. If every MFA factor is lost, the account is intentionally
 unrecoverable without operator action; Cognito has no safe administrator API

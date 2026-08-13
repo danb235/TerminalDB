@@ -63,12 +63,14 @@ guest regression, encryption check, or production security gate fails.
 - Confirm account enrollment creates no unsolicited guest link. Creating a
   guest link explicitly afterward must still work.
 - Start password change and account deletion from the desktop panel and confirm
-  both open in the normal browser flow. Require a fresh Cognito
-  password-plus-TOTP sign-in, reject a token more than five minutes old, and
-  confirm possession of the Mac key alone cannot authorize either operation.
-  Verify password change rejects the wrong current password, accepts the new
-  password only with the existing TOTP factor, rejects pre-change API tokens,
-  and disconnects existing account controllers.
+  both open in the normal browser flow. For forgotten-password recovery,
+  require a signed single-use approval from an enrolled Mac, accept the new
+  password only with the existing TOTP factor, reject expired and replayed
+  approvals, reject pre-change API tokens, and disconnect existing account
+  controllers. Confirm possession of only the Mac key cannot complete the
+  reset without TOTP. For an ordinary signed-in password change, require fresh
+  password-plus-TOTP authentication and reject a token more than five minutes
+  old.
 - Verify the native Remote Control panel opens inside the terminal, keeps
   Create Account visible, dismisses with its X and Escape, enables account
   creation only after an account-capable agent responds, and

@@ -1106,6 +1106,12 @@ private final class RemoteAgent: @unchecked Sendable {
                 }
                 let intent = message["intent"] as? String == "connect" ? "connect" : "create"
                 self.beginAccountBootstrap(baseURL: baseURL, intent: intent)
+            case "resetAccountPassword":
+                guard let baseURL = message["baseURL"] as? String else {
+                    client.send(["type": "error", "message": "Remote web URL is required"])
+                    return
+                }
+                self.beginAccountPasswordReset(baseURL: baseURL)
             case "refreshControllers":
                 self.refreshControllers()
             case "revokeController":
@@ -1425,6 +1431,50 @@ private final class RemoteAgent: @unchecked Sendable {
             throw AgentError.server("Invalid TerminalDB account URL")
         }
         return url.absoluteString
+    }
+
+    private func accountPasswordResetURL(baseURL: String, token: String) throws -> String {
+        guard var components = URLComponents(string: baseURL) else {
+            throw AgentError.server("Invalid TerminalDB Remote URL")
+        }
+        components.queryItems = [
+            URLQueryItem(name: "account", value: "reset-password"),
+            URLQueryItem(name: "source", value: "desktop"),
+        ]
+        components.fragment = "account-password-reset=\(token)"
+        guard let url = components.url else {
+            throw AgentError.server("Invalid TerminalDB password reset URL")
+        }
+        return url.absoluteString
+    }
+
+    private func beginAccountPasswordReset(baseURL: String) {
+        let normalized = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard state.accountOwned == true, state.deviceID != nil else {
+            broadcastError("Connect this Mac to your TerminalDB account before resetting its password.")
+            return
+        }
+        Task {
+            do {
+                let response = try await request(
+                    method: "POST",
+                    path: "/api/v1/account-password-reset",
+                    body: [:],
+                    authenticated: true
+                )
+                guard let token = response["resetToken"] as? String else {
+                    throw AgentError.invalidResponse
+                }
+                let url = try accountPasswordResetURL(baseURL: normalized, token: token)
+                queue.async {
+                    for client in self.clients.values where client.authenticated {
+                        client.send(["type": "accountPasswordReset", "url": url])
+                    }
+                }
+            } catch {
+                queue.async { self.broadcastError(error.localizedDescription) }
+            }
+        }
     }
 
     private func beginAccountBootstrap(

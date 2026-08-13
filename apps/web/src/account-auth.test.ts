@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   accountAccessToken,
+  beginAccountPasswordReset,
   beginAccountPasswordSignIn,
   accountTokenIssuedAt,
   beginAccountSignIn,
@@ -241,6 +242,71 @@ describe("Cognito account OAuth", () => {
       username: "unfinished-user",
       password: "Unique-Password-42!",
     })).rejects.toThrow(/Open TerminalDB on your Mac.*copyable setup key/u);
+  });
+
+  it("resets a password only after a one-time Mac approval and preserves TOTP", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        username: "returning-user",
+        temporaryPassword: "server-generated-temporary-value",
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ChallengeName: "NEW_PASSWORD_REQUIRED",
+        Session: "new-password-session",
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ChallengeName: "SOFTWARE_TOKEN_MFA",
+        Session: "existing-totp-session",
+      }), { status: 200 }));
+
+    await expect(beginAccountPasswordReset({
+      configuration: cognitoConfiguration,
+      resetToken: "mac-approved-reset",
+      newPassword: "Replacement-Value-42!",
+    })).resolves.toEqual({
+      username: "returning-user",
+      session: "existing-totp-session",
+    });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/account-password-reset/redeem");
+    expect(fetchMock.mock.calls.slice(1).map((call) =>
+      (call[1]?.headers as Record<string, string>)["x-amz-target"]
+    )).toEqual([
+      "AWSCognitoIdentityProviderService.InitiateAuth",
+      "AWSCognitoIdentityProviderService.RespondToAuthChallenge",
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toMatchObject({
+      ChallengeName: "NEW_PASSWORD_REQUIRED",
+      ChallengeResponses: {
+        USERNAME: "returning-user",
+        NEW_PASSWORD: "Replacement-Value-42!",
+      },
+    });
+  });
+
+  it("keeps rejected sign-in non-enumerating while offering a recovery path", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      __type: "NotAuthorizedException",
+    }), { status: 400 }));
+
+    await expect(beginAccountPasswordSignIn({
+      configuration: cognitoConfiguration,
+      username: "unknown-or-locked",
+      password: "not-accepted",
+    })).rejects.toThrow(/Sign-in was not accepted.*reset the password from an enrolled Mac/u);
+  });
+
+  it("does not expose Cognito password-reset state during sign-in", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      __type: "PasswordResetRequiredException",
+      message: "Password reset required for the user",
+    }), { status: 400 }));
+
+    await expect(beginAccountPasswordSignIn({
+      configuration: cognitoConfiguration,
+      username: "reset-required-user",
+      password: "not-accepted",
+    })).rejects.toThrow("Sign-in was not accepted");
   });
 
   it("changes the password directly with Cognito instead of the TerminalDB API", async () => {
