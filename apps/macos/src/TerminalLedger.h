@@ -22,8 +22,6 @@ extern NSNotificationName const TerminalLedgerDidChangeNotification;
 - (void)updateRecord:(NSString *)identifier
               values:(NSDictionary *)values;
 - (void)toggleBookmarkForRecord:(NSString *)identifier;
-- (void)addAnnotation:(NSString *)annotation
-             toRecord:(NSString *)identifier;
 - (NSArray<NSDictionary *> *)recordsMatching:(nullable NSString *)query;
 - (NSArray<NSDictionary *> *)recordsMatching:(nullable NSString *)query
                                       filters:(nullable NSDictionary *)filters;
