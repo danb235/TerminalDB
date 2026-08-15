@@ -58,11 +58,28 @@ test.beforeEach(async ({ page }) => {
 
 test("shows a stable loading experience before terminal inventory arrives", async ({ page }) => {
   await page.goto("/?inventory=loading");
-  await expect(page.getByRole("heading", { name: "Loading your terminal sessions" }))
+  await expect(page.getByRole("heading", { name: "Connecting to your terminals" }))
     .toBeVisible();
   await expect(page.getByRole("heading", { name: "No terminals are open" }))
     .toHaveCount(0);
-  await expect(page.locator(".session-state-card")).toHaveAttribute("aria-busy", "true");
+  const loading = page.getByRole("main");
+  await expect(loading).toHaveAttribute("aria-busy", "true");
+  await expect(page.getByRole("banner")).toHaveCount(0);
+  await expect(page.getByRole("navigation")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Lab" })).toHaveCount(0);
+  expect(await page.getByRole("heading").evaluate((element) =>
+    parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThanOrEqual(32);
+  expect(await loading.getByText(/Checking your connected Macs/u).evaluate((element) =>
+    parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThanOrEqual(16);
+});
+
+test("account users choose an open session before entering its terminal", async ({ page }) => {
+  await page.goto("/?sessions");
+  await expect(page.getByRole("heading", { name: "Your terminal sessions" })).toBeVisible();
+  await expect(page.locator(".terminal-stage")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Lab" })).toHaveCount(1);
+  await page.getByRole("button", { name: /meridian/u }).last().click();
+  await expect(page.locator(".terminal-stage")).toBeVisible();
 });
 
 test("explains how to recover when a connected Mac has no open terminals", async ({ page }) => {
