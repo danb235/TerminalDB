@@ -47,7 +47,7 @@ async function mockAccountPage(
     });
   });
   await page.goto("/?unpaired&account");
-  await expect(page.getByRole("heading", { name: "Your Macs" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Devices & sessions" })).toBeVisible();
 }
 
 test("keeps enrolled Macs visible with clear online and offline states", async ({ page }) => {
@@ -322,7 +322,7 @@ test("keeps password and TOTP sign-in inside TerminalDB", async ({ page }) => {
   await page.getByLabel("Six-digit code").fill("123456");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
 
-  await expect(page.getByRole("heading", { name: "Your Macs" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Devices & sessions" })).toBeVisible();
   expect(new URL(page.url()).origin).not.toBe(accountConfiguration.domain);
   expect(externalAuthRequests).toEqual([]);
   expect(JSON.parse(await page.evaluate(() =>
@@ -425,7 +425,7 @@ test("uses a one-time Mac approval to reset password and require existing TOTP",
   await expect(page.getByRole("heading", { name: "Confirm with your authenticator" })).toBeVisible();
   await page.getByLabel("Six-digit code").fill("123456");
   await page.getByRole("button", { name: "Finish password reset" }).click();
-  await expect(page.getByRole("heading", { name: "Your Macs" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Devices & sessions" })).toBeVisible();
   expect(page.url()).not.toContain("account-password-reset");
 });
 
@@ -528,7 +528,7 @@ test("completes first-party TOTP enrollment and connects the approved Mac", asyn
   await page.getByLabel("Six-digit code").fill("123456");
   await page.getByRole("button", { name: "Finish account setup" }).click();
 
-  await expect(page.getByRole("heading", { name: "Your Macs" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Devices & sessions" })).toBeVisible();
   await expect(page.getByText(/Mac enrolled/u)).toBeVisible();
   await expect.poll(() => completedAuthorization).toBe(`Bearer ${directAccessToken}`);
   expect(completedBootstrap).toBe("qa-approved-bootstrap");

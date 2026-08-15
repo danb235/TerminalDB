@@ -17,7 +17,7 @@ async function openTerminal(page: Page): Promise<void> {
 }
 
 async function openLab(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "Back to sessions" }).click();
+  await page.getByRole("button", { name: "Back to devices and sessions" }).click();
   await page.getByRole("button", { name: "Lab" }).click();
   await expect(page.getByRole("heading", { name: "Failure states" })).toBeVisible();
 }
@@ -73,11 +73,36 @@ test("shows a stable loading experience before terminal inventory arrives", asyn
     parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThanOrEqual(16);
 });
 
-test("account users choose an open session before entering its terminal", async ({ page }) => {
+test("uses one connection surface while restoring a returning browser", async ({ page }) => {
+  await page.route("**/api/config", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        apiBaseUrl: "",
+        websocketUrl: "",
+        protocolVersion: 1,
+        region: "us-west-2",
+        pairingEnabled: true,
+        mockMode: true,
+      }),
+    });
+  });
+  const navigation = page.goto("/?unpaired=1");
+  await expect(page.getByRole("heading", { name: "Connecting to your terminals" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Checking this browser…" })).toHaveCount(0);
+  await navigation;
+  await expect(page.getByRole("heading", { name: "Open your terminals" })).toBeVisible();
+});
+
+test("shows every device and session on one home before entering a terminal", async ({ page }) => {
   await page.goto("/?sessions");
-  await expect(page.getByRole("heading", { name: "Your terminal sessions" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Devices & sessions" })).toBeVisible();
   await expect(page.locator(".terminal-stage")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Lab" })).toHaveCount(1);
+  await expect(page.getByText("Developer’s Mac", { exact: true })).toBeVisible();
+  await expect(page.getByText("TerminalDB · Main", { exact: true })).toBeVisible();
+  await expect(page.getByText("TerminalDB · Tests", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: /meridian/u }).last().click();
   await expect(page.locator(".terminal-stage")).toBeVisible();
 });
@@ -85,10 +110,10 @@ test("account users choose an open session before entering its terminal", async 
 test("explains how to recover when a connected Mac has no open terminals", async ({ page }) => {
   await page.goto("/?inventory=empty");
   await expect(page.getByRole("button", { name: /^LIVE/u })).toBeVisible();
-  const heading = page.getByRole("heading", { name: "No terminals are open" });
+  const heading = page.getByRole("heading", { name: "Open TerminalDB on your Mac" });
   await expect(heading).toBeVisible();
   await expect(page.getByRole("main")).toContainText(
-    "Open a TerminalDB window on your Mac",
+    "Your enrolled Macs and their open terminal tabs will appear here automatically",
   );
   await expect(page.getByText("Remote ledger", { exact: true })).toHaveCount(0);
   expect(await heading.evaluate((element) => parseFloat(getComputedStyle(element).fontSize)))
@@ -211,7 +236,8 @@ test("connectivity maintenance stays in the background without stealing input", 
   const liveGeometry = await terminalGeometry(page);
   await openLab(page);
   await page.getByRole("button", { name: "resyncing", exact: true }).click();
-  await page.getByRole("button", { name: "Terminal" }).click();
+  await page.getByRole("button", { name: "Home" }).click();
+  await page.getByRole("button", { name: /meridian/u }).last().click();
 
   await expect(page.locator(".connection-overlay")).toHaveCount(0);
   await expect(page.locator(".terminal-pane.active .xterm-host")).toHaveAttribute(
@@ -818,7 +844,7 @@ test("account and connection controls are sheets over the live terminal", async 
   if (await accountButton.isVisible()) {
     await accountButton.click();
   } else {
-    await page.getByRole("button", { name: "Back to sessions" }).click();
+    await page.getByRole("button", { name: "Back to devices and sessions" }).click();
     await page.getByRole("button", { name: "Accounts" }).click();
   }
   await expect(page.getByRole("heading", { name: "Accounts", exact: true })).toBeVisible();
@@ -836,7 +862,7 @@ test("blocks account switching while the selected tab is busy", async ({ page })
   const accountButton = page.getByRole("button", { name: "Accounts", exact: true });
   if (await accountButton.isVisible()) await accountButton.click();
   else {
-    await page.getByRole("button", { name: "Back to sessions" }).click();
+    await page.getByRole("button", { name: "Back to devices and sessions" }).click();
     await page.getByRole("button", { name: "Accounts" }).click();
   }
   await expect(page.getByRole("radio", { name: /Tab is busy$/u })).toBeDisabled();
@@ -845,7 +871,9 @@ test("blocks account switching while the selected tab is busy", async ({ page })
 test("makes ended controller actions explicit and inert", async ({ page }) => {
   await openLab(page);
   await page.getByRole("button", { name: "remote ended", exact: true }).click();
-  await page.getByRole("button", { name: "Devices" }).click();
+  await page.getByRole("button", { name: "Home" }).click();
+  await page.getByRole("button", { name: /meridian/u }).last().click();
+  await page.getByRole("button", { name: "Remote controls" }).click();
   await expect(page.getByText("REMOTE ENDED", { exact: true }).last()).toBeVisible();
   await expect(page.getByRole("button", { name: "Controller access ended" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Session ended" })).toBeDisabled();
@@ -1092,7 +1120,7 @@ test("discovers tenant sessions without exposing legacy enrollment codes", async
   });
 
   await page.goto("/?unpaired=1");
-  await expect(page.getByRole("heading", { name: "Your Macs" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Devices & sessions" })).toBeVisible();
   await expect(page.getByText("Studio Mac")).toBeVisible();
   await expect(page.getByRole("button", { name: "Copy code" })).toHaveCount(0);
   await page.getByRole("button", { name: /Studio Mac.*Open/u }).click();

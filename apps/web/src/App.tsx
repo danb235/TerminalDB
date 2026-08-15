@@ -75,7 +75,7 @@ const TerminalSurface = lazy(async () => {
   return { default: module.TerminalSurface };
 });
 
-type View = "dashboard" | "terminal" | "accounts" | "devices" | "diagnostics" | "lab";
+type View = "dashboard" | "terminal" | "accounts" | "controls" | "diagnostics" | "lab";
 type AccountBootstrapSupport = "checking" | "supported" | "upgrade-required";
 type InventoryPhase = "loading" | "ready";
 export type DashboardSessionPresentation = "loading" | "empty" | "offline" | "sessions";
@@ -236,31 +236,6 @@ function AppMark() {
   );
 }
 
-function AttentionCard({
-  tab,
-  onOpen,
-}: {
-  readonly tab: RemoteTab;
-  readonly onOpen: () => void;
-}) {
-  const needsInput = tab.claudeState === "attention";
-  return (
-    <button className={`attention-card ${needsInput ? "needs-input" : ""}`} onClick={onOpen}>
-      <div className="attention-icon">{needsInput ? "?" : "✦"}</div>
-      <div>
-        <span className="eyebrow">{needsInput ? "CLAUDE NEEDS INPUT" : "CLAUDE SESSION"}</span>
-        <strong>{tab.title}</strong>
-        <small>
-          {needsInput
-            ? "Allow Claude to run the read-only test?"
-            : `${tab.foregroundProcess ?? "Shell"} is ${tab.busy ? "working" : "ready"}`}
-        </small>
-      </div>
-      <span className="chevron">›</span>
-    </button>
-  );
-}
-
 function SessionCard({
   tab,
   onOpen,
@@ -294,83 +269,182 @@ function SessionCard({
   );
 }
 
+export interface DashboardDeviceRow {
+  readonly id: string;
+  readonly name: string;
+  readonly state: "online" | "connecting" | "offline";
+  readonly current: boolean;
+  readonly instances: InventoryPayload["instances"];
+  readonly summary: AccountDeviceSummary | undefined;
+}
+
+export function dashboardDeviceRows(
+  inventory: InventoryPayload,
+  presentation: DashboardSessionPresentation,
+  accountDevices: readonly AccountDeviceSummary[],
+  activeSessionId?: string,
+): readonly DashboardDeviceRow[] {
+  const instancesByHost = new Map<string, InventoryPayload["instances"]>();
+  for (const instance of inventory.instances) {
+    instancesByHost.set(instance.host, [...(instancesByHost.get(instance.host) ?? []), instance]);
+  }
+  const sortedAccountDevices = [...accountDevices].sort((left, right) =>
+    left.deviceName.localeCompare(right.deviceName));
+  const currentAccountDevice = sortedAccountDevices.find((device) =>
+    device.sessionId === activeSessionId);
+  const currentHost = currentAccountDevice?.deviceName ?? inventory.instances[0]?.host ?? "This Mac";
+  const accountDeviceRows: DashboardDeviceRow[] = sortedAccountDevices.map((device) => ({
+    id: device.deviceId,
+    name: device.deviceName,
+    state: device.sessionId === activeSessionId
+      ? presentation === "offline" ? "offline" as const : "online" as const
+      : device.state,
+    current: device.sessionId === activeSessionId,
+    instances: device.sessionId === activeSessionId ? inventory.instances : [],
+    summary: device,
+  }));
+  if (activeSessionId && !currentAccountDevice) {
+    accountDeviceRows.unshift({
+      id: activeSessionId,
+      name: currentHost,
+      state: presentation === "offline" ? "offline" : "online",
+      current: true,
+      instances: inventory.instances,
+      summary: undefined,
+    });
+  }
+  const localDeviceRows: DashboardDeviceRow[] = [...instancesByHost.entries()]
+    .map(([host, instances]) => ({
+      id: host,
+      name: host,
+      state: presentation === "offline" ? "offline" as const : "online" as const,
+      current: true,
+      instances,
+      summary: undefined,
+    }));
+  return accountDeviceRows.length > 0 ? accountDeviceRows : localDeviceRows;
+}
+
 function Dashboard({
   inventory,
   presentation,
+  accountDevices,
+  activeSessionId,
+  devicesLoading,
+  devicesError,
+  switchingDeviceId,
   onOpenTab,
+  onOpenDevice,
 }: {
   readonly inventory: InventoryPayload;
   readonly presentation: DashboardSessionPresentation;
+  readonly accountDevices: readonly AccountDeviceSummary[];
+  readonly activeSessionId?: string | undefined;
+  readonly devicesLoading: boolean;
+  readonly devicesError?: string | undefined;
+  readonly switchingDeviceId?: string | undefined;
   readonly onOpenTab: (tab: RemoteTab) => void;
+  readonly onOpenDevice: (device: AccountDeviceSummary) => void;
 }) {
   const allTabs = inventory.instances.flatMap((instance) => instance.tabs);
-  const attention = allTabs.filter((tab) => tab.claudeState === "attention");
-  const host = inventory.instances[0]?.host ?? "Your Mac";
+  const deviceRows = dashboardDeviceRows(
+    inventory,
+    presentation,
+    accountDevices,
+    activeSessionId,
+  );
   return (
     <main className="view dashboard-view">
       <section className="hero-status">
-        <span className="eyebrow">{host.toUpperCase()}</span>
+        <span className="eyebrow">TERMINALDB REMOTE</span>
         <div className="hero-line">
-          <h1>Your terminal sessions</h1>
-          {presentation === "sessions" ? <span>{allTabs.length} tabs</span> : null}
+          <h1>Devices &amp; sessions</h1>
+          <span>{deviceRows.length} {deviceRows.length === 1 ? "device" : "devices"} · {allTabs.length} {allTabs.length === 1 ? "tab" : "tabs"}</span>
         </div>
-        <p>Open terminals across your Macs, ready whenever you need them.</p>
+        <p>Every available Mac, TerminalDB window, and terminal tab in one place.</p>
       </section>
 
-      {presentation === "empty" ? (
+      {devicesLoading ? (
+        <p className="device-refresh-status" role="status">Refreshing your devices…</p>
+      ) : null}
+      {devicesError ? <p className="device-refresh-error" role="alert">{devicesError}</p> : null}
+
+      {deviceRows.length === 0 && presentation === "empty" ? (
         <section className="session-state-card" aria-live="polite">
           <div className="session-state-icon" aria-hidden="true">&gt;_</div>
-          <span className="session-state-kicker">MAC CONNECTED</span>
-          <h2>No terminals are open</h2>
-          <p>Open a TerminalDB window on your Mac. Its tabs will appear here automatically—no new link or sign-in needed.</p>
+          <span className="session-state-kicker">NO DEVICES AVAILABLE</span>
+          <h2>Open TerminalDB on your Mac</h2>
+          <p>Your enrolled Macs and their open terminal tabs will appear here automatically—no new link or sign-in needed.</p>
         </section>
       ) : null}
 
-      {presentation === "offline" ? (
+      {deviceRows.length === 0 && presentation === "offline" ? (
         <section className="session-state-card is-offline" aria-live="polite">
           <div className="session-state-icon" aria-hidden="true">···</div>
           <span className="session-state-kicker">WAITING FOR TERMINALDB</span>
-          <h2>Your Mac is offline</h2>
-          <p>You’re still signed in. Open TerminalDB on your Mac and your available terminal sessions will appear here automatically.</p>
+          <h2>Your devices are offline</h2>
+          <p>You’re still signed in. Open TerminalDB on any enrolled Mac and its terminal sessions will appear here automatically.</p>
         </section>
       ) : null}
 
-      {presentation === "sessions" && attention.length > 0 ? (
-        <section>
-          <div className="section-title">
-            <span>NEEDS YOU</span>
-            <b>{attention.length}</b>
-          </div>
-          <div className="stack">
-            {attention.map((tab) => (
-              <AttentionCard key={tab.id} tab={tab} onOpen={() => onOpenTab(tab)} />
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      {presentation === "sessions" ? <section>
+      {deviceRows.length > 0 ? <section>
         <div className="section-title">
-          <span>OPEN TERMINALDB INSTANCES</span>
-          <small>Live inventory</small>
+          <span>YOUR DEVICES</span>
+          <small>Updates automatically</small>
         </div>
-        <div className="instance-list">
-          {inventory.instances.map((instance) => (
-            <article className="instance" key={instance.id}>
-              <header>
+        <div className="device-session-list">
+          {deviceRows.map((device) => {
+            const tabCount = device.instances.reduce((count, instance) => count + instance.tabs.length, 0);
+            const canOpen = Boolean(device.summary?.sessionId) && !device.current && device.state === "online";
+            return <article className={`home-device ${device.current ? "active" : ""}`} key={device.id}>
+              <header className="home-device-header">
                 <div>
-                  <strong>{instance.name}</strong>
-                  <small>{instance.host}</small>
+                  <span className={`device-state device-state-${device.state}`} aria-hidden="true" />
+                  <div>
+                    <strong>{device.name}</strong>
+                    <small>{device.current
+                      ? `${tabCount} ${tabCount === 1 ? "tab" : "tabs"} available now`
+                      : device.state === "online"
+                        ? "Online · select to view its sessions"
+                        : device.state === "connecting"
+                          ? "Connecting securely…"
+                          : `Offline${device.summary ? ` · ${accountDeviceActivityLabel(device.summary.lastSeenAt)}` : ""}`}</small>
+                  </div>
                 </div>
-                <span>{instance.tabs.length} tabs</span>
+                {device.current ? <span className="current-device-label">CURRENT</span> : null}
+                {canOpen && device.summary ? (
+                  <button
+                    disabled={Boolean(switchingDeviceId)}
+                    onClick={() => onOpenDevice(device.summary!)}
+                  >
+                    {switchingDeviceId === device.id ? "Opening…" : "View sessions"}
+                  </button>
+                ) : null}
+                {!device.current && !canOpen ? <span>{device.state === "connecting" ? "CONNECTING" : "OFFLINE"}</span> : null}
               </header>
-              <div className="session-list">
-                {instance.tabs.map((tab) => (
-                  <SessionCard key={tab.id} tab={tab} onOpen={() => onOpenTab(tab)} />
-                ))}
-              </div>
-            </article>
-          ))}
+              {device.current && device.instances.length === 0 ? (
+                <div className="home-device-empty">
+                  <strong>No terminal windows are open</strong>
+                  <span>Open a TerminalDB window on this Mac and its tabs will appear here.</span>
+                </div>
+              ) : null}
+              {device.instances.map((instance) => (
+                <section className="instance" key={instance.id}>
+                  <header>
+                    <div>
+                      <strong>{instance.name}</strong>
+                      <small>{instance.tabs.length} {instance.tabs.length === 1 ? "tab" : "tabs"}</small>
+                    </div>
+                  </header>
+                  <div className="session-list">
+                    {instance.tabs.map((tab) => (
+                      <SessionCard key={tab.id} tab={tab} onOpen={() => onOpenTab(tab)} />
+                    ))}
+                  </div>
+                </section>
+              ))}
+            </article>;
+          })}
         </div>
       </section> : null}
     </main>
@@ -1218,6 +1292,10 @@ function AccountAccess({
     });
   };
 
+  if (loading && !accessToken && !bootstrapToken && !signInPurpose) {
+    return <SessionLoadingView connectionState="connecting" />;
+  }
+
   if (signInPurpose) {
     return (
       <AccountSignIn
@@ -1450,9 +1528,13 @@ function AccountAccess({
   }
 
   return (
-    <section className="account-access account-access-signed-in">
+    <section className={`account-access account-access-signed-in ${context === "landing" ? "account-home" : ""}`}>
       <header>
-        <div><span>YOUR TERMINALDB ACCOUNT</span><h2>Your Macs</h2></div>
+        <div>
+          <span>{context === "landing" ? "TERMINALDB REMOTE" : "YOUR TERMINALDB ACCOUNT"}</span>
+          <h2>{context === "landing" ? "Devices & sessions" : "Your Macs"}</h2>
+          {context === "landing" ? <p>Every enrolled Mac and its availability in one place. Select an online Mac to view its windows and terminal tabs.</p> : null}
+        </div>
         <button
           className="text-button"
           disabled={accountActionBusy}
@@ -1504,7 +1586,7 @@ function AccountAccess({
       ) : (
         <p>No Macs are enrolled yet. Open TerminalDB on a Mac and choose Connect Account.</p>
       )}
-      <small className="account-privacy-detail">Terminal names and counts remain end-to-end encrypted and appear only after you open an online Mac.</small>
+      <small className="account-privacy-detail">Terminal names and counts remain end-to-end encrypted and appear when you select an online Mac.</small>
       <small className="account-privacy-detail">To add another Mac, open TerminalDB on that Mac and choose Connect Account. No enrollment code is needed.</small>
       <div className="account-actions">
         <button disabled={loading} onClick={() => void refresh()}>Refresh Macs</button>
@@ -1536,6 +1618,16 @@ function UnpairedView({
   readonly onBootstrapConsumed: () => void;
 }) {
   const accountRequested = new URLSearchParams(location.search).has("account");
+  if (!checking && configuration?.accountAuth) {
+    return (
+      <AccountAccess
+        configuration={configuration.accountAuth}
+        onSessionReady={onSessionReady}
+        bootstrapToken={bootstrapToken}
+        onBootstrapConsumed={onBootstrapConsumed}
+      />
+    );
+  }
   return (
     <main className="pairing-view">
       <AppMark />
@@ -1546,14 +1638,6 @@ function UnpairedView({
           ? "Looking for a trusted controller identity on this device."
           : "Sign in to your account, or keep using a one-time secure link from TerminalDB."}
       </p>
-      {!checking && configuration?.accountAuth ? (
-        <AccountAccess
-          configuration={configuration.accountAuth}
-          onSessionReady={onSessionReady}
-          bootstrapToken={bootstrapToken}
-          onBootstrapConsumed={onBootstrapConsumed}
-        />
-      ) : null}
       {!checking && configuration && !configuration.accountAuth && accountRequested ? (
         <section className="account-access account-access-unavailable">
           <span>TERMINALDB ACCOUNT</span>
@@ -1585,7 +1669,7 @@ function TerminalView({
   onQuickKey,
   onBack,
   onAccounts,
-  onDevices,
+  onControls,
   onDiagnostics,
   onCopy,
   onFollowOutputChange,
@@ -1606,7 +1690,7 @@ function TerminalView({
   readonly onQuickKey: (key: string) => void;
   readonly onBack: () => void;
   readonly onAccounts: () => void;
-  readonly onDevices: () => void;
+  readonly onControls: () => void;
   readonly onDiagnostics: () => void;
   readonly onCopy: (tabId: string) => void;
   readonly onFollowOutputChange: (tabId: string, following: boolean) => void;
@@ -1655,7 +1739,7 @@ function TerminalView({
   return (
     <main className="terminal-view">
       <div className="terminal-window-bar">
-        <button className="terminal-back" onClick={onBack} aria-label="Back to sessions">‹</button>
+        <button className="terminal-back" onClick={onBack} aria-label="Back to devices and sessions">‹</button>
         <div className="terminal-window-title">
           <strong>{tab.title}</strong>
           <div className="terminal-window-context">
@@ -1673,7 +1757,7 @@ function TerminalView({
           <span aria-hidden="true">◎</span>
           <span className="account-chip-label">Accounts</span>
         </button>
-        <button className="terminal-more" onClick={onDevices} aria-label="Remote controls">•••</button>
+        <button className="terminal-more" onClick={onControls} aria-label="Remote controls">•••</button>
       </div>
 
       <div className="terminal-tabs-row">
@@ -1973,7 +2057,7 @@ function AccountsView({
   );
 }
 
-function DevicesView({
+function RemoteControlsView({
   state,
   onRevoke,
   onEndSession,
@@ -1989,10 +2073,10 @@ function DevicesView({
   );
   const canEndSession = state.state === "live" || state.state === "slow";
   return (
-    <section className="view devices-view" aria-labelledby="devices-heading">
+    <section className="view devices-view" aria-labelledby="controls-heading">
       <header className="page-heading">
         <span className="eyebrow">REMOTE CONTROL</span>
-        <h1 id="devices-heading">Trusted controllers</h1>
+        <h1 id="controls-heading">Trusted controllers</h1>
         <p>Pairing grants access only while Remote Control is enabled on your Mac.</p>
       </header>
       <article className="device-card active">
@@ -2236,6 +2320,11 @@ export function App() {
   const [remoteConfiguration, setRemoteConfiguration] = useState<RemotePublicConfiguration>();
   const [activeAccessMode, setActiveAccessMode] = useState<"pairing" | "account">("pairing");
   const activeAccessModeRef = useRef<"pairing" | "account">("pairing");
+  const [activeRemoteSessionId, setActiveRemoteSessionId] = useState<string>();
+  const [accountDevices, setAccountDevices] = useState<readonly AccountDeviceSummary[]>([]);
+  const [accountDevicesLoading, setAccountDevicesLoading] = useState(false);
+  const [accountDevicesError, setAccountDevicesError] = useState<string>();
+  const [switchingDeviceId, setSwitchingDeviceId] = useState<string>();
   const [accountBootstrapToken, setAccountBootstrapToken] = useState<string | undefined>(() => {
     const fragment = new URLSearchParams(location.hash.replace(/^#/u, ""));
     const approved = fragment.get("account-bootstrap") ?? undefined;
@@ -2386,7 +2475,7 @@ export function App() {
       setRemoteRegion(configuration.region);
       if (configuration.accountAuth) {
         const completedAccountSignIn = await completeAccountSignIn(configuration.accountAuth);
-        if (completedAccountSignIn) setView("accounts");
+        if (completedAccountSignIn) setView("dashboard");
         const accountQuery = new URLSearchParams(location.search);
         if (accountQuery.get("account") === "create" || accountQuery.get("account") === "finish") {
           setView("accounts");
@@ -2401,6 +2490,7 @@ export function App() {
       const existingAccessMode = existingSession?.accessMode === "account" ? "account" : "pairing";
       activeAccessModeRef.current = existingAccessMode;
       setActiveAccessMode(existingAccessMode);
+      setActiveRemoteSessionId(existingAccessMode === "account" ? existingSession?.sessionId : undefined);
       if (configuration.mockMode) {
         if (forceUnpaired) {
           setAccessState("unpaired");
@@ -2571,6 +2661,7 @@ export function App() {
         const accessMode = session?.accessMode === "account" ? "account" : "pairing";
         activeAccessModeRef.current = accessMode;
         setActiveAccessMode(accessMode);
+        setActiveRemoteSessionId(accessMode === "account" ? session?.sessionId : undefined);
       }
       setAccessState(paired ? "paired" : "unpaired");
     } catch (error) {
@@ -2595,6 +2686,72 @@ export function App() {
       clientRef.current = null;
     };
   }, [pairingId, connect]);
+
+  useEffect(() => {
+    const configuration = remoteConfiguration?.accountAuth;
+    if (accessState !== "paired" || activeAccessMode !== "account" || !configuration) {
+      setAccountDevices([]);
+      setAccountDevicesLoading(false);
+      setAccountDevicesError(undefined);
+      return;
+    }
+    let cancelled = false;
+    const refresh = async (showProgress: boolean) => {
+      if (showProgress && !cancelled) setAccountDevicesLoading(true);
+      try {
+        const token = await accountAccessToken(configuration);
+        if (!token) throw new Error("Account sign-in has expired");
+        const devices = await listAccountDevices(token);
+        if (!cancelled) {
+          setAccountDevices(devices);
+          setAccountDevicesError(undefined);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setAccountDevicesError(error instanceof Error
+            ? error.message
+            : "Your devices could not be refreshed.");
+        }
+      } finally {
+        if (!cancelled && showProgress) setAccountDevicesLoading(false);
+      }
+    };
+    void refresh(true);
+    const timer = window.setInterval(() => void refresh(false), 5_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [accessState, activeAccessMode, remoteConfiguration]);
+
+  const openAccountDevice = useCallback(async (device: AccountDeviceSummary) => {
+    if (!device.sessionId || device.sessionId === activeRemoteSessionId || switchingDeviceId) return;
+    const configuration = remoteConfiguration?.accountAuth;
+    if (!configuration) return;
+    setSwitchingDeviceId(device.deviceId);
+    setAccountDevicesError(undefined);
+    try {
+      const token = await accountAccessToken(configuration);
+      if (!token) throw new Error("Sign in again to open this Mac.");
+      const session = await openAccountSession({ sessionId: device.sessionId, accessToken: token });
+      clientRef.current?.close();
+      clientRef.current = null;
+      setInventory({ instances: [], accounts: [] });
+      inventoryReadyRef.current = false;
+      setInventoryPhase("loading");
+      selectedTabRef.current = undefined;
+      setSelectedTabId(undefined);
+      setActiveRemoteSessionId(session.sessionId);
+      setView("dashboard");
+      await connect();
+    } catch (error) {
+      setAccountDevicesError(error instanceof Error
+        ? error.message
+        : "This Mac could not be opened.");
+    } finally {
+      setSwitchingDeviceId(undefined);
+    }
+  }, [activeRemoteSessionId, connect, remoteConfiguration, switchingDeviceId]);
 
   useEffect(() => {
     const onVisible = () => {
@@ -3114,10 +3271,14 @@ export function App() {
     );
   }
 
+  if (accessState === "checking") {
+    return <SessionLoadingView connectionState={connection.state} />;
+  }
+
   if (accessState !== "paired") {
     return (
       <UnpairedView
-        checking={accessState === "checking"}
+        checking={false}
         configuration={remoteConfiguration}
         onSessionReady={connect}
         bootstrapToken={accountBootstrapToken}
@@ -3127,7 +3288,7 @@ export function App() {
   }
 
   const terminalWorkspace = Boolean(
-    selectedTab && ["terminal", "accounts", "devices", "diagnostics"].includes(view),
+    selectedTab && ["terminal", "accounts", "controls", "diagnostics"].includes(view),
   );
   const dashboardPresentation = dashboardSessionPresentation(
     inventoryPhase,
@@ -3155,7 +3316,13 @@ export function App() {
         <Dashboard
           inventory={inventory}
           presentation={dashboardPresentation}
+          accountDevices={accountDevices}
+          activeSessionId={activeRemoteSessionId}
+          devicesLoading={accountDevicesLoading}
+          devicesError={accountDevicesError}
+          switchingDeviceId={switchingDeviceId}
           onOpenTab={openTab}
+          onOpenDevice={(device) => void openAccountDevice(device)}
         />
       ) : null}
       {terminalWorkspace && selectedTab ? (
@@ -3173,7 +3340,7 @@ export function App() {
           onQuickKey={quickKey}
           onBack={() => setView("dashboard")}
           onAccounts={() => setView("accounts")}
-          onDevices={() => setView("devices")}
+          onControls={() => setView("controls")}
           onDiagnostics={() => setView("diagnostics")}
           onCopy={(tabId) => void copyTerminal(tabId)}
           onFollowOutputChange={setTabFollowOutput}
@@ -3209,8 +3376,8 @@ export function App() {
               onBootstrapConsumed={consumeAccountBootstrap}
             />
           ) : null}
-          {view === "devices" ? (
-            <DevicesView
+          {view === "controls" ? (
+            <RemoteControlsView
               state={connection}
               onRevoke={() => {
                 void (async () => {
@@ -3272,17 +3439,14 @@ export function App() {
 
       {!terminalWorkspace ? <nav className="bottom-nav" aria-label="Remote sections">
         {[
-          ["dashboard", "▦", "Sessions"],
-          ["terminal", ">_", "Terminal"],
+          ["dashboard", "▦", "Home"],
           ["accounts", "●", "Accounts"],
-          ["devices", "▯", "Devices"],
           ...(import.meta.env.DEV ? [["lab", "⌁", "Lab"]] : []),
         ].map(([id, icon, label]) => (
           <button
             key={id}
             className={view === id ? "active" : ""}
             onClick={() => setView(id as View)}
-            disabled={id === "terminal" && !selectedTab}
           >
             <span>{icon}</span>
             {label}
