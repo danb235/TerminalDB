@@ -7200,16 +7200,22 @@ static BOOL TerminalDBWriteAll(int descriptor,
 
 - (void)performScrollTerminalToBottom {
     if (self.terminalScrollView == nil || self.terminalView == nil) return;
+    // CSI commands can replace the entire terminal buffer while
+    // consumeTerminalData: owns an NSTextStorage editing transaction. AppKit
+    // must not be asked to lay out or scroll that half-committed buffer. In
+    // particular, Claude emits ?1049l when it leaves its alternate screen;
+    // scrolling here before endEditing used to raise an NSBigMutableString
+    // range exception and terminate the app.
+    if (self.textStorageEditing) return;
     NSLayoutManager *layoutManager = self.terminalView.layoutManager;
     if (layoutManager != nil && self.terminalView.textContainer != nil) {
         [layoutManager ensureLayoutForTextContainer:
             self.terminalView.textContainer];
     }
     NSUInteger end = self.terminalView.textStorage.length;
-    NSRange finalCharacter = end > 0
-        ? NSMakeRange(end - 1, 1)
-        : NSMakeRange(0, 0);
-    [self.terminalView scrollRangeToVisible:finalCharacter];
+    if (end > 0) {
+        [self.terminalView scrollRangeToVisible:NSMakeRange(end - 1, 1)];
+    }
 
     NSClipView *clipView = self.terminalScrollView.contentView;
     NSView *documentView = self.terminalScrollView.documentView;
@@ -7221,6 +7227,10 @@ static BOOL TerminalDBWriteAll(int descriptor,
 }
 
 - (void)scrollTerminalToBottom {
+    if (self.textStorageEditing) {
+        self.followSynchronizedOutput = self.followsOutput;
+        return;
+    }
     [self performScrollTerminalToBottom];
     if (self.scrollCorrectionScheduled) return;
     self.scrollCorrectionScheduled = YES;
@@ -8001,6 +8011,10 @@ static BOOL TerminalDBWriteAll(int descriptor,
            utf8ControlByte.terminalView.string, @"⛛");
 
     AppDelegate *alternate = newTerminal();
+    NSScrollView *alternateScrollView = [[NSScrollView alloc]
+        initWithFrame:NSMakeRect(0, 0, 800, 500)];
+    alternateScrollView.documentView = alternate.terminalView;
+    alternate.terminalScrollView = alternateScrollView;
     const char primaryScreen[] = "shell prompt $ ";
     const char enterAlternate[] = "\033[?1049hfull screen app";
     const char leaveAlternate[] = "\033[?1049l";
