@@ -842,21 +842,63 @@ p {
   text-align: center;
 }
 
-.account-card {
-  padding: 16px;
+.account-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  min-height: 148px;
+  padding: 14px 16px;
   border: 1px solid var(--tdb-border);
   border-radius: var(--tdb-radius);
   background: var(--tdb-panel);
+  cursor: pointer;
 }
 
-.account-card.active {
+.account-row:hover:not(.disabled),
+.account-row:focus-within {
+  border-color: var(--tdb-border-strong);
+  background: var(--tdb-elevated);
+}
+
+.account-row.active {
   border-color: rgb(82 208 221 / 40%);
   box-shadow: inset 3px 0 var(--tdb-cyan);
 }
 
-.account-card > header {
+.account-row.disabled {
+  cursor: default;
+}
+
+.account-radio {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 1px solid var(--tdb-border-strong);
+  border-radius: 50%;
+  background: var(--tdb-terminal);
+}
+
+.account-radio:checked {
+  border: 4px solid var(--tdb-cyan);
+}
+
+.account-radio:focus-visible {
+  outline: 2px solid var(--tdb-cyan);
+  outline-offset: 3px;
+}
+
+.account-radio:disabled:not(:checked) {
+  opacity: 0.5;
+}
+
+.account-row-identity {
   display: grid;
-  grid-template-columns: 40px 1fr auto;
+  min-width: 0;
+  grid-column: 2;
+  grid-row: 1;
+  grid-template-columns: 40px minmax(0, 1fr);
   align-items: center;
   gap: 11px;
 }
@@ -873,43 +915,43 @@ p {
   font: 700 11px/1 var(--tdb-mono);
 }
 
-.account-card header strong {
+.account-row-identity strong {
+  display: block;
+  overflow: hidden;
   font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.account-card header small {
+.account-row-identity small {
+  display: block;
   overflow: hidden;
   margin-top: 4px;
   color: var(--tdb-muted);
   font: 9px/1.2 var(--tdb-mono);
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.account-card header > span {
-  padding: 4px 6px;
-  border-radius: 3px;
-  background: var(--tdb-elevated);
-  color: var(--tdb-muted);
-  font: 700 8px/1 var(--tdb-mono);
-  text-transform: uppercase;
-}
-
-.usage-grid {
+.account-usage-grid {
   display: grid;
-  gap: 15px;
-  margin: 20px 0;
+  grid-column: 2 / -1;
+  grid-row: 2;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
 }
 
-.usage > div:first-child {
+.account-usage > div:first-child {
   display: flex;
   justify-content: space-between;
-  margin-bottom: 7px;
+  margin-bottom: 6px;
   color: var(--tdb-muted);
-  font: 10px/1 var(--tdb-mono);
+  font: 9px/1 var(--tdb-mono);
 }
 
-.usage b {
+.account-usage b {
   color: var(--tdb-text);
+  font-variant-numeric: tabular-nums;
 }
 
 .usage-bar {
@@ -925,11 +967,51 @@ p {
   background: var(--tdb-cyan);
 }
 
-.usage small {
+.account-usage small {
   display: block;
+  overflow: hidden;
   margin-top: 6px;
   color: var(--tdb-quiet);
   font: 8px/1 var(--tdb-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-row-state {
+  display: grid;
+  min-width: 105px;
+  grid-column: 3;
+  grid-row: 1;
+  justify-items: end;
+  gap: 9px;
+  text-align: right;
+}
+
+.account-row-state span {
+  padding: 4px 6px;
+  border-radius: 3px;
+  background: var(--tdb-elevated);
+  color: var(--tdb-muted);
+  font: 700 8px/1 var(--tdb-mono);
+  text-transform: uppercase;
+}
+
+.account-row-state strong {
+  color: var(--tdb-cyan);
+  font-size: 10px;
+}
+
+.account-row.disabled:not(.active) .account-row-state strong {
+  color: var(--tdb-quiet);
+}
+
+.account-list-empty {
+  margin: 0;
+  padding: 24px;
+  border: 1px dashed var(--tdb-border);
+  border-radius: var(--tdb-radius);
+  color: var(--tdb-muted);
+  text-align: center;
 }
 
 .primary-button,
@@ -2005,14 +2087,6 @@ p {
 
   .hero-status {
     margin-top: 10px;
-  }
-
-  .account-list {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .account-card:last-child:nth-child(odd) {
-    grid-column: 1 / -1;
   }
 
   .state-grid {

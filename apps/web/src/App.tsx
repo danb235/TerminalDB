@@ -18,6 +18,11 @@ import {
 } from "react";
 import QRCode from "qrcode";
 
+import {
+  CLAUDE_USAGE_LABELS,
+  stableClaudeAccounts,
+  stableClaudeUsage,
+} from "./account-list";
 import { clearControllerSession, loadControllerSession } from "./identity";
 import {
   accountAccessToken,
@@ -1771,6 +1776,7 @@ function AccountsView({
   readonly onRequestBootstrap: () => Promise<void>;
   readonly onBootstrapConsumed: () => void;
 }) {
+  const sortedAccounts = stableClaudeAccounts(accounts);
   return (
     <section className="view accounts-view" aria-labelledby="accounts-heading">
       <header className="page-heading">
@@ -1803,51 +1809,82 @@ function AccountsView({
       <div className="account-section-heading">
         <span className="eyebrow">CLAUDE CODE ON THIS MAC</span>
         <h2>Claude accounts & usage</h2>
-        <p>Switch an account already authenticated on your Mac. Its credentials never leave the Mac.</p>
+        <p>Select the subscription for this terminal tab. Its credentials never leave the Mac.</p>
       </div>
-      <div className="account-list">
-        {accounts.map((account) => {
+      <div
+        className="account-list"
+        role="radiogroup"
+        aria-label="Claude subscription for this terminal tab"
+      >
+        {sortedAccounts.map((account) => {
           const active = account.id === selectedTab?.accountId;
+          const disabled = !active && (
+            selectedTab?.busy === true || !canControl || !account.signedIn
+          );
+          const stateLabel = active
+            ? "Active on this tab"
+            : !account.signedIn
+              ? "Sign in on Mac"
+              : selectedTab?.busy
+                ? "Tab is busy"
+                : !canControl
+                  ? "Remote unavailable"
+                  : "Use on this tab";
           return (
-            <article className={`account-card ${active ? "active" : ""}`} key={account.id}>
-              <header>
-                <div className="account-avatar">{account.label.slice(0, 2).toUpperCase()}</div>
+            <label
+              className={`account-row ${active ? "active" : ""} ${disabled ? "disabled" : ""}`}
+              key={account.id}
+              data-account-id={account.id}
+            >
+              <input
+                className="account-radio"
+                type="radio"
+                name={`claude-account-${selectedTab?.id ?? "terminal"}`}
+                checked={active}
+                disabled={disabled}
+                onChange={() => {
+                  if (!active) onSwitch(account);
+                }}
+                aria-label={`${account.label}: ${stateLabel}`}
+              />
+              <div className="account-row-identity">
+                <div className="account-avatar" aria-hidden="true">
+                  {account.label.slice(0, 2).toUpperCase()}
+                </div>
                 <div>
                   <strong>{account.label}</strong>
-                  <small>{account.email}</small>
+                  <small>{account.email ?? "Account on this Mac"}</small>
                 </div>
-                <span>{account.plan}</span>
-              </header>
-              <div className="usage-grid">
-                {account.usage.map((usage) => (
-                  <div className="usage" key={usage.label}>
-                    <div>
-                      <span>{usage.label}</span>
-                      <b>{usage.utilization}%</b>
-                    </div>
-                    <div className="usage-bar">
-                      <i style={{ width: `${usage.utilization}%` }} />
-                    </div>
-                    <small>{usage.resetsAt ? `Resets ${usage.resetsAt}` : "Current allocation"}</small>
-                  </div>
-                ))}
               </div>
-              <button
-                className={active ? "secondary-button" : "primary-button"}
-                onClick={() => onSwitch(account)}
-                disabled={active || selectedTab?.busy || !canControl}
-              >
-                {active
-                  ? "Active on this tab"
-                  : selectedTab?.busy
-                    ? "Tab is busy"
-                    : !canControl
-                      ? "Remote unavailable"
-                      : "Use on this tab"}
-              </button>
-            </article>
+              <div className="account-usage-grid" aria-label={`${account.label} usage`}>
+                {stableClaudeUsage(account).map((usage, index) => {
+                  const label = CLAUDE_USAGE_LABELS[index];
+                  return (
+                    <div className="account-usage" key={label}>
+                      <div>
+                        <span>{label}</span>
+                        <b>{usage ? `${usage.utilization}%` : "—"}</b>
+                      </div>
+                      <div className="usage-bar">
+                        <i style={{ width: `${usage?.utilization ?? 0}%` }} />
+                      </div>
+                      <small title={usage?.resetsAt ? `Resets ${usage.resetsAt}` : "Reset unavailable"}>
+                        {usage?.resetsAt ? `Resets ${usage.resetsAt}` : "Reset unavailable"}
+                      </small>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="account-row-state">
+                {account.plan ? <span>{account.plan}</span> : null}
+                <strong>{stateLabel}</strong>
+              </div>
+            </label>
           );
         })}
+        {sortedAccounts.length === 0 ? (
+          <p className="account-list-empty">No Claude subscriptions are authenticated on this Mac.</p>
+        ) : null}
       </div>
       <button
         className="wide-secondary"
@@ -2844,8 +2881,27 @@ export function App() {
 
   const switchAccount = async (account: ClaudeAccount) => {
     if (!selectedTab || selectedTab.busy) return;
+    const client = clientRef.current;
+    if (!client && import.meta.env.DEV) {
+      setInventory((current) => ({
+        ...current,
+        instances: current.instances.map((instance) => ({
+          ...instance,
+          tabs: instance.tabs.map((tab) => tab.id === selectedTab.id
+            ? { ...tab, accountId: account.id, accountLabel: account.label }
+            : tab),
+        })),
+      }));
+      const mockWindow = window as Window & { __terminaldbMockAccountCommands?: string[] };
+      mockWindow.__terminaldbMockAccountCommands ??= [];
+      mockWindow.__terminaldbMockAccountCommands.push(
+        `switch:${selectedTab.id}:${account.id}`,
+      );
+      return;
+    }
+    if (!client) return;
     try {
-      await clientRef.current?.send("account.switch", {
+      await client.send("account.switch", {
         tabId: selectedTab.id,
         accountId: account.id,
       });

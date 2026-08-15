@@ -358,10 +358,10 @@ async function main() {
   }
 
   await page.getByRole("button", { name: "Claude account" }).click();
-  const secondary = page.locator("article.account-card").filter({
+  const secondary = page.locator("label.account-row").filter({
     hasText: "secondary@example.invalid",
   });
-  await secondary.getByRole("button", { name: "Use on this tab" }).click();
+  await secondary.getByRole("radio").click();
   await waitFor(
     "browser Claude account switch",
     () => readEvents().some(
@@ -370,7 +370,9 @@ async function main() {
         event.accountId === "account-secondary",
     ),
   );
-  await secondary.getByRole("button", { name: "Active on this tab" }).waitFor();
+  await page.locator(
+    'label.account-row[data-account-id="account-secondary"] input:checked',
+  ).waitFor();
   const usageCount = routeCount("usage.refresh");
   await page.getByRole("button", { name: "Refresh usage" }).click();
   await waitFor("browser usage refresh", () => routeCount("usage.refresh") === usageCount + 1);
