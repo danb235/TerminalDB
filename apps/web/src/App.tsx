@@ -77,6 +77,27 @@ const TerminalSurface = lazy(async () => {
 
 type View = "dashboard" | "terminal" | "accounts" | "devices" | "diagnostics" | "lab";
 type AccountBootstrapSupport = "checking" | "supported" | "upgrade-required";
+type InventoryPhase = "loading" | "ready";
+export type DashboardSessionPresentation = "loading" | "empty" | "offline" | "sessions";
+
+export function dashboardSessionPresentation(
+  phase: InventoryPhase,
+  tabCount: number,
+  connectionState: ConnectionState,
+): DashboardSessionPresentation {
+  if (tabCount > 0) return "sessions";
+  if ([
+    "phone-offline",
+    "mac-offline",
+    "remote-ended",
+    "revoked",
+    "update-required",
+  ].includes(connectionState)) return "offline";
+  if (["connecting", "reconnecting", "resyncing", "rotating"].includes(connectionState)) {
+    return "loading";
+  }
+  return phase === "loading" ? "loading" : "empty";
+}
 
 export function accountBootstrapSupport(
   inventory: Pick<InventoryPayload, "capabilities" | "instances">,
@@ -268,26 +289,63 @@ function SessionCard({
 
 function Dashboard({
   inventory,
+  inventoryPhase,
+  connectionState,
   onOpenTab,
 }: {
   readonly inventory: InventoryPayload;
+  readonly inventoryPhase: InventoryPhase;
+  readonly connectionState: ConnectionState;
   readonly onOpenTab: (tab: RemoteTab) => void;
 }) {
   const allTabs = inventory.instances.flatMap((instance) => instance.tabs);
   const attention = allTabs.filter((tab) => tab.claudeState === "attention");
   const host = inventory.instances[0]?.host ?? "Your Mac";
+  const presentation = dashboardSessionPresentation(
+    inventoryPhase,
+    allTabs.length,
+    connectionState,
+  );
   return (
     <main className="view dashboard-view">
       <section className="hero-status">
         <span className="eyebrow">{host.toUpperCase()}</span>
         <div className="hero-line">
-          <h1>Remote ledger</h1>
-          <span>{allTabs.length} tabs</span>
+          <h1>Your terminal sessions</h1>
+          {presentation === "sessions" ? <span>{allTabs.length} tabs</span> : null}
         </div>
-        <p>Claude sessions first. Every open terminal remains one tap away.</p>
+        <p>Open terminals across your Macs, ready whenever you need them.</p>
       </section>
 
-      {attention.length > 0 ? (
+      {presentation === "loading" ? (
+        <section className="session-state-card is-loading" aria-live="polite" aria-busy="true">
+          <div className="session-state-icon" aria-hidden="true"><span /></div>
+          <span className="session-state-kicker">SECURE CONNECTION</span>
+          <h2>Loading your terminal sessions</h2>
+          <p>Checking your connected Macs and restoring your last active terminal.</p>
+          <div className="session-loading-track" aria-hidden="true"><span /></div>
+        </section>
+      ) : null}
+
+      {presentation === "empty" ? (
+        <section className="session-state-card" aria-live="polite">
+          <div className="session-state-icon" aria-hidden="true">&gt;_</div>
+          <span className="session-state-kicker">MAC CONNECTED</span>
+          <h2>No terminals are open</h2>
+          <p>Open a TerminalDB window on your Mac. Its tabs will appear here automatically—no new link or sign-in needed.</p>
+        </section>
+      ) : null}
+
+      {presentation === "offline" ? (
+        <section className="session-state-card is-offline" aria-live="polite">
+          <div className="session-state-icon" aria-hidden="true">···</div>
+          <span className="session-state-kicker">WAITING FOR TERMINALDB</span>
+          <h2>Your Mac is offline</h2>
+          <p>You’re still signed in. Open TerminalDB on your Mac and your available terminal sessions will appear here automatically.</p>
+        </section>
+      ) : null}
+
+      {presentation === "sessions" && attention.length > 0 ? (
         <section>
           <div className="section-title">
             <span>NEEDS YOU</span>
@@ -301,7 +359,7 @@ function Dashboard({
         </section>
       ) : null}
 
-      <section>
+      {presentation === "sessions" ? <section>
         <div className="section-title">
           <span>OPEN TERMINALDB INSTANCES</span>
           <small>Live inventory</small>
@@ -324,7 +382,7 @@ function Dashboard({
             </article>
           ))}
         </div>
-      </section>
+      </section> : null}
     </main>
   );
 }
@@ -2097,23 +2155,31 @@ function PairingView({
 }
 
 export function App() {
+  const devInventoryMode = import.meta.env.DEV
+    ? new URLSearchParams(location.search).get("inventory")
+    : null;
   const forceUnpaired =
     import.meta.env.DEV &&
     new URLSearchParams(location.search).has("unpaired");
   const [view, setView] = useState<View>(
-    import.meta.env.DEV && !forceUnpaired ? "terminal" : "dashboard",
+    import.meta.env.DEV && !forceUnpaired && !devInventoryMode
+      ? "terminal"
+      : "dashboard",
   );
   const [connection, dispatch] = useConnectionModel();
   const mockCapabilities = import.meta.env.DEV
     ? (window as Window & { __terminaldbMockCapabilities?: readonly string[] })
       .__terminaldbMockCapabilities
     : undefined;
-  const initialInventory: InventoryPayload = import.meta.env.DEV
+  const initialInventory: InventoryPayload = import.meta.env.DEV && !devInventoryMode
     ? mockCapabilities !== undefined
       ? { ...mockInventory, capabilities: mockCapabilities }
       : mockInventory
     : { instances: [], accounts: [] };
   const [inventory, setInventory] = useState<InventoryPayload>(initialInventory);
+  const [inventoryPhase, setInventoryPhase] = useState<InventoryPhase>(
+    import.meta.env.DEV && devInventoryMode !== "loading" ? "ready" : "loading",
+  );
   const [selectedTabId, setSelectedTabId] = useState(initialInventory.selectedTabId);
   const [terminalSessions, setTerminalSessions] = useState<
     Record<string, TerminalTabSession>
@@ -2172,6 +2238,10 @@ export function App() {
     new URLSearchParams(location.search).get("account") === "reset-password";
   const clientRef = useRef<RemoteClient | null>(null);
   const connectionEpochRef = useRef(0);
+  const inventoryReadyRef = useRef(
+    import.meta.env.DEV && devInventoryMode !== "loading",
+  );
+  const emptyInventoryTimerRef = useRef<number | undefined>(undefined);
   const selectedTabRef = useRef(selectedTabId);
   const terminalUpdateIdRef = useRef(0);
   const terminalSurfacesRef = useRef(new Map<string, TerminalSurfaceHandle>());
@@ -2266,6 +2336,9 @@ export function App() {
       if (terminalInputTimerRef.current) {
         window.clearTimeout(terminalInputTimerRef.current);
       }
+      if (emptyInventoryTimerRef.current) {
+        window.clearTimeout(emptyInventoryTimerRef.current);
+      }
       inputDeliveryQueueRef.current?.cancelAll();
     },
     [],
@@ -2340,6 +2413,24 @@ export function App() {
           if (epoch !== connectionEpochRef.current) return;
           setInventory(next);
           const nextTabs = next.instances.flatMap((instance) => instance.tabs);
+          if (nextTabs.length > 0 || inventoryReadyRef.current) {
+            if (emptyInventoryTimerRef.current) {
+              window.clearTimeout(emptyInventoryTimerRef.current);
+              emptyInventoryTimerRef.current = undefined;
+            }
+            inventoryReadyRef.current = true;
+            setInventoryPhase("ready");
+          } else if (!emptyInventoryTimerRef.current) {
+            // The agent can briefly publish an empty aggregate while its Mac
+            // clients are registering. Keep a truthful loading state through
+            // that hand-off instead of flashing "no sessions".
+            emptyInventoryTimerRef.current = window.setTimeout(() => {
+              if (epoch !== connectionEpochRef.current) return;
+              inventoryReadyRef.current = true;
+              setInventoryPhase("ready");
+              emptyInventoryTimerRef.current = undefined;
+            }, 900);
+          }
           const nextTabIds = new Set(nextTabs.map((tab) => tab.id));
           setTerminalSessions((currentSessions) => {
             let changed = false;
@@ -3022,7 +3113,14 @@ export function App() {
         </header>
       ) : null}
 
-      {view === "dashboard" ? <Dashboard inventory={inventory} onOpenTab={openTab} /> : null}
+      {view === "dashboard" ? (
+        <Dashboard
+          inventory={inventory}
+          inventoryPhase={inventoryPhase}
+          connectionState={connection.state}
+          onOpenTab={openTab}
+        />
+      ) : null}
       {terminalWorkspace && selectedTab ? (
         <TerminalView
           tab={selectedTab}
@@ -3114,6 +3212,8 @@ export function App() {
                       clientRef.current = null;
                       await clearControllerSession();
                       setInventory({ instances: [], accounts: [] });
+                      inventoryReadyRef.current = false;
+                      setInventoryPhase("loading");
                       setSelectedTabId(undefined);
                       setAccessState("unpaired");
                       setView("dashboard");

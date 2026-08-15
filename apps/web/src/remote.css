@@ -245,6 +245,108 @@ p {
   margin-top: 30px;
 }
 
+.session-state-card {
+  display: grid;
+  min-height: 340px;
+  place-items: center;
+  align-content: center;
+  gap: 12px;
+  padding: 44px 28px;
+  border: 1px solid var(--tdb-border);
+  border-radius: calc(var(--tdb-radius) + 4px);
+  background:
+    radial-gradient(circle at 50% 10%, rgb(83 203 216 / 8%), transparent 48%),
+    var(--tdb-panel);
+  text-align: center;
+}
+
+.session-state-icon {
+  display: grid;
+  width: 58px;
+  height: 58px;
+  margin-bottom: 4px;
+  place-items: center;
+  border: 1px solid var(--tdb-border-strong);
+  border-radius: 15px;
+  background: var(--tdb-terminal);
+  color: var(--tdb-cyan);
+  font: 700 17px/1 var(--tdb-mono);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 2%);
+}
+
+.session-state-kicker {
+  color: var(--tdb-cyan);
+  font: 700 11px/1.3 var(--tdb-mono);
+  letter-spacing: 0.13em;
+}
+
+.session-state-card h2 {
+  margin: 0;
+  color: var(--tdb-text);
+  font-size: clamp(24px, 5vw, 32px);
+  line-height: 1.12;
+  letter-spacing: -0.035em;
+}
+
+.session-state-card p {
+  max-width: 520px;
+  color: var(--tdb-muted);
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+.session-state-card.is-offline .session-state-icon,
+.session-state-card.is-offline .session-state-kicker {
+  color: var(--tdb-amber);
+}
+
+.session-state-card.is-loading .session-state-icon {
+  position: relative;
+}
+
+.session-state-card.is-loading .session-state-icon span {
+  width: 22px;
+  height: 22px;
+  border: 2px solid rgb(83 203 216 / 22%);
+  border-top-color: var(--tdb-cyan);
+  border-radius: 50%;
+  animation: session-state-spin 0.9s linear infinite;
+}
+
+.session-loading-track {
+  width: min(280px, 80%);
+  height: 3px;
+  margin-top: 8px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: rgb(83 203 216 / 10%);
+}
+
+.session-loading-track span {
+  display: block;
+  width: 45%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--tdb-cyan);
+  animation: session-state-progress 1.25s ease-in-out infinite;
+}
+
+@keyframes session-state-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes session-state-progress {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(245%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-state-card.is-loading .session-state-icon span,
+  .session-loading-track span {
+    animation: none;
+  }
+}
+
 .attention-card,
 .session-card {
   position: relative;

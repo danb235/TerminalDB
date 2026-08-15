@@ -56,6 +56,28 @@ test.beforeEach(async ({ page }) => {
   await openTerminal(page);
 });
 
+test("shows a stable loading experience before terminal inventory arrives", async ({ page }) => {
+  await page.goto("/?inventory=loading");
+  await expect(page.getByRole("heading", { name: "Loading your terminal sessions" }))
+    .toBeVisible();
+  await expect(page.getByRole("heading", { name: "No terminals are open" }))
+    .toHaveCount(0);
+  await expect(page.locator(".session-state-card")).toHaveAttribute("aria-busy", "true");
+});
+
+test("explains how to recover when a connected Mac has no open terminals", async ({ page }) => {
+  await page.goto("/?inventory=empty");
+  await expect(page.getByRole("button", { name: /^LIVE/u })).toBeVisible();
+  const heading = page.getByRole("heading", { name: "No terminals are open" });
+  await expect(heading).toBeVisible();
+  await expect(page.getByRole("main")).toContainText(
+    "Open a TerminalDB window on your Mac",
+  );
+  await expect(page.getByText("Remote ledger", { exact: true })).toHaveCount(0);
+  expect(await heading.evaluate((element) => parseFloat(getComputedStyle(element).fontSize)))
+    .toBeGreaterThanOrEqual(24);
+});
+
 test("opens directly into a stable mirrored terminal", async ({ page }) => {
   await expect(page.getByRole("tab", { name: /^meridian /u })).toHaveAttribute(
     "aria-selected",
