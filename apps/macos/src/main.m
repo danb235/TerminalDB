@@ -562,6 +562,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
 @property(nonatomic) CGFloat utilityPanelMinimumContentHeight;
 @property(nonatomic, copy, nullable) void (^utilityPanelDismissHandler)(void);
 @property(nonatomic, strong) NSButton *assistantToggleButton;
+@property(nonatomic, strong) NSButton *remoteWebButton;
 @property(nonatomic, strong)
     NSTitlebarAccessoryViewController *assistantAccessoryController;
 @property(nonatomic, strong, nullable) id assistantClient;
@@ -3444,6 +3445,12 @@ static BOOL TerminalDBWriteAll(int descriptor,
         [self rootController].theme.fontSize];
 }
 
+- (void)openRemoteWebApp:(id)sender {
+    (void)sender;
+    NSURL *url = [NSURL URLWithString:@"https://app.terminaldb.app"];
+    if (url != nil) [NSWorkspace.sharedWorkspace openURL:url];
+}
+
 - (void)showTerminalDBHelp:(id)sender {
     (void)sender;
     NSAlert *help = [[NSAlert alloc] init];
@@ -4118,7 +4125,11 @@ static BOOL TerminalDBWriteAll(int descriptor,
         BOOL sidebarIconsAvailable =
             second.assistantToggleButton.image != nil &&
             [[second.assistantToggleButton accessibilityLabel]
-                isEqualToString:@"Show AI Chat"];
+                isEqualToString:@"Show AI Chat"] &&
+            second.remoteWebButton.image != nil &&
+            [[second.remoteWebButton accessibilityLabel]
+                isEqualToString:@"Open TerminalDB Remote"] &&
+            second.remoteWebButton.action == @selector(openRemoteWebApp:);
         [second showAssistantPane];
         BOOL chatExpanded =
             !second.assistantView.hidden &&
@@ -4558,9 +4569,28 @@ static BOOL TerminalDBWriteAll(int descriptor,
     self.assistantToggleButton.action = @selector(toggleAssistantPane:);
     self.assistantToggleButton.toolTip =
         @"Open AI Chat (Command-Shift-L)";
-    self.assistantToggleButton.frame = NSMakeRect(4, 1, 30, 26);
+    self.assistantToggleButton.frame = NSMakeRect(38, 1, 30, 26);
     NSView *assistantAccessoryView =
-        [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 38, 28)];
+        [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 72, 28)];
+    self.remoteWebButton =
+        [[NSButton alloc] initWithFrame:NSMakeRect(4, 1, 30, 26)];
+    self.remoteWebButton.title = @"";
+    self.remoteWebButton.bordered = NO;
+    self.remoteWebButton.controlSize = NSControlSizeSmall;
+    NSImage *remoteWebImage =
+        [NSImage imageWithSystemSymbolName:@"globe"
+                  accessibilityDescription:@"Open TerminalDB Remote"];
+    remoteWebImage = [remoteWebImage imageWithSymbolConfiguration:
+        [NSImageSymbolConfiguration configurationWithPointSize:14
+                                                        weight:NSFontWeightMedium]];
+    self.remoteWebButton.image = remoteWebImage;
+    self.remoteWebButton.imagePosition = NSImageOnly;
+    [self.remoteWebButton setAccessibilityLabel:@"Open TerminalDB Remote"];
+    self.remoteWebButton.contentTintColor = self.theme.ansiColors[6];
+    self.remoteWebButton.target = self;
+    self.remoteWebButton.action = @selector(openRemoteWebApp:);
+    self.remoteWebButton.toolTip = @"Open TerminalDB Remote in Browser";
+    [assistantAccessoryView addSubview:self.remoteWebButton];
     [assistantAccessoryView addSubview:self.assistantToggleButton];
     self.assistantAccessoryController =
         [[NSTitlebarAccessoryViewController alloc] init];

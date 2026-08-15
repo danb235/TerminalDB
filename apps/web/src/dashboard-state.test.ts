@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { dashboardSessionPresentation } from "./App";
+import { dashboardSessionPresentation, shouldOpenInitialTerminal } from "./App";
 
 describe("remote session dashboard presentation", () => {
   it("keeps an honest loading state before the first inventory arrives", () => {
@@ -22,5 +22,11 @@ describe("remote session dashboard presentation", () => {
 
   it("always presents real sessions immediately", () => {
     expect(dashboardSessionPresentation("loading", 2, "resyncing")).toBe("sessions");
+  });
+
+  it("lets account users choose a session while preserving direct one-time links", () => {
+    expect(shouldOpenInitialTerminal("account", "dashboard")).toBe(false);
+    expect(shouldOpenInitialTerminal("pairing", "dashboard")).toBe(true);
+    expect(shouldOpenInitialTerminal("pairing", "accounts")).toBe(false);
   });
 });

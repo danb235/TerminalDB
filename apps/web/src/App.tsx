@@ -99,6 +99,13 @@ export function dashboardSessionPresentation(
   return phase === "loading" ? "loading" : "empty";
 }
 
+export function shouldOpenInitialTerminal(
+  accessMode: "pairing" | "account",
+  currentView: View,
+): boolean {
+  return accessMode === "pairing" && currentView === "dashboard";
+}
+
 export function accountBootstrapSupport(
   inventory: Pick<InventoryPayload, "capabilities" | "instances">,
 ): AccountBootstrapSupport {
@@ -289,23 +296,16 @@ function SessionCard({
 
 function Dashboard({
   inventory,
-  inventoryPhase,
-  connectionState,
+  presentation,
   onOpenTab,
 }: {
   readonly inventory: InventoryPayload;
-  readonly inventoryPhase: InventoryPhase;
-  readonly connectionState: ConnectionState;
+  readonly presentation: DashboardSessionPresentation;
   readonly onOpenTab: (tab: RemoteTab) => void;
 }) {
   const allTabs = inventory.instances.flatMap((instance) => instance.tabs);
   const attention = allTabs.filter((tab) => tab.claudeState === "attention");
   const host = inventory.instances[0]?.host ?? "Your Mac";
-  const presentation = dashboardSessionPresentation(
-    inventoryPhase,
-    allTabs.length,
-    connectionState,
-  );
   return (
     <main className="view dashboard-view">
       <section className="hero-status">
@@ -316,16 +316,6 @@ function Dashboard({
         </div>
         <p>Open terminals across your Macs, ready whenever you need them.</p>
       </section>
-
-      {presentation === "loading" ? (
-        <section className="session-state-card is-loading" aria-live="polite" aria-busy="true">
-          <div className="session-state-icon" aria-hidden="true"><span /></div>
-          <span className="session-state-kicker">SECURE CONNECTION</span>
-          <h2>Loading your terminal sessions</h2>
-          <p>Checking your connected Macs and restoring your last active terminal.</p>
-          <div className="session-loading-track" aria-hidden="true"><span /></div>
-        </section>
-      ) : null}
 
       {presentation === "empty" ? (
         <section className="session-state-card" aria-live="polite">
@@ -383,6 +373,33 @@ function Dashboard({
           ))}
         </div>
       </section> : null}
+    </main>
+  );
+}
+
+function SessionLoadingView({
+  connectionState,
+}: {
+  readonly connectionState: ConnectionState;
+}) {
+  const status = connectionState === "resyncing" || connectionState === "rotating"
+    ? "Syncing your latest sessions…"
+    : connectionState === "reconnecting"
+      ? "Reconnecting securely…"
+      : "Connecting securely…";
+  return (
+    <main className="session-loading-view" aria-live="polite" aria-busy="true">
+      <div className="session-loading-content">
+        <div className="session-loading-brand">
+          <AppMark />
+          <strong>TerminalDB</strong>
+        </div>
+        <div className="session-loading-spinner" aria-hidden="true"><span /></div>
+        <h1>Connecting to your terminals</h1>
+        <p>Checking your connected Macs and loading their open windows and tabs.</p>
+        <div className="session-loading-track" aria-hidden="true"><span /></div>
+        <strong className="session-loading-status">{status}</strong>
+      </div>
     </main>
   );
 }
@@ -2155,14 +2172,16 @@ function PairingView({
 }
 
 export function App() {
+  const devSearch = import.meta.env.DEV ? new URLSearchParams(location.search) : undefined;
   const devInventoryMode = import.meta.env.DEV
-    ? new URLSearchParams(location.search).get("inventory")
+    ? devSearch?.get("inventory") ?? null
     : null;
+  const forceSessionsHome = devSearch?.has("sessions") === true;
   const forceUnpaired =
     import.meta.env.DEV &&
-    new URLSearchParams(location.search).has("unpaired");
+    devSearch?.has("unpaired") === true;
   const [view, setView] = useState<View>(
-    import.meta.env.DEV && !forceUnpaired && !devInventoryMode
+    import.meta.env.DEV && !forceUnpaired && !devInventoryMode && !forceSessionsHome
       ? "terminal"
       : "dashboard",
   );
@@ -2216,6 +2235,7 @@ export function App() {
   const [remoteRegion, setRemoteRegion] = useState("us-west-2");
   const [remoteConfiguration, setRemoteConfiguration] = useState<RemotePublicConfiguration>();
   const [activeAccessMode, setActiveAccessMode] = useState<"pairing" | "account">("pairing");
+  const activeAccessModeRef = useRef<"pairing" | "account">("pairing");
   const [accountBootstrapToken, setAccountBootstrapToken] = useState<string | undefined>(() => {
     const fragment = new URLSearchParams(location.hash.replace(/^#/u, ""));
     const approved = fragment.get("account-bootstrap") ?? undefined;
@@ -2377,6 +2397,10 @@ export function App() {
         dispatch({ type: "version-mismatch" });
         return;
       }
+      const existingSession = await loadControllerSession();
+      const existingAccessMode = existingSession?.accessMode === "account" ? "account" : "pairing";
+      activeAccessModeRef.current = existingAccessMode;
+      setActiveAccessMode(existingAccessMode);
       if (configuration.mockMode) {
         if (forceUnpaired) {
           setAccessState("unpaired");
@@ -2475,7 +2499,10 @@ export function App() {
           selectedTabRef.current = nextId;
           setSelectedTabId(nextId);
           if (nextId) {
-            setView((currentView) => currentView === "dashboard" ? "terminal" : currentView);
+            setView((currentView) => shouldOpenInitialTerminal(
+              activeAccessModeRef.current,
+              currentView,
+            ) ? "terminal" : currentView);
           } else {
             setView("dashboard");
           }
@@ -2541,7 +2568,9 @@ export function App() {
       }
       if (paired) {
         const session = await loadControllerSession();
-        setActiveAccessMode(session?.accessMode === "account" ? "account" : "pairing");
+        const accessMode = session?.accessMode === "account" ? "account" : "pairing";
+        activeAccessModeRef.current = accessMode;
+        setActiveAccessMode(accessMode);
       }
       setAccessState(paired ? "paired" : "unpaired");
     } catch (error) {
@@ -3100,6 +3129,15 @@ export function App() {
   const terminalWorkspace = Boolean(
     selectedTab && ["terminal", "accounts", "devices", "diagnostics"].includes(view),
   );
+  const dashboardPresentation = dashboardSessionPresentation(
+    inventoryPhase,
+    allTabs.length,
+    connection.state,
+  );
+
+  if (view === "dashboard" && dashboardPresentation === "loading") {
+    return <SessionLoadingView connectionState={connection.state} />;
+  }
 
   return (
     <div className={`remote-shell ${terminalWorkspace ? "terminal-active" : ""}`}>
@@ -3116,8 +3154,7 @@ export function App() {
       {view === "dashboard" ? (
         <Dashboard
           inventory={inventory}
-          inventoryPhase={inventoryPhase}
-          connectionState={connection.state}
+          presentation={dashboardPresentation}
           onOpenTab={openTab}
         />
       ) : null}
@@ -3231,7 +3268,7 @@ export function App() {
           ) : null}
         </aside>
       ) : null}
-      {view === "lab" ? <LabView model={connection} dispatch={dispatch} /> : null}
+      {import.meta.env.DEV && view === "lab" ? <LabView model={connection} dispatch={dispatch} /> : null}
 
       {!terminalWorkspace ? <nav className="bottom-nav" aria-label="Remote sections">
         {[
@@ -3239,7 +3276,7 @@ export function App() {
           ["terminal", ">_", "Terminal"],
           ["accounts", "●", "Accounts"],
           ["devices", "▯", "Devices"],
-          ["lab", "⌁", "Lab"],
+          ...(import.meta.env.DEV ? [["lab", "⌁", "Lab"]] : []),
         ].map(([id, icon, label]) => (
           <button
             key={id}
