@@ -75,6 +75,46 @@ test("opens directly into a stable mirrored terminal", async ({ page }) => {
   expect(geometry.view.height).toBe(geometry.viewportHeight);
 });
 
+test("shows a stable subscription list selected independently for each terminal tab", async ({ page }) => {
+  await page.getByRole("button", { name: "Accounts", exact: true }).click();
+  const picker = page.getByRole("radiogroup", {
+    name: "Claude subscription for this terminal tab",
+  });
+  await expect(picker).toBeVisible();
+  const rows = picker.locator("label.account-row");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0)).toContainText("Personal");
+  await expect(rows.nth(1)).toContainText("SQAD Teams");
+  await expect(page.getByRole("radio", { name: "SQAD Teams: Active on this tab" }))
+    .toBeChecked();
+  await expect(rows.locator(".account-usage")).toHaveCount(6);
+
+  const firstLayout = await rows.evaluateAll((elements) =>
+    elements.map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { top: rect.top, height: rect.height };
+    }));
+  expect(firstLayout[0]?.height).toBe(firstLayout[1]?.height);
+
+  await page.getByRole("button", { name: "Close panel" }).click();
+  await page.getByRole("tab", { name: /^auth test failure /u }).click();
+  await page.getByRole("button", { name: "Accounts", exact: true }).click();
+  await expect(page.getByRole("radio", { name: "Personal: Active on this tab" }))
+    .toBeChecked();
+  await expect(rows.nth(0)).toContainText("Personal");
+  await expect(rows.nth(1)).toContainText("SQAD Teams");
+
+  await page.getByRole("radio", { name: "SQAD Teams: Use on this tab" }).click();
+  await expect(page.getByRole("radio", { name: "SQAD Teams: Active on this tab" }))
+    .toBeChecked();
+  await expect.poll(() => page.evaluate(() => (
+    (window as Window & { __terminaldbMockAccountCommands?: string[] })
+      .__terminaldbMockAccountCommands ?? []
+  ))).toEqual(["switch:tab_tests:account_team"]);
+  await expect(rows.nth(0)).toContainText("Personal");
+  await expect(rows.nth(1)).toContainText("SQAD Teams");
+});
+
 test("keeps the project directory and active Claude model persistently visible", async ({ page }) => {
   const context = page.locator(".terminal-window-context");
   await expect(context).toContainText("~/dev/meridian");
@@ -760,7 +800,7 @@ test("blocks account switching while the selected tab is busy", async ({ page })
     await page.getByRole("button", { name: "Back to sessions" }).click();
     await page.getByRole("button", { name: "Accounts" }).click();
   }
-  await expect(page.getByRole("button", { name: "Tab is busy" })).toBeDisabled();
+  await expect(page.getByRole("radio", { name: /Tab is busy$/u })).toBeDisabled();
 });
 
 test("makes ended controller actions explicit and inert", async ({ page }) => {
