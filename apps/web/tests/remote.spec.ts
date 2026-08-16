@@ -140,7 +140,7 @@ test("opens directly into a stable mirrored terminal", async ({ page }) => {
 });
 
 test("shows a stable subscription list selected independently for each terminal tab", async ({ page }) => {
-  await page.getByRole("button", { name: "Accounts", exact: true }).click();
+  await page.getByRole("button", { name: "Account", exact: true }).click();
   const picker = page.getByRole("radiogroup", {
     name: "Claude subscription for this terminal tab",
   });
@@ -160,9 +160,10 @@ test("shows a stable subscription list selected independently for each terminal 
     }));
   expect(firstLayout[0]?.height).toBe(firstLayout[1]?.height);
 
-  await page.getByRole("button", { name: "Close panel" }).click();
+  await page.getByRole("button", { name: "Home", exact: true }).click();
+  await page.getByRole("button", { name: /auth test failure/u }).click();
   await page.getByRole("tab", { name: /^auth test failure /u }).click();
-  await page.getByRole("button", { name: "Accounts", exact: true }).click();
+  await page.getByRole("button", { name: "Account", exact: true }).click();
   await expect(page.getByRole("radio", { name: "Personal: Active on this tab" }))
     .toBeChecked();
   await expect(rows.nth(0)).toContainText("Personal");
@@ -838,32 +839,30 @@ test("waits for a matching Claude grid so frames and bottom options stay intact"
   ))).toContain("high · /effort");
 });
 
-test("account and connection controls are sheets over the live terminal", async ({ page }) => {
-  const before = await terminalGeometry(page);
-  const accountButton = page.getByRole("button", { name: "Accounts", exact: true });
+test("account management is a focused page while connection controls stay in the terminal", async ({ page }) => {
+  const accountButton = page.getByRole("button", { name: "Account", exact: true });
   if (await accountButton.isVisible()) {
     await accountButton.click();
   } else {
     await page.getByRole("button", { name: "Back to devices and sessions" }).click();
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Account" }).click();
   }
-  await expect(page.getByRole("heading", { name: "Accounts", exact: true })).toBeVisible();
-  await expect(page.locator(".terminal-stage")).toBeVisible();
-  expect((await terminalGeometry(page)).stage).toEqual(before.stage);
-  await page.getByRole("button", { name: "Close panel" }).click();
-  expect((await terminalGeometry(page)).stage).toEqual(before.stage);
+  await expect(page.getByRole("heading", { name: "Account & subscriptions", exact: true })).toBeVisible();
+  await expect(page.locator(".terminal-stage")).toHaveCount(0);
 
+  await page.getByRole("button", { name: "Home", exact: true }).click();
+  await page.getByRole("button", { name: /meridian/u }).last().click();
   await page.getByRole("button", { name: "Remote controls" }).click();
   await expect(page.getByRole("heading", { name: "Trusted controllers" })).toBeVisible();
   await expect(page.locator(".terminal-stage")).toBeVisible();
 });
 
 test("blocks account switching while the selected tab is busy", async ({ page }) => {
-  const accountButton = page.getByRole("button", { name: "Accounts", exact: true });
+  const accountButton = page.getByRole("button", { name: "Account", exact: true });
   if (await accountButton.isVisible()) await accountButton.click();
   else {
     await page.getByRole("button", { name: "Back to devices and sessions" }).click();
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Account" }).click();
   }
   await expect(page.getByRole("radio", { name: /Tab is busy$/u })).toBeDisabled();
 });
@@ -1000,8 +999,8 @@ test("requires a Mac approval for account creation and keeps sign-in available",
   await page.evaluate(() => sessionStorage.removeItem("terminaldb.account.bootstrap.v1"));
   await page.reload();
   await expect(page.locator(".terminal-stage")).toBeVisible();
-  await page.getByRole("button", { name: "Accounts", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Accounts", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Account", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Account & subscriptions", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Sign in to TerminalDB" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Create account with this Mac" })).toBeVisible();
   await expect(page.getByText("Claude accounts & usage")).toBeVisible();
@@ -1039,14 +1038,14 @@ test("explains the required Mac update instead of waiting on an unsupported acco
 
   await page.reload();
   await expect(page.locator(".terminal-stage")).toBeVisible();
-  await page.getByRole("button", { name: "Accounts", exact: true }).click();
+  await page.getByRole("button", { name: "Account", exact: true }).click();
 
   await expect(page.getByRole("alert")).toContainText("Update TerminalDB on this Mac");
   await expect(page.getByRole("alert")).toContainText("v0.3.0 or newer");
   await expect(page.getByRole("button", { name: "Create account with this Mac" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Waiting for Mac…" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeEnabled();
-  await expect(page.locator(".terminal-stage")).toBeVisible();
+  await expect(page.locator(".terminal-stage")).toHaveCount(0);
 });
 
 test("discovers tenant sessions without exposing legacy enrollment codes", async ({ page }) => {
@@ -1123,7 +1122,6 @@ test("discovers tenant sessions without exposing legacy enrollment codes", async
   await expect(page.getByRole("heading", { name: "Devices & sessions" })).toBeVisible();
   await expect(page.getByText("Studio Mac")).toBeVisible();
   await expect(page.getByRole("button", { name: "Copy code" })).toHaveCount(0);
-  await page.getByRole("button", { name: /Studio Mac.*Open/u }).click();
   await expect.poll(() => controllerRegistration).toBeTruthy();
   expect(controllerRegistration?.browserId).toBeTruthy();
   expect(controllerRegistration?.signingPublicKey).toMatchObject({
@@ -1307,8 +1305,9 @@ test("logs out after explicitly confirmed account deletion", async ({ page }) =>
   });
 
   await page.goto("/?unpaired=1");
+  await page.getByRole("button", { name: "Account", exact: true }).click();
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
-  await page.getByRole("button", { name: "Delete account", exact: true }).click();
+  await page.getByRole("button", { name: "Delete TerminalDB account", exact: true }).click();
   const finalDelete = page.getByRole("button", { name: "Permanently delete account" });
   await expect(finalDelete).toBeDisabled();
   await page.getByLabel("Type DELETE to confirm").fill("DELETE");

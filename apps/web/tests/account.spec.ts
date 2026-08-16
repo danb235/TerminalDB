@@ -71,14 +71,13 @@ test("keeps enrolled Macs visible with clear online and offline states", async (
     },
   ]);
 
-  const online = page.getByRole("button", { name: /MacBook Pro/u });
+  const online = page.locator("article.home-device").filter({ hasText: "MacBook Pro" });
   await expect(online).toContainText("Online");
-  await expect(online).toContainText("Open");
-  const offline = page.locator("article").filter({ hasText: "Office iMac" });
+  await expect(online.getByRole("button", { name: "View sessions" })).toBeVisible();
+  const offline = page.locator("article.home-device").filter({ hasText: "Office iMac" });
   await expect(offline).toContainText("Offline");
   await expect(offline).toContainText("Last seen 1h ago");
-  await expect(page.getByText(/Terminal names and counts remain end-to-end encrypted/u))
-    .toBeVisible();
+  await expect(page.getByRole("button", { name: "Account", exact: true })).toBeVisible();
 });
 
 test("explains the Mac-approved account workflow from the marketing site", async ({ page }) => {
@@ -179,9 +178,10 @@ test("allows account login when every enrolled Mac is offline", async ({ page })
 
   await expect(page.getByText("You’re signed in. No Macs are online.")).toBeVisible();
   await expect(page.getByText(/Open TerminalDB on an enrolled Mac/u)).toBeVisible();
+  await page.getByRole("button", { name: "Account", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Account & security" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Log out" })).toBeEnabled();
   await expect(page.getByRole("button", { name: "Change password" })).toBeEnabled();
-  await expect(page.getByText(/choose Connect Account/u)).toBeVisible();
 });
 
 test("prepares account creators for mandatory authenticator-app setup", async ({ page }) => {
@@ -610,6 +610,7 @@ test("changes the password through Cognito after recent account authentication",
   });
 
   await page.goto("/?unpaired");
+  await page.getByRole("button", { name: "Account", exact: true }).click();
   await page.getByRole("button", { name: "Change password" }).click();
   await expect(page.getByRole("heading", { name: "Change your password" })).toBeVisible();
   const currentPassword = ["Current", "Strong", "42!"].join("-");

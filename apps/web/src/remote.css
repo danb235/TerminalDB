@@ -267,6 +267,10 @@ p {
   color: var(--tdb-amber);
 }
 
+.dashboard-offline-notice {
+  margin: -10px 0 24px;
+}
+
 @keyframes device-refresh-pulse {
   50% { opacity: 0.3; }
 }
@@ -759,10 +763,24 @@ body:has(.session-loading-view) #root {
   text-transform: uppercase;
 }
 
-.session-main > code {
-  display: block;
-  overflow: hidden;
+.session-location {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
   margin: 8px 0 10px;
+}
+
+.session-location > span {
+  flex: 0 0 auto;
+  color: var(--tdb-quiet);
+  font: 700 8px/1.2 var(--tdb-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.session-location > code {
+  overflow: hidden;
   color: var(--tdb-muted);
   font: 10px/1.2 var(--tdb-mono);
   text-overflow: ellipsis;
@@ -2235,6 +2253,19 @@ body:has(.session-loading-view) #root {
   gap: 8px;
 }
 
+.account-actions-single {
+  grid-template-columns: 1fr;
+}
+
+.account-landing-success {
+  width: min(100%, 720px);
+  margin: 28px auto -12px;
+}
+
+.account-management-view {
+  width: min(100%, 760px);
+}
+
 .enrollment-code {
   display: grid;
   gap: 8px;
@@ -2473,6 +2504,10 @@ body:has(.session-loading-view) #root {
 
   .dashboard-view {
     width: 100%;
+  }
+
+  .accounts-view {
+    width: min(100%, 920px);
   }
 
   .dashboard-view .instance-list {
