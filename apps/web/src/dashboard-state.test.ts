@@ -4,6 +4,8 @@ import {
   dashboardDeviceRows,
   dashboardSessionPresentation,
   shouldOpenInitialTerminal,
+  terminalSessionLabel,
+  terminalWindowLabel,
 } from "./App";
 import { mockInventory } from "./mock-data";
 
@@ -76,5 +78,28 @@ describe("remote session dashboard presentation", () => {
       current: true,
       instances: mockInventory.instances,
     });
+  });
+
+  it("does not mistake an offline device with no session id for the current Mac", () => {
+    const rows = dashboardDeviceRows({ instances: [], accounts: [] }, "offline", [{
+      deviceId: "offline-mac",
+      deviceName: "Office iMac",
+      registeredAt: 1,
+      lastSeenAt: 2,
+      state: "offline",
+    }]);
+    expect(rows[0]).toMatchObject({ current: false, state: "offline", instances: [] });
+  });
+
+  it("replaces ambiguous path-only tab titles with a clear terminal label", () => {
+    const rootTab = { ...mockInventory.instances[0]!.tabs[0]!, title: "/", directory: "/", foregroundProcess: "zsh" };
+    expect(terminalSessionLabel(rootTab, 1)).toBe("Terminal 1");
+    expect(terminalSessionLabel({ ...rootTab, foregroundProcess: "claude" }, 1)).toBe("claude");
+    expect(terminalSessionLabel({ ...rootTab, title: "reactor" }, 1)).toBe("reactor");
+  });
+
+  it("hides process identifiers from generated TerminalDB window names", () => {
+    expect(terminalWindowLabel("TerminalDB · 74698", 1)).toBe("TerminalDB window 1");
+    expect(terminalWindowLabel("TerminalDB · Main", 1)).toBe("TerminalDB · Main");
   });
 });
