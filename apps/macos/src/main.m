@@ -16,7 +16,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <poll.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,36 +41,6 @@ static int TerminalDBExitStatus = 0;
 static NSUInteger const TerminalDBMaximumScrollbackCharacters = 2000000;
 static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
 
-static BOOL TerminalDBWriteAll(int descriptor,
-                               const void *bytes,
-                               size_t length) {
-    const uint8_t *cursor = bytes;
-    size_t remaining = length;
-    while (remaining > 0) {
-        ssize_t written = write(descriptor, cursor, remaining);
-        if (written > 0) {
-            cursor += written;
-            remaining -= (size_t)written;
-            continue;
-        }
-        if (written < 0 && errno == EINTR) continue;
-        if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            struct pollfd writable = {
-                .fd = descriptor,
-                .events = POLLOUT,
-                .revents = 0,
-            };
-            int ready;
-            do {
-                ready = poll(&writable, 1, 100);
-            } while (ready < 0 && errno == EINTR);
-            if (ready > 0 && (writable.revents & POLLOUT) != 0) continue;
-        }
-        return NO;
-    }
-    return YES;
-}
-
 @interface TerminalView : NSTextView
 @property(nonatomic) int pty;
 @property(nonatomic) BOOL applicationCursorKeys;
@@ -83,9 +52,109 @@ static BOOL TerminalDBWriteAll(int descriptor,
 @property(nonatomic, copy, nullable) void (^userDidSendInput)(void);
 @property(nonatomic, copy, nullable) void (^cycleRegionsHandler)(void);
 - (NSRect)terminalCursorRect;
+- (BOOL)enqueueInputData:(NSData *)data;
+@end
+
+@interface TerminalView ()
+@property(nonatomic, strong) NSMutableData *pendingInput;
+@property(nonatomic) NSUInteger pendingInputOffset;
+@property(nonatomic) dispatch_source_t writeSource;
+@property(nonatomic) BOOL writeSourceSuspended;
 @end
 
 @implementation TerminalView
+
+- (void)setPty:(int)pty {
+    if (_pty == pty) return;
+    if (self.writeSource != nil) {
+        if (self.writeSourceSuspended) {
+            dispatch_resume(self.writeSource);
+            self.writeSourceSuspended = NO;
+        }
+        dispatch_source_cancel(self.writeSource);
+        self.writeSource = nil;
+    }
+    [self.pendingInput setLength:0];
+    self.pendingInputOffset = 0;
+    _pty = pty;
+    if (pty < 0) return;
+
+    if (self.pendingInput == nil) self.pendingInput = [NSMutableData data];
+    self.writeSource = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_WRITE, (uintptr_t)pty, 0,
+        dispatch_get_main_queue());
+    self.writeSourceSuspended = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_source_set_event_handler(self.writeSource, ^{
+        [weakSelf drainPendingInput];
+    });
+}
+
+- (void)compactPendingInput {
+    if (self.pendingInputOffset == 0) return;
+    if (self.pendingInputOffset >= self.pendingInput.length) {
+        [self.pendingInput setLength:0];
+        self.pendingInputOffset = 0;
+        return;
+    }
+    if (self.pendingInputOffset < 65536) return;
+    [self.pendingInput replaceBytesInRange:
+        NSMakeRange(0, self.pendingInputOffset) withBytes:NULL length:0];
+    self.pendingInputOffset = 0;
+}
+
+- (void)drainPendingInput {
+    if (self.pty < 0 || self.pendingInputOffset >= self.pendingInput.length) {
+        [self compactPendingInput];
+        if (self.writeSource != nil && !self.writeSourceSuspended) {
+            dispatch_suspend(self.writeSource);
+            self.writeSourceSuspended = YES;
+        }
+        return;
+    }
+
+    const uint8_t *bytes = self.pendingInput.bytes;
+    while (self.pendingInputOffset < self.pendingInput.length) {
+        size_t remaining = self.pendingInput.length - self.pendingInputOffset;
+        ssize_t written = write(self.pty,
+                                bytes + self.pendingInputOffset,
+                                remaining);
+        if (written > 0) {
+            self.pendingInputOffset += (NSUInteger)written;
+            continue;
+        }
+        if (written < 0 && errno == EINTR) continue;
+        if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+
+        // The PTY has closed. Discard bytes that can no longer have a
+        // destination instead of accidentally delivering them to a reused fd.
+        [self.pendingInput setLength:0];
+        self.pendingInputOffset = 0;
+        break;
+    }
+    [self compactPendingInput];
+    BOOL hasPending = self.pendingInputOffset < self.pendingInput.length;
+    if (hasPending && self.writeSourceSuspended) {
+        dispatch_resume(self.writeSource);
+        self.writeSourceSuspended = NO;
+    } else if (!hasPending && self.writeSource != nil &&
+               !self.writeSourceSuspended) {
+        dispatch_suspend(self.writeSource);
+        self.writeSourceSuspended = YES;
+    }
+}
+
+- (BOOL)enqueueInputData:(NSData *)data {
+    NSAssert(NSThread.isMainThread,
+             @"Terminal input must be serialized on the main thread");
+    if (self.pty < 0) return NO;
+    if (data.length == 0) return YES;
+    if (self.pendingInput == nil) self.pendingInput = [NSMutableData data];
+    [self compactPendingInput];
+    [self.pendingInput appendData:data];
+    [self drainPendingInput];
+    return YES;
+}
 
 - (void)setTerminalCursorIndex:(NSUInteger)terminalCursorIndex {
     if (_terminalCursorIndex == terminalCursorIndex) return;
@@ -207,16 +276,8 @@ static BOOL TerminalDBWriteAll(int descriptor,
 }
 
 - (void)sendBytes:(const char *)bytes length:(size_t)length {
-    if (self.pty < 0) return;
-    while (length > 0) {
-        ssize_t count = write(self.pty, bytes, length);
-        if (count > 0) {
-            bytes += count;
-            length -= (size_t)count;
-        } else if (errno != EINTR) {
-            break;
-        }
-    }
+    if (bytes == NULL || length == 0) return;
+    [self enqueueInputData:[NSData dataWithBytes:bytes length:length]];
 }
 
 - (void)sendUserBytes:(const char *)bytes length:(size_t)length {
@@ -232,9 +293,12 @@ static BOOL TerminalDBWriteAll(int descriptor,
                                              withString:@"\n"];
     if (self.bracketedPaste) {
         NSData *data = [paste dataUsingEncoding:NSUTF8StringEncoding];
-        [self sendUserBytes:"\033[200~" length:6];
-        [self sendBytes:data.bytes length:data.length];
-        [self sendBytes:"\033[201~" length:6];
+        NSMutableData *framed = [NSMutableData dataWithCapacity:data.length + 12];
+        [framed appendBytes:"\033[200~" length:6];
+        [framed appendData:data];
+        [framed appendBytes:"\033[201~" length:6];
+        if (self.userDidSendInput != nil) self.userDidSendInput();
+        [self enqueueInputData:framed];
         return;
     }
 
@@ -628,6 +692,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
 - (void)updateUpdaterMenuItem;
 - (BOOL)claudeIsForeground;
 - (void)refreshPersistentTerminalContext;
+- (void)recoverTerminalModesAtShellPrompt;
 - (BOOL)applyRemoteTerminalColumns:(NSUInteger)columns
                               rows:(NSUInteger)rows;
 @end
@@ -2396,7 +2461,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
     }
     NSData *data = [input dataUsingEncoding:NSUTF8StringEncoding];
     if (data.length == 0) return YES;
-    if (!TerminalDBWriteAll(controller.pty, data.bytes, data.length)) {
+    if (![controller.terminalView enqueueInputData:data]) {
         if (error != NULL) {
             *error = [NSError errorWithDomain:@"com.terminaldb.remote"
                                          code:500
@@ -5615,6 +5680,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
         if ([value isEqualToString:@"C"]) {
             [self beginLedgerCommand];
         } else if ([value isEqualToString:@"D"]) {
+            [self recoverTerminalModesAtShellPrompt];
             [self finishLedgerCommand];
         }
         return;
@@ -5624,6 +5690,22 @@ static BOOL TerminalDBWriteAll(int descriptor,
     self.reportedWindowTitle =
         [self sanitizedTabTitle:value maximumLength:80];
     if (self.window != nil) [self updateWindowTitle];
+}
+
+- (void)recoverTerminalModesAtShellPrompt {
+    // A full-screen program can terminate after emitting only part of its
+    // teardown sequence. The shell's precmd marker is authoritative: at this
+    // point no alternate-screen, synchronized-output, paste, cursor-key, or
+    // hidden-cursor mode should survive into the next prompt.
+    if (self.alternateScreenActive) [self leaveAlternateScreen];
+    self.synchronizedOutput = NO;
+    self.terminalView.applicationCursorKeys = NO;
+    self.terminalView.bracketedPaste = NO;
+    self.terminalView.terminalCursorVisible = YES;
+    if (self.textStorageEditing) {
+        [self.terminalView.textStorage endEditing];
+        self.textStorageEditing = NO;
+    }
 }
 
 - (NSString *)currentAssistantDirectory {
@@ -7849,6 +7931,7 @@ static BOOL TerminalDBWriteAll(int descriptor,
         dispatch_source_cancel(self.readSource);
         self.readSource = nil;
     }
+    self.terminalView.pty = -1;
     if (self.pty >= 0) {
         close(self.pty);
         self.pty = -1;
@@ -7941,6 +8024,32 @@ static BOOL TerminalDBWriteAll(int descriptor,
     feed(redraw, redrawUpdate, sizeof(redrawUpdate) - 1);
     expect(@"cursor-up line redraw", redraw.terminalView.string,
            @"first\nnew   \nthird");
+
+    AppDelegate *shellRecovery = newTerminal();
+    const char recoveryPrimary[] = "shell prompt";
+    const char recoveryModes[] =
+        "\033[?1049hfull screen\033[?1h\033[?2004h"
+        "\033[?25l\033[?2026hbuffered";
+    const char recoveryPrompt[] = "\033]633;D\a";
+    feed(shellRecovery, recoveryPrimary, sizeof(recoveryPrimary) - 1);
+    feed(shellRecovery, recoveryModes, sizeof(recoveryModes) - 1);
+    BOOL recoveryWasNecessary =
+        shellRecovery.alternateScreenActive &&
+        shellRecovery.synchronizedOutput &&
+        shellRecovery.textStorageEditing &&
+        shellRecovery.terminalView.applicationCursorKeys &&
+        shellRecovery.terminalView.bracketedPaste &&
+        !shellRecovery.terminalView.terminalCursorVisible;
+    feed(shellRecovery, recoveryPrompt, sizeof(recoveryPrompt) - 1);
+    if (!recoveryWasNecessary || shellRecovery.alternateScreenActive ||
+        shellRecovery.synchronizedOutput || shellRecovery.textStorageEditing ||
+        shellRecovery.terminalView.applicationCursorKeys ||
+        shellRecovery.terminalView.bracketedPaste ||
+        !shellRecovery.terminalView.terminalCursorVisible ||
+        ![shellRecovery.terminalView.string isEqualToString:@"shell prompt"]) {
+        fprintf(stderr, "FAIL shell prompt recovers leaked full-screen modes\n");
+        failures++;
+    }
 
     AppDelegate *absolute = newTerminal();
     const char absoluteBytes[] = "\033[2J\033[Hleft\033[5Cright";
@@ -8644,10 +8753,81 @@ static BOOL TerminalDBWriteAll(int descriptor,
             fprintf(stderr, "FAIL bracketed paste framing\n");
             failures++;
         }
+        input.pty = -1;
         close(sockets[0]);
         close(sockets[1]);
     } else {
         fprintf(stderr, "FAIL input socket setup\n");
+        failures++;
+    }
+
+    int backpressureSockets[2] = {-1, -1};
+    BOOL losslessPaste =
+        socketpair(AF_UNIX, SOCK_STREAM, 0, backpressureSockets) == 0;
+    if (losslessPaste) {
+        int sendBuffer = 1024;
+        setsockopt(backpressureSockets[0], SOL_SOCKET, SO_SNDBUF,
+                   &sendBuffer, sizeof(sendBuffer));
+        fcntl(backpressureSockets[0], F_SETFL,
+              fcntl(backpressureSockets[0], F_GETFL) | O_NONBLOCK);
+        TerminalView *backpressured = [[TerminalView alloc]
+            initWithFrame:NSMakeRect(0, 0, 100, 100)];
+        backpressured.pty = backpressureSockets[0];
+        backpressured.inputEnabled = YES;
+        backpressured.bracketedPaste = YES;
+        NSMutableString *largePaste = [NSMutableString string];
+        for (NSUInteger index = 0; index < 12000; index++) {
+            [largePaste appendString:@"paved-road-🙂-"];
+        }
+        [largePaste appendString:@"TAIL_SENTINEL"];
+        NSData *pasteData = [largePaste dataUsingEncoding:NSUTF8StringEncoding];
+        NSMutableData *expected = [NSMutableData dataWithCapacity:pasteData.length + 12];
+        [expected appendBytes:"\033[200~" length:6];
+        [expected appendData:pasteData];
+        [expected appendBytes:"\033[201~" length:6];
+        NSMutableData *receivedPaste = [NSMutableData data];
+        dispatch_semaphore_t pasteRead = dispatch_semaphore_create(0);
+        int pasteReadDescriptor = backpressureSockets[1];
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            uint8_t buffer[4096];
+            while (receivedPaste.length < expected.length) {
+                ssize_t count = read(pasteReadDescriptor, buffer, sizeof(buffer));
+                if (count > 0) {
+                    [receivedPaste appendBytes:buffer length:(NSUInteger)count];
+                } else if (count < 0 && errno == EINTR) {
+                    continue;
+                } else {
+                    break;
+                }
+            }
+            dispatch_semaphore_signal(pasteRead);
+        });
+        [backpressured pasteString:largePaste];
+        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:4.0];
+        BOOL readFinished = NO;
+        while (!readFinished && deadline.timeIntervalSinceNow > 0) {
+            readFinished = dispatch_semaphore_wait(
+                pasteRead, DISPATCH_TIME_NOW) == 0;
+            if (!readFinished) {
+                [NSRunLoop.currentRunLoop
+                    runMode:NSDefaultRunLoopMode
+                    beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+            }
+        }
+        backpressured.pty = -1;
+        shutdown(backpressureSockets[0], SHUT_RDWR);
+        close(backpressureSockets[0]);
+        if (!readFinished) {
+            shutdown(backpressureSockets[1], SHUT_RDWR);
+            dispatch_semaphore_wait(
+                pasteRead,
+                dispatch_time(DISPATCH_TIME_NOW, (int64_t)NSEC_PER_SEC));
+        }
+        close(backpressureSockets[1]);
+        losslessPaste = readFinished && [receivedPaste isEqualToData:expected];
+    }
+    if (!losslessPaste) {
+        fprintf(stderr, "FAIL lossless bracketed paste under PTY backpressure\n");
         failures++;
     }
 
@@ -8873,28 +9053,6 @@ static BOOL TerminalDBWriteAll(int descriptor,
                 "FAIL bounded remote terminal geometry columns=%lu rows=%lu\n",
                 (unsigned long)remoteGeometry.terminalColumns,
                 (unsigned long)remoteGeometry.terminalRows);
-        failures++;
-    }
-    int inputPair[2] = {-1, -1};
-    const char orderedInput[] = "pwd\r";
-    char receivedInput[sizeof(orderedInput)] = {0};
-    BOOL completeRemoteInputWrite =
-        socketpair(AF_UNIX, SOCK_STREAM, 0, inputPair) == 0;
-    if (completeRemoteInputWrite) {
-        fcntl(inputPair[0], F_SETFL,
-              fcntl(inputPair[0], F_GETFL) | O_NONBLOCK);
-        completeRemoteInputWrite =
-            TerminalDBWriteAll(inputPair[0], orderedInput,
-                               sizeof(orderedInput) - 1) &&
-            read(inputPair[1], receivedInput, sizeof(receivedInput)) ==
-                (ssize_t)(sizeof(orderedInput) - 1) &&
-            memcmp(receivedInput, orderedInput,
-                   sizeof(orderedInput) - 1) == 0;
-        close(inputPair[0]);
-        close(inputPair[1]);
-    }
-    if (!completeRemoteInputWrite) {
-        fprintf(stderr, "FAIL complete remote PTY input write\n");
         failures++;
     }
     if (![TerminalRemoteBridge runUTF8OutputDecodingSelfTests]) {

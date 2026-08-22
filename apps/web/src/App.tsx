@@ -46,6 +46,7 @@ import { accountUsername } from "./account-status";
 import { accounts as mockAccounts, mockInventory, terminalFixture } from "./mock-data";
 import { AcknowledgedInputQueue } from "./ordered-input";
 import type { SequencedInputBatch } from "./ordered-input";
+import { terminalInputChunks } from "./terminal-input";
 import {
   controllerDeviceName,
   cancelAccountBootstrap,
@@ -3123,13 +3124,16 @@ export function App() {
     };
     const supportsSequencedInput =
       inventory.capabilities?.includes("sequenced-input-v1") === true;
-    void inputDeliveryQueueRef.current?.enqueue(
-      tabId,
-      input,
-      deliver,
-      supportsSequencedInput,
-    ).then((result) => {
-      if (result === "delivered") {
+    const deliveries = terminalInputChunks(input).map((chunk) =>
+      inputDeliveryQueueRef.current?.enqueue(
+        tabId,
+        chunk,
+        deliver,
+        supportsSequencedInput,
+      ) ?? Promise.resolve("discarded" as const)
+    );
+    void Promise.all(deliveries).then((results) => {
+      if (results.every((result) => result === "delivered")) {
         terminalSurfacesRef.current.get(tabId)?.confirmOptimisticInput(
           /[\r\n]/u.test(input),
         );

@@ -318,6 +318,33 @@ test("keeps slowly typed characters ordered when Return outruns relay acknowledg
   expect(batches).toEqual(["p", "w", "d\r"]);
 });
 
+test("delivers a long clipboard paste through bounded ordered batches", async ({ page }) => {
+  const terminalInput = page.locator(".terminal-pane.active .xterm-helper-textarea");
+  const pasted = `BEGIN_${"paved-road-🙂-".repeat(2_000)}_TAIL_SENTINEL`;
+  await terminalInput.focus();
+  await terminalInput.evaluate((element, text) => {
+    const clipboard = new DataTransfer();
+    clipboard.setData("text/plain", text);
+    element.dispatchEvent(new ClipboardEvent("paste", {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: clipboard,
+    }));
+  }, pasted);
+
+  await expect.poll(() => page.evaluate(() => (
+    (window as Window & { __terminaldbMockInputs?: string[] })
+      .__terminaldbMockInputs?.join("") ?? ""
+  ))).toBe(pasted);
+  const batches = await page.evaluate(() => (
+    (window as Window & { __terminaldbMockInputs?: string[] })
+      .__terminaldbMockInputs ?? []
+  ));
+  expect(batches.length).toBeGreaterThan(1);
+  expect(batches.every((batch) => new TextEncoder().encode(batch).byteLength <= 8_192))
+    .toBe(true);
+});
+
 test("never lets optimistic Backspace erase the shell prompt", async ({ page }) => {
   await page.evaluate(() => {
     (window as Window & { __terminaldbMockEchoDelayMs?: number })
