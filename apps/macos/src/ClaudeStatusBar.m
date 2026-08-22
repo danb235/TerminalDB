@@ -97,6 +97,8 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 @property(nonatomic, strong) NSTextField *modelLabel;
 @property(nonatomic, strong) NSTextField *environmentLabel;
 @property(nonatomic, strong) NSTextField *usageLabel;
+@property(nonatomic, strong) NSTextField *pasteReceiptLabel;
+@property(nonatomic) NSUInteger pasteReceiptGeneration;
 @property(nonatomic, strong) NSTimer *timer;
 @property(nonatomic, strong, nullable) NSDate *lastAccountRefresh;
 @property(nonatomic, strong, nullable) NSDate *lastUsageRefreshAttempt;
@@ -210,6 +212,17 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     _usageLabel.maximumNumberOfLines = 1;
     _usageLabel.alignment = NSTextAlignmentRight;
     [self addSubview:_usageLabel];
+
+    _pasteReceiptLabel = [NSTextField labelWithString:@""];
+    _pasteReceiptLabel.font = _profileLabel.font;
+    _pasteReceiptLabel.textColor = theme.ansiColors[2];
+    _pasteReceiptLabel.alignment = NSTextAlignmentCenter;
+    _pasteReceiptLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    _pasteReceiptLabel.maximumNumberOfLines = 1;
+    _pasteReceiptLabel.selectable = NO;
+    _pasteReceiptLabel.hidden = YES;
+    [_pasteReceiptLabel setAccessibilityLabel:@"Paste receipt"];
+    [self addSubview:_pasteReceiptLabel];
     self.toolTip = @"Open Claude accounts and usage";
     [self setAccessibilityElement:YES];
     [self setAccessibilityRole:NSAccessibilityButtonRole];
@@ -1032,6 +1045,52 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     self.usageLabel.frame =
         NSMakeRect(NSWidth(self.bounds) - inset - usageWidth, 4,
                    usageWidth, NSHeight(self.bounds) - 8);
+    CGFloat receiptWidth = MIN(340, MAX(0, availableWidth - 280));
+    self.pasteReceiptLabel.frame =
+        NSMakeRect(floor((NSWidth(self.bounds) - receiptWidth) / 2.0),
+                   4, receiptWidth, NSHeight(self.bounds) - 8);
+}
+
+- (void)showPasteReceiptWithByteCount:(NSUInteger)byteCount
+                            lineCount:(NSUInteger)lineCount {
+    if (byteCount == 0) return;
+    NSNumberFormatter *formatter = [[NSNumberFormatter alloc] init];
+    formatter.numberStyle = NSNumberFormatterDecimalStyle;
+    NSString *bytes = [formatter stringFromNumber:@(byteCount)]
+        ?: [NSString stringWithFormat:@"%lu", (unsigned long)byteCount];
+    NSString *lines = [formatter stringFromNumber:@(lineCount)]
+        ?: [NSString stringWithFormat:@"%lu", (unsigned long)lineCount];
+    self.pasteReceiptLabel.stringValue = [NSString stringWithFormat:
+        @"✓ Pasted %@ bytes · %@ %@", bytes, lines,
+        lineCount == 1 ? @"line" : @"lines"];
+    self.pasteReceiptLabel.toolTip = [NSString stringWithFormat:
+        @"TerminalDB sent all %@ bytes. Full-screen apps may display only "
+         "part of a long prompt in their transcript.", bytes];
+    self.pasteReceiptLabel.hidden = NO;
+    [self setNeedsLayout:YES];
+    [self.pasteReceiptLabel setAccessibilityValue:
+        self.pasteReceiptLabel.stringValue];
+    NSAccessibilityPostNotificationWithUserInfo(
+        self.pasteReceiptLabel,
+        NSAccessibilityAnnouncementRequestedNotification,
+        @{
+            NSAccessibilityAnnouncementKey :
+                self.pasteReceiptLabel.stringValue,
+            NSAccessibilityPriorityKey : @(NSAccessibilityPriorityMedium),
+        });
+
+    NSUInteger generation = ++self.pasteReceiptGeneration;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+            ClaudeStatusBar *strongSelf = weakSelf;
+            if (strongSelf == nil ||
+                strongSelf.pasteReceiptGeneration != generation) {
+                return;
+            }
+            strongSelf.pasteReceiptLabel.hidden = YES;
+        });
 }
 
 - (void)startMonitoring {

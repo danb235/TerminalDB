@@ -50,6 +50,8 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
 @property(nonatomic) BOOL terminalCursorVisible;
 @property(nonatomic, strong) NSColor *terminalCursorColor;
 @property(nonatomic, copy, nullable) void (^userDidSendInput)(void);
+@property(nonatomic, copy, nullable) void (^pasteDidSend)(NSUInteger byteCount,
+                                                         NSUInteger lineCount);
 @property(nonatomic, copy, nullable) void (^cycleRegionsHandler)(void);
 - (NSRect)terminalCursorRect;
 - (BOOL)enqueueInputData:(NSData *)data;
@@ -298,14 +300,28 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
         [framed appendData:data];
         [framed appendBytes:"\033[201~" length:6];
         if (self.userDidSendInput != nil) self.userDidSendInput();
-        [self enqueueInputData:framed];
+        if ([self enqueueInputData:framed] && self.pasteDidSend != nil) {
+            NSUInteger lineCount = 1;
+            for (NSUInteger index = 0; index < paste.length; index++) {
+                if ([paste characterAtIndex:index] == '\n') lineCount++;
+            }
+            self.pasteDidSend(data.length, lineCount);
+        }
         return;
     }
 
     paste = [paste stringByReplacingOccurrencesOfString:@"\n"
                                              withString:@"\r"];
     NSData *data = [paste dataUsingEncoding:NSUTF8StringEncoding];
-    [self sendUserBytes:data.bytes length:data.length];
+    if (self.userDidSendInput != nil) self.userDidSendInput();
+    BOOL sent = [self enqueueInputData:data];
+    if (sent && self.pasteDidSend != nil) {
+        NSUInteger lineCount = 1;
+        for (NSUInteger index = 0; index < paste.length; index++) {
+            if ([paste characterAtIndex:index] == '\r') lineCount++;
+        }
+        self.pasteDidSend(data.length, lineCount);
+    }
 }
 
 - (void)paste:(id)sender {
@@ -4466,6 +4482,16 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
         if (strongSelf == nil) return;
         strongSelf.followsOutput = YES;
         [strongSelf scrollTerminalToBottom];
+    };
+    self.terminalView.pasteDidSend = ^(NSUInteger byteCount,
+                                       NSUInteger lineCount) {
+        AppDelegate *strongSelf = weakSelf;
+        if (strongSelf == nil) return;
+        if (byteCount >= 1024 || lineCount > 3) {
+            [strongSelf.claudeStatusBar
+                showPasteReceiptWithByteCount:byteCount
+                                     lineCount:lineCount];
+        }
     };
     self.terminalView.cycleRegionsHandler = ^{
         AppDelegate *strongSelf = weakSelf;
@@ -8741,6 +8767,12 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
             failures++;
         }
 
+        __block NSUInteger receiptBytes = 0;
+        __block NSUInteger receiptLines = 0;
+        input.pasteDidSend = ^(NSUInteger byteCount, NSUInteger lineCount) {
+            receiptBytes = byteCount;
+            receiptLines = lineCount;
+        };
         input.bracketedPaste = YES;
         [input pasteString:@"one\ntwo"];
         const char expectedBracketedPaste[] =
@@ -8751,6 +8783,13 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
             memcmp(bracketedPaste, expectedBracketedPaste,
                    sizeof(bracketedPaste)) != 0) {
             fprintf(stderr, "FAIL bracketed paste framing\n");
+            failures++;
+        }
+        if (receiptBytes != 7 || receiptLines != 2) {
+            fprintf(stderr,
+                    "FAIL paste receipt metadata bytes=%lu lines=%lu\n",
+                    (unsigned long)receiptBytes,
+                    (unsigned long)receiptLines);
             failures++;
         }
         input.pty = -1;
