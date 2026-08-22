@@ -471,7 +471,15 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
             return;
         case NSCarriageReturnCharacter:
         case NSNewlineCharacter:
-            [self sendUserBytes:"\r" length:1];
+            // Claude Code and other modern terminal UIs use Escape + Return
+            // for a deliberate line break. Preserve Shift here instead of
+            // collapsing it to the same carriage return that submits the
+            // prompt.
+            if ((modifiers & NSEventModifierFlagShift) != 0) {
+                [self sendUserBytes:"\033\r" length:2];
+            } else {
+                [self sendUserBytes:"\r" length:1];
+            }
             return;
         case NSBackTabCharacter:
             [self sendUserBytes:"\033[Z" length:3];
@@ -599,6 +607,8 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
 @property(nonatomic, copy, nullable) NSString *reportedWindowTitle;
 @property(nonatomic) NSUInteger terminalRows;
 @property(nonatomic) NSUInteger terminalColumns;
+@property(nonatomic) NSUInteger appliedPTYRows;
+@property(nonatomic) NSUInteger appliedPTYColumns;
 @property(nonatomic) BOOL remoteGeometryActive;
 @property(nonatomic) BOOL textStorageEditing;
 @property(nonatomic) BOOL synchronizedOutput;
@@ -7350,15 +7360,16 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
         [layoutManager ensureLayoutForTextContainer:
             self.terminalView.textContainer];
     }
-    NSUInteger end = self.terminalView.textStorage.length;
-    if (end > 0) {
-        [self.terminalView scrollRangeToVisible:NSMakeRange(end - 1, 1)];
-    }
-
     NSClipView *clipView = self.terminalScrollView.contentView;
     NSView *documentView = self.terminalScrollView.documentView;
     CGFloat bottom = MAX(NSMinY(documentView.bounds),
         NSMaxY(documentView.bounds) - NSHeight(clipView.bounds));
+    // scrollRangeToVisible: and a second explicit clip-view scroll choose
+    // subtly different line-fragment anchors while a full-screen program is
+    // replacing a frame. Claude refreshes those frames frequently, so the
+    // two passes made otherwise stationary text bump vertically. Keep one
+    // exact bottom anchor and do nothing when it is already in place.
+    if (fabs(NSMinY(clipView.bounds) - bottom) < 0.5) return;
     [clipView scrollToPoint:
         NSMakePoint(NSMinX(clipView.bounds), bottom)];
     [self.terminalScrollView reflectScrolledClipView:clipView];
@@ -7900,7 +7911,13 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
     if (self.remoteGeometryActive) return;
     struct winsize size = [self currentTerminalWindowSize];
     if (self.pty < 0) return;
-    ioctl(self.pty, TIOCSWINSZ, &size);
+    if (self.appliedPTYRows == size.ws_row &&
+        self.appliedPTYColumns == size.ws_col) {
+        return;
+    }
+    if (ioctl(self.pty, TIOCSWINSZ, &size) != 0) return;
+    self.appliedPTYRows = size.ws_row;
+    self.appliedPTYColumns = size.ws_col;
     pid_t foregroundProcessGroup = tcgetpgrp(self.pty);
     if (foregroundProcessGroup > 0) {
         kill(-foregroundProcessGroup, SIGWINCH);
@@ -7924,7 +7941,13 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
         .ws_ypixel = (unsigned short)MIN(USHRT_MAX, lround(cell.height * rows)),
     };
     if (self.pty < 0) return YES;
-    ioctl(self.pty, TIOCSWINSZ, &size);
+    if (self.appliedPTYRows == rows &&
+        self.appliedPTYColumns == columns) {
+        return YES;
+    }
+    if (ioctl(self.pty, TIOCSWINSZ, &size) != 0) return NO;
+    self.appliedPTYRows = rows;
+    self.appliedPTYColumns = columns;
     pid_t foregroundProcessGroup = tcgetpgrp(self.pty);
     if (foregroundProcessGroup > 0) {
         kill(-foregroundProcessGroup, SIGWINCH);
@@ -8000,6 +8023,7 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
         terminal.terminalLineHeightMultiple = theme.lineHeightMultiple;
         terminal.terminalRows = 24;
         terminal.terminalColumns = 80;
+        terminal.pty = -1;
         terminal.parserState = TerminalParserGround;
         terminal.csiParameters = [NSMutableString string];
         terminal.oscData = [NSMutableData data];
@@ -8715,6 +8739,25 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
             failures++;
         }
 
+        NSEvent *shiftReturnKey = [NSEvent
+            keyEventWithType:NSEventTypeKeyDown
+                    location:NSZeroPoint
+               modifierFlags:NSEventModifierFlagShift
+                   timestamp:0
+                windowNumber:0
+                     context:nil
+                  characters:@"\n"
+ charactersIgnoringModifiers:@"\n"
+                   isARepeat:NO
+                     keyCode:36];
+        [input keyDown:shiftReturnKey];
+        char shiftReturnBytes[2] = {0};
+        if (read(sockets[1], shiftReturnBytes, sizeof(shiftReturnBytes)) != 2 ||
+            memcmp(shiftReturnBytes, "\033\r", 2) != 0) {
+            fprintf(stderr, "FAIL Shift-Return multiline input\n");
+            failures++;
+        }
+
         unichar arrowCharacter = NSUpArrowFunctionKey;
         NSString *arrowString =
             [NSString stringWithCharacters:&arrowCharacter length:1];
@@ -9008,11 +9051,20 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
     };
     [scrolling.terminalView sendUserBytes:"x" length:1];
     BOOL inputReturnedToBottom = [scrolling terminalIsScrolledToBottom];
+    NSPoint stableBottomOrigin = testScrollView.contentView.bounds.origin;
+    const char synchronizedRedraw[] =
+        "\033[?2026h\033[Hline 00\033[?2026l";
+    feed(scrolling, synchronizedRedraw, sizeof(synchronizedRedraw) - 1);
+    BOOL synchronizedFrameStayedAnchored =
+        [scrolling terminalIsScrolledToBottom] &&
+        fabs(testScrollView.contentView.bounds.origin.y -
+             stableBottomOrigin.y) < 0.5;
     scrolling.terminalView.userDidSendInput = nil;
     if (!firstScreenActuallyScrolled ||
         !followedFirstScreen ||
         !followedNextCommand ||
-        !inputReturnedToBottom) {
+        !inputReturnedToBottom ||
+        !synchronizedFrameStayedAnchored) {
         fprintf(stderr, "FAIL terminal output follows bottom\n");
         failures++;
     }
