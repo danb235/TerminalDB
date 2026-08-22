@@ -46,6 +46,8 @@ NS_ASSUME_NONNULL_BEGIN
                  detail:(nullable NSString *)detail;
 - (void)showDirectory:(NSString *)directory
                 model:(nullable NSString *)model;
+- (void)showPasteReceiptWithByteCount:(NSUInteger)byteCount
+                            lineCount:(NSUInteger)lineCount;
 + (BOOL)runUsageNormalizationSelfTests;
 
 @end
