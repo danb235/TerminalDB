@@ -536,15 +536,37 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
 @end
 
 @interface TerminalScrollView : NSScrollView
+@property(nonatomic, copy, nullable) void (^userWillScroll)(void);
 @property(nonatomic, copy, nullable) void (^userDidScroll)(void);
 @end
 
 @implementation TerminalScrollView
 
 - (void)scrollWheel:(NSEvent *)event {
+    // Suspend output following before AppKit applies even the first (often
+    // sub-line) trackpad delta. Waiting until after the scroll meant the
+    // terminal still looked "at bottom" within its line-height tolerance,
+    // so Claude's next redraw immediately pulled the viewport back down.
+    if (self.userWillScroll != nil) self.userWillScroll();
     [super scrollWheel:event];
     if (self.userDidScroll == nil) return;
-    dispatch_async(dispatch_get_main_queue(), self.userDidScroll);
+
+    // A trackpad begins with tiny deltas that can leave the clip view at the
+    // exact bottom for a frame. Do not decide that following should resume
+    // until that gesture (including momentum) has actually ended. Traditional
+    // mouse-wheel events are unphased, so settle those after each discrete
+    // event.
+    NSEventPhase phase = event.phase;
+    NSEventPhase momentumPhase = event.momentumPhase;
+    BOOL unphased = phase == NSEventPhaseNone &&
+                    momentumPhase == NSEventPhaseNone;
+    BOOL gestureEnded = (phase & (NSEventPhaseEnded |
+                                  NSEventPhaseCancelled)) != 0;
+    BOOL momentumEnded = (momentumPhase & (NSEventPhaseEnded |
+                                           NSEventPhaseCancelled)) != 0;
+    if (unphased || gestureEnded || momentumEnded) {
+        dispatch_async(dispatch_get_main_queue(), self.userDidScroll);
+    }
 }
 
 @end
@@ -4514,10 +4536,15 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
         }
     };
     scrollView.documentView = self.terminalView;
+    scrollView.userWillScroll = ^{
+        AppDelegate *strongSelf = weakSelf;
+        if (strongSelf == nil) return;
+        [strongSelf beginUserTerminalScroll];
+    };
     scrollView.userDidScroll = ^{
         AppDelegate *strongSelf = weakSelf;
         if (strongSelf == nil) return;
-        strongSelf.followsOutput = [strongSelf terminalIsScrolledToBottom];
+        [strongSelf finishUserTerminalScroll];
     };
     [contentView addSubview:scrollView];
 
@@ -7346,6 +7373,28 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
         NSMaxY(documentView.bounds) - tolerance;
 }
 
+- (BOOL)terminalIsAtBottomAnchor {
+    NSClipView *clipView = self.terminalScrollView.contentView;
+    NSView *documentView = self.terminalScrollView.documentView;
+    if (clipView == nil || documentView == nil) return YES;
+    CGFloat bottom = MAX(NSMinY(documentView.bounds),
+        NSMaxY(documentView.bounds) - NSHeight(clipView.bounds));
+    return fabs(NSMinY(clipView.bounds) - bottom) < 0.5;
+}
+
+- (void)beginUserTerminalScroll {
+    self.followsOutput = NO;
+    // A synchronized Claude frame may already be in progress when the user
+    // starts scrolling. Cancel its remembered follow state as well so the
+    // frame's closing marker cannot snap the viewport back to the prompt.
+    self.followSynchronizedOutput = NO;
+}
+
+- (void)finishUserTerminalScroll {
+    self.followsOutput = [self terminalIsAtBottomAnchor];
+    self.followSynchronizedOutput = self.followsOutput;
+}
+
 - (void)performScrollTerminalToBottom {
     if (self.terminalScrollView == nil || self.terminalView == nil) return;
     // CSI commands can replace the entire terminal buffer while
@@ -7369,7 +7418,7 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
     // replacing a frame. Claude refreshes those frames frequently, so the
     // two passes made otherwise stationary text bump vertically. Keep one
     // exact bottom anchor and do nothing when it is already in place.
-    if (fabs(NSMinY(clipView.bounds) - bottom) < 0.5) return;
+    if ([self terminalIsAtBottomAnchor]) return;
     [clipView scrollToPoint:
         NSMakePoint(NSMinX(clipView.bounds), bottom)];
     [self.terminalScrollView reflectScrolledClipView:clipView];
@@ -9039,9 +9088,20 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
     const char nextCommand[] = "prompt $ ls\r\nresult one\r\nresult two\r\n";
     feed(scrolling, nextCommand, sizeof(nextCommand) - 1);
     BOOL followedNextCommand = [scrolling terminalIsScrolledToBottom];
+    scrolling.followSynchronizedOutput = YES;
+    [scrolling beginUserTerminalScroll];
+    BOOL manualScrollSuspendedFollow =
+        !scrolling.followsOutput && !scrolling.followSynchronizedOutput;
     [testScrollView.contentView scrollToPoint:NSZeroPoint];
     [testScrollView reflectScrolledClipView:testScrollView.contentView];
-    scrolling.followsOutput = NO;
+    [scrolling finishUserTerminalScroll];
+    NSPoint manualScrollOrigin = testScrollView.contentView.bounds.origin;
+    const char outputWhileReading[] = "background output\r\n";
+    feed(scrolling, outputWhileReading, sizeof(outputWhileReading) - 1);
+    BOOL manualScrollStayedPut =
+        !scrolling.followsOutput &&
+        fabs(testScrollView.contentView.bounds.origin.y -
+             manualScrollOrigin.y) < 0.5;
     __weak AppDelegate *weakScrolling = scrolling;
     scrolling.terminalView.userDidSendInput = ^{
         AppDelegate *strongScrolling = weakScrolling;
@@ -9063,6 +9123,8 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
     if (!firstScreenActuallyScrolled ||
         !followedFirstScreen ||
         !followedNextCommand ||
+        !manualScrollSuspendedFollow ||
+        !manualScrollStayedPut ||
         !inputReturnedToBottom ||
         !synchronizedFrameStayedAnchored) {
         fprintf(stderr, "FAIL terminal output follows bottom\n");
