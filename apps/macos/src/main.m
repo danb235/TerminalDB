@@ -620,6 +620,7 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
 @property(nonatomic) NSUInteger outputCursor;
 @property(nonatomic) NSUInteger savedOutputCursor;
 @property(nonatomic) BOOL alternateScreenActive;
+@property(nonatomic) NSUInteger alternateViewportStart;
 @property(nonatomic, strong, nullable)
     NSAttributedString *primaryScreenContents;
 @property(nonatomic) NSUInteger primaryOutputCursor;
@@ -5454,15 +5455,23 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
 }
 
 - (void)trimTerminalScrollbackIfNeeded {
-    if (self.alternateScreenActive) return;
     NSTextStorage *storage = self.terminalView.textStorage;
     if (storage.length <= TerminalDBMaximumScrollbackCharacters) return;
 
     NSUInteger approximate =
         storage.length - TerminalDBRetainedScrollbackCharacters;
+    if (self.alternateScreenActive) {
+        // Never trim into Claude's live alternate-screen viewport. Only the
+        // history prefix before it is eligible for bounded scrollback.
+        if (self.alternateViewportStart == 0) return;
+        approximate = MIN(approximate, self.alternateViewportStart - 1);
+    }
     NSString *plain = storage.string ?: @"";
+    NSUInteger searchEnd = self.alternateScreenActive
+        ? self.alternateViewportStart
+        : plain.length;
     NSRange searchRange = NSMakeRange(
-        approximate, MIN((NSUInteger)4096, plain.length - approximate));
+        approximate, MIN((NSUInteger)4096, searchEnd - approximate));
     NSRange newline = [plain rangeOfString:@"\n"
                                    options:0
                                      range:searchRange];
@@ -5480,6 +5489,11 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
     self.activeLedgerOutputStart =
         self.activeLedgerOutputStart > removeCount
             ? self.activeLedgerOutputStart - removeCount : 0;
+    if (self.alternateScreenActive) {
+        self.alternateViewportStart =
+            self.alternateViewportStart > removeCount
+                ? self.alternateViewportStart - removeCount : 0;
+    }
     self.terminalView.terminalCursorIndex = self.outputCursor;
 }
 
@@ -6763,6 +6777,7 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
             : NSZeroPoint;
 
     self.alternateScreenActive = YES;
+    self.alternateViewportStart = 0;
     [self.terminalView.textStorage
         setAttributedString:[[NSAttributedString alloc] initWithString:@""]];
     self.outputCursor = 0;
@@ -6786,6 +6801,7 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
     self.followsOutput = self.primaryFollowsOutput;
     self.followSynchronizedOutput = self.followsOutput;
     self.alternateScreenActive = NO;
+    self.alternateViewportStart = 0;
     self.primaryScreenContents = nil;
     [self resetTextAttributes];
 
@@ -6854,6 +6870,25 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
     NSUInteger column = preserveColumn
         ? self.outputCursor - [self lineStartForCursor:self.outputCursor]
         : 0;
+
+    if (self.alternateScreenActive) {
+        NSUInteger currentRow = 0;
+        NSUInteger line = self.alternateViewportStart;
+        NSUInteger cursorLine = [self lineStartForCursor:self.outputCursor];
+        while (line < cursorLine) {
+            NSUInteger end = [self lineEndForCursor:line];
+            if (end >= cursorLine || end == storage.length) break;
+            line = end + 1;
+            currentRow++;
+        }
+        NSInteger targetRow = (NSInteger)currentRow + rows;
+        targetRow = MAX((NSInteger)0, targetRow);
+        targetRow = MIN((NSInteger)MAX((NSUInteger)1, self.terminalRows) - 1,
+                        targetRow);
+        [self moveCursorToScreenRow:(NSUInteger)targetRow column:column];
+        return;
+    }
+
     NSUInteger target = [self lineStartForCursor:self.outputCursor];
 
     if (rows < 0) {
@@ -6878,7 +6913,7 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
 }
 
 - (NSUInteger)viewportStart {
-    if (self.alternateScreenActive) return 0;
+    if (self.alternateScreenActive) return self.alternateViewportStart;
     NSUInteger start = [self lineStartForCursor:self.outputCursor];
     NSUInteger rows = MAX((NSUInteger)1, self.terminalRows);
     for (NSUInteger index = 1; index < rows && start > 0; index++) {
@@ -6903,6 +6938,59 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
     [self moveCursorToColumn:column];
 }
 
+- (NSUInteger)alternateScreenRowForCursor:(NSUInteger)cursor {
+    if (!self.alternateScreenActive) return 0;
+    NSTextStorage *storage = self.terminalView.textStorage;
+    NSUInteger cursorLine = [self lineStartForCursor:cursor];
+    NSUInteger line = MIN(self.alternateViewportStart, storage.length);
+    NSUInteger row = 0;
+    while (line < cursorLine) {
+        NSUInteger end = [self lineEndForCursor:line];
+        if (end >= cursorLine || end == storage.length) break;
+        line = end + 1;
+        row++;
+    }
+    return row;
+}
+
+- (void)ensureAlternateScreenRows {
+    if (!self.alternateScreenActive) return;
+    NSTextStorage *storage = self.terminalView.textStorage;
+    NSUInteger line = MIN(self.alternateViewportStart, storage.length);
+    NSUInteger rows = MAX((NSUInteger)1, self.terminalRows);
+    for (NSUInteger row = 1; row < rows; row++) {
+        NSUInteger end = [self lineEndForCursor:line];
+        if (end == storage.length) {
+            [storage appendAttributedString:[[NSAttributedString alloc]
+                initWithString:@"\n"
+                    attributes:[self terminalAttributes]]];
+        }
+        line = end + 1;
+    }
+}
+
+- (void)scrollAlternateScreenUpByLines:(NSUInteger)count
+                              cursorRow:(NSUInteger)cursorRow
+                           cursorColumn:(NSUInteger)cursorColumn {
+    if (!self.alternateScreenActive || count == 0) return;
+    NSTextStorage *storage = self.terminalView.textStorage;
+    [self ensureAlternateScreenRows];
+    for (NSUInteger index = 0; index < count; index++) {
+        NSUInteger firstEnd =
+            [self lineEndForCursor:self.alternateViewportStart];
+        if (firstEnd == storage.length) {
+            [storage appendAttributedString:[[NSAttributedString alloc]
+                initWithString:@"\n"
+                    attributes:[self terminalAttributes]]];
+        }
+        self.alternateViewportStart = firstEnd + 1;
+        [self ensureAlternateScreenRows];
+    }
+    NSUInteger lastRow = MAX((NSUInteger)1, self.terminalRows) - 1;
+    [self moveCursorToScreenRow:MIN(cursorRow, lastRow)
+                         column:cursorColumn];
+}
+
 - (void)replaceRangeWithBlankCells:(NSRange)range {
     if (range.length == 0) return;
     [self.terminalView.textStorage
@@ -6912,6 +7000,16 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
 
 - (void)moveCursorToNextLine {
     NSTextStorage *storage = self.terminalView.textStorage;
+    if (self.alternateScreenActive) {
+        NSUInteger row = [self alternateScreenRowForCursor:self.outputCursor];
+        NSUInteger lastRow = MAX((NSUInteger)1, self.terminalRows) - 1;
+        if (row >= lastRow) {
+            [self scrollAlternateScreenUpByLines:1
+                                       cursorRow:lastRow
+                                    cursorColumn:0];
+            return;
+        }
+    }
     NSUInteger lineEnd = [self lineEndForCursor:self.outputCursor];
     if (lineEnd < storage.length) {
         self.outputCursor = lineEnd + 1;
@@ -7025,10 +7123,20 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
             NSInteger mode = (NSInteger)
                 [self csiValueAtIndex:0 defaultValue:0];
             if (mode == 2 || mode == 3) {
-                [storage setAttributedString:[[NSAttributedString alloc]
-                    initWithString:@""]];
-                self.outputCursor = 0;
-                self.savedOutputCursor = 0;
+                if (self.alternateScreenActive) {
+                    NSUInteger start = self.alternateViewportStart;
+                    if (start < storage.length) {
+                        [storage deleteCharactersInRange:
+                            NSMakeRange(start, storage.length - start)];
+                    }
+                    self.outputCursor = start;
+                    self.savedOutputCursor = start;
+                } else {
+                    [storage setAttributedString:[[NSAttributedString alloc]
+                        initWithString:@""]];
+                    self.outputCursor = 0;
+                    self.savedOutputCursor = 0;
+                }
             } else if (mode == 0) {
                 NSUInteger lineEnd = [self lineEndForCursor:self.outputCursor];
                 [self replaceRangeWithBlankCells:
@@ -7084,6 +7192,13 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
         }
         case 'M': {
             NSUInteger start = [self lineStartForCursor:self.outputCursor];
+            if (self.alternateScreenActive &&
+                start == self.alternateViewportStart) {
+                [self scrollAlternateScreenUpByLines:count
+                                           cursorRow:0
+                                        cursorColumn:0];
+                break;
+            }
             NSUInteger end = start;
             for (NSUInteger index = 0; index < count; index++) {
                 end = [self lineEndForCursor:end];
@@ -7093,6 +7208,19 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
                 [storage deleteCharactersInRange:NSMakeRange(start, end - start)];
             }
             self.outputCursor = MIN(start, storage.length);
+            [self ensureAlternateScreenRows];
+            break;
+        }
+        case 'S': {
+            if (self.alternateScreenActive) {
+                NSUInteger row =
+                    [self alternateScreenRowForCursor:self.outputCursor];
+                NSUInteger column = self.outputCursor -
+                    [self lineStartForCursor:self.outputCursor];
+                [self scrollAlternateScreenUpByLines:count
+                                           cursorRow:row
+                                        cursorColumn:column];
+            }
             break;
         }
         case 's':
@@ -8263,6 +8391,64 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
     feed(alternate, leaveAlternate, sizeof(leaveAlternate) - 1);
     expect(@"alternate screen restores primary", alternate.terminalView.string,
            @"shell prompt $ ");
+
+    AppDelegate *alternateHistory = newTerminal();
+    alternateHistory.terminalRows = 4;
+    TerminalScrollView *alternateHistoryScrollView = [[TerminalScrollView alloc]
+        initWithFrame:NSMakeRect(0, 0, 360, 54)];
+    NSSize alternateHistoryViewport = alternateHistoryScrollView.contentSize;
+    alternateHistory.terminalView.frame =
+        NSMakeRect(0, 0, alternateHistoryViewport.width,
+                   alternateHistoryViewport.height);
+    alternateHistory.terminalView.minSize =
+        NSMakeSize(0, alternateHistoryViewport.height);
+    alternateHistory.terminalView.maxSize =
+        NSMakeSize(CGFLOAT_MAX, CGFLOAT_MAX);
+    alternateHistory.terminalView.verticallyResizable = YES;
+    alternateHistory.terminalView.horizontallyResizable = NO;
+    alternateHistory.terminalView.textContainer.widthTracksTextView = YES;
+    alternateHistoryScrollView.documentView = alternateHistory.terminalView;
+    alternateHistory.terminalScrollView = alternateHistoryScrollView;
+    const char alternateHistoryBytes[] =
+        "\033[?1049h"
+        "one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix";
+    feed(alternateHistory, alternateHistoryBytes,
+         sizeof(alternateHistoryBytes) - 1);
+    NSString *alternateHistoryString = alternateHistory.terminalView.string;
+    NSString *retainedPrefix = [alternateHistoryString
+        substringToIndex:MIN(alternateHistory.alternateViewportStart,
+                             alternateHistoryString.length)];
+    NSString *liveViewport = [alternateHistoryString
+        substringFromIndex:MIN(alternateHistory.alternateViewportStart,
+                               alternateHistoryString.length)];
+    BOOL displacedRowsRetained =
+        [retainedPrefix isEqualToString:@"one\ntwo\n"] &&
+        [liveViewport isEqualToString:@"three\nfour\nfive\nsix"];
+    const char alternateRedraw[] = "\033[H\033[2KTHREE";
+    feed(alternateHistory, alternateRedraw, sizeof(alternateRedraw) - 1);
+    BOOL redrawStayedInLiveViewport =
+        [alternateHistory.terminalView.string
+            hasPrefix:@"one\ntwo\nTHREE"];
+    const char alternateClear[] = "\033[2J\033[Hfresh";
+    feed(alternateHistory, alternateClear, sizeof(alternateClear) - 1);
+    BOOL clearPreservedHistory =
+        [alternateHistory.terminalView.string
+            isEqualToString:@"one\ntwo\nfresh"];
+    [alternateHistory.terminalView.layoutManager
+        ensureLayoutForTextContainer:alternateHistory.terminalView.textContainer];
+    BOOL retainedDocumentCanScroll =
+        NSHeight(alternateHistoryScrollView.documentView.bounds) >
+        NSHeight(alternateHistoryScrollView.contentView.bounds);
+    if (!displacedRowsRetained || !redrawStayedInLiveViewport ||
+        !clearPreservedHistory || !retainedDocumentCanScroll) {
+        fprintf(stderr,
+                "FAIL alternate screen retains native scrollback "
+                "prefix=%s live=%s final=%s scrollable=%s\n",
+                retainedPrefix.UTF8String, liveViewport.UTF8String,
+                alternateHistory.terminalView.string.UTF8String,
+                retainedDocumentCanScroll ? "yes" : "no");
+        failures++;
+    }
 
     AppDelegate *bounded = newTerminal();
     NSMutableString *largeScrollback =
