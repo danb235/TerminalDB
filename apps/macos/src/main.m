@@ -571,6 +571,28 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
 
 @end
 
+static void ConfigureTerminalTextViewForScrolling(
+    TerminalView *terminalView,
+    NSSize viewportSize) {
+    // NSTextView only grows its document height when its width tracks the
+    // enclosing clip view. The previous production configuration made the
+    // view height follow the viewport and gave the text container an
+    // effectively infinite width. AppKit could lay out retained scrollback,
+    // but the NSScrollView's document never became taller than its viewport,
+    // so wheel gestures had nowhere to go.
+    terminalView.frame = NSMakeRect(0, 0,
+        MAX(1.0, viewportSize.width), MAX(1.0, viewportSize.height));
+    terminalView.verticallyResizable = YES;
+    terminalView.horizontallyResizable = NO;
+    terminalView.autoresizingMask = NSViewWidthSizable;
+    terminalView.minSize = NSMakeSize(0, MAX(1.0, viewportSize.height));
+    terminalView.maxSize = NSMakeSize(CGFLOAT_MAX, CGFLOAT_MAX);
+    terminalView.textContainer.widthTracksTextView = YES;
+    terminalView.textContainer.containerSize =
+        NSMakeSize(MAX(1.0, viewportSize.width), CGFLOAT_MAX);
+    terminalView.textContainer.lineFragmentPadding = 0;
+}
+
 @interface AppDelegate : NSObject <
     NSApplicationDelegate,
     NSWindowDelegate,
@@ -4476,16 +4498,9 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
     self.terminalView.delegate = self;
     self.terminalView.selectable = YES;
     self.terminalView.richText = NO;
-    self.terminalView.verticallyResizable = YES;
-    self.terminalView.horizontallyResizable = YES;
-    self.terminalView.autoresizingMask = NSViewHeightSizable;
-    self.terminalView.minSize = NSMakeSize(0, terminalViewport.height);
-    self.terminalView.maxSize = NSMakeSize(CGFLOAT_MAX, CGFLOAT_MAX);
-    self.terminalView.textContainer.widthTracksTextView = NO;
-    self.terminalView.textContainer.containerSize =
-        NSMakeSize(CGFLOAT_MAX, CGFLOAT_MAX);
-    self.terminalView.textContainer.lineFragmentPadding = 0;
-    scrollView.hasHorizontalScroller = YES;
+    ConfigureTerminalTextViewForScrolling(self.terminalView,
+                                          terminalViewport);
+    scrollView.hasHorizontalScroller = NO;
     self.terminalView.backgroundColor = self.defaultBackground;
     self.terminalView.textColor = self.defaultForeground;
     self.terminalView.insertionPointColor = self.theme.cursorColor;
@@ -5058,6 +5073,11 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
          "export CLAUDE_CONFIG_DIR=\"$TERMINALDB_CLAUDE_CONFIG_DIR\"\n"
          "export CLAUDE_SECURESTORAGE_CONFIG_DIR="
          "\"$TERMINALDB_CLAUDE_CONFIG_DIR\"\n"
+         // Claude's fullscreen renderer virtualizes its transcript in the
+         // alternate screen and only emits the rows currently on screen.
+         // Use Claude's supported classic renderer so the complete
+         // conversation is written to TerminalDB's native scrollback.
+         "export CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1\n"
          "export TERMINALDB_CLAUDE_STATUS_FILE\n"
          "export TERMINALDB_CLAUDE_WINDOW_STATUS_FILE\n"
          "export TERMINALDB_CLAUDE_STATE_FILE\n"
@@ -5123,6 +5143,7 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
                  "\"$TERMINALDB_CLAUDE_CONFIG_DIR\"\n"
                  "    export CLAUDE_SECURESTORAGE_CONFIG_DIR="
                  "\"$TERMINALDB_CLAUDE_CONFIG_DIR\"\n"
+                 "    export CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1\n"
                  "    export TERMINALDB_CLAUDE_STATUS_FILE\n"
                  "    export TERMINALDB_CLAUDE_WINDOW_STATUS_FILE\n"
                  "    export TERMINALDB_CLAUDE_STATE_FILE\n"
@@ -9285,17 +9306,33 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
     }
     [NSFileManager.defaultManager removeItemAtPath:removalRoot error:nil];
 
+    AppDelegate *claudeLaunch = newTerminal();
+    [claudeLaunch configureClaudeIntegration];
+    NSString *generatedClaudeShim = [NSString stringWithContentsOfFile:
+        [claudeLaunch.windowBinDirectory stringByAppendingPathComponent:@"claude"]
+        encoding:NSUTF8StringEncoding
+        error:nil];
+    NSString *generatedZshrc = [NSString stringWithContentsOfFile:
+        [claudeLaunch.zshDotDirectory stringByAppendingPathComponent:@".zshrc"]
+        encoding:NSUTF8StringEncoding
+        error:nil];
+    NSString *nativeScrollbackExport =
+        @"export CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1";
+    if (![generatedClaudeShim containsString:nativeScrollbackExport] ||
+        ![generatedZshrc containsString:nativeScrollbackExport]) {
+        fprintf(stderr, "FAIL Claude native scrollback launch environment\n");
+        failures++;
+    }
+    [NSFileManager.defaultManager
+        removeItemAtPath:claudeLaunch.windowRuntimeDirectory
+        error:nil];
+
     AppDelegate *scrolling = newTerminal();
     TerminalScrollView *testScrollView = [[TerminalScrollView alloc]
         initWithFrame:NSMakeRect(0, 0, 360, 120)];
     NSSize testViewport = testScrollView.contentSize;
-    scrolling.terminalView.frame =
-        NSMakeRect(0, 0, testViewport.width, testViewport.height);
-    scrolling.terminalView.minSize = NSMakeSize(0, testViewport.height);
-    scrolling.terminalView.maxSize = NSMakeSize(CGFLOAT_MAX, CGFLOAT_MAX);
-    scrolling.terminalView.verticallyResizable = YES;
-    scrolling.terminalView.horizontallyResizable = NO;
-    scrolling.terminalView.textContainer.widthTracksTextView = YES;
+    ConfigureTerminalTextViewForScrolling(scrolling.terminalView,
+                                          testViewport);
     testScrollView.documentView = scrolling.terminalView;
     scrolling.terminalScrollView = testScrollView;
     scrolling.followsOutput = YES;
