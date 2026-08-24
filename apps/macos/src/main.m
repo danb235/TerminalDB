@@ -4853,7 +4853,14 @@ static void ConfigureTerminalTextViewForScrolling(
     [self.assistantToggleButton
         setAccessibilityLabel:chatVisible ? @"Hide AI Chat"
                                           : @"Show AI Chat"];
-    [self updatePTYWindowSize];
+    // Do not repeatedly redraw full-screen terminal applications while the
+    // user is dragging a window edge. AppKit already reflows the retained
+    // text locally; publish the final PTY geometry when live resize ends.
+    // Claude's classic renderer otherwise repaints its entire screen for
+    // every intermediate SIGWINCH, which makes old frames appear to stack.
+    if (!self.window.inLiveResize) {
+        [self updatePTYWindowSize];
+    }
 }
 
 - (void)showAssistantPane {
@@ -8023,6 +8030,16 @@ static void ConfigureTerminalTextViewForScrolling(
     }
 }
 
+- (void)windowDidEndLiveResize:(NSNotification *)notification {
+    (void)notification;
+    [self layoutWorkspace];
+    [self updatePTYWindowSize];
+    for (AppDelegate *split in self.splitControllers) {
+        [split layoutWorkspace];
+        [split updatePTYWindowSize];
+    }
+}
+
 - (void)windowDidBecomeKey:(NSNotification *)notification {
     (void)notification;
     if (!self.assistantView.hidden) {
@@ -8095,10 +8112,9 @@ static void ConfigureTerminalTextViewForScrolling(
     if (ioctl(self.pty, TIOCSWINSZ, &size) != 0) return;
     self.appliedPTYRows = size.ws_row;
     self.appliedPTYColumns = size.ws_col;
-    pid_t foregroundProcessGroup = tcgetpgrp(self.pty);
-    if (foregroundProcessGroup > 0) {
-        kill(-foregroundProcessGroup, SIGWINCH);
-    }
+    // TIOCSWINSZ already sends SIGWINCH to the foreground process group.
+    // Sending it explicitly as well caused overlapping Claude redraws and
+    // duplicated full-screen frames after a window resize.
 }
 
 - (BOOL)applyRemoteTerminalColumns:(NSUInteger)columns
@@ -8125,10 +8141,6 @@ static void ConfigureTerminalTextViewForScrolling(
     if (ioctl(self.pty, TIOCSWINSZ, &size) != 0) return NO;
     self.appliedPTYRows = rows;
     self.appliedPTYColumns = columns;
-    pid_t foregroundProcessGroup = tcgetpgrp(self.pty);
-    if (foregroundProcessGroup > 0) {
-        kill(-foregroundProcessGroup, SIGWINCH);
-    }
     return YES;
 }
 
