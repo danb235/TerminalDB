@@ -49,6 +49,9 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Copying terminal selections no longer includes invisible fixed-width screen
+  padding, so copied output matches the visible text instead of containing
+  hundreds of trailing spaces per line.
 - Account enrollment and returning password-plus-TOTP sign-in now remain on
   `app.terminaldb.app`. The centered enrollment screen shows the QR code beside
   an always-visible, selectable setup key with a copy action, while incomplete
