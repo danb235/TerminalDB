@@ -41,6 +41,31 @@ static int TerminalDBExitStatus = 0;
 static NSUInteger const TerminalDBMaximumScrollbackCharacters = 2000000;
 static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
 
+static NSString *TerminalDBClipboardString(NSString *selection) {
+    if (selection.length == 0) return @"";
+
+    NSArray<NSString *> *lines =
+        [selection componentsSeparatedByString:@"\n"];
+    NSMutableString *copy =
+        [NSMutableString stringWithCapacity:selection.length];
+    [lines enumerateObjectsUsingBlock:^(NSString *line,
+                                        NSUInteger index,
+                                        BOOL *stop) {
+        (void)stop;
+        NSUInteger end = line.length;
+        while (end > 0) {
+            unichar character = [line characterAtIndex:end - 1];
+            if (character != ' ' && character != '\t') break;
+            end--;
+        }
+        if (end > 0) {
+            [copy appendString:[line substringToIndex:end]];
+        }
+        if (index + 1 < lines.count) [copy appendString:@"\n"];
+    }];
+    return copy;
+}
+
 @interface TerminalView : NSTextView
 @property(nonatomic) int pty;
 @property(nonatomic) BOOL applicationCursorKeys;
@@ -330,6 +355,21 @@ static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
         [NSPasteboard.generalPasteboard
             stringForType:NSPasteboardTypeString];
     [self pasteString:paste];
+}
+
+- (void)copy:(id)sender {
+    (void)sender;
+    NSRange selection = self.selectedRange;
+    NSString *contents = self.string ?: @"";
+    if (selection.length == 0 || NSMaxRange(selection) > contents.length) {
+        return;
+    }
+
+    NSString *copy = TerminalDBClipboardString(
+        [contents substringWithRange:selection]);
+    [NSPasteboard.generalPasteboard clearContents];
+    [NSPasteboard.generalPasteboard setString:copy
+                                       forType:NSPasteboardTypeString];
 }
 
 - (void)keyDown:(NSEvent *)event {
@@ -8249,6 +8289,14 @@ static void ConfigureTerminalTextViewForScrolling(
             [terminal consumeTerminalData:
                 [NSData dataWithBytes:bytes length:length]];
         };
+
+    expect(@"clipboard removes terminal cell padding",
+           TerminalDBClipboardString(
+               @"first value       \nsecond\t   \n  indented value  \n"),
+           @"first value\nsecond\n  indented value\n");
+    expect(@"clipboard preserves meaningful whitespace",
+           TerminalDBClipboardString(@"alpha  beta\n\ncharlie"),
+           @"alpha  beta\n\ncharlie");
 
     AppDelegate *spacing = newTerminal();
     const char spacingBytes[] = "Welcome\033[3Cto";
