@@ -7,7 +7,24 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-24
+
 ### Added
+
+- Mac-approved, email-free TerminalDB accounts with username/password sign-in,
+  mandatory authenticator-app TOTP, and secure access to sessions across every
+  enrolled Mac. One-time guest links remain available without an account.
+- A unified Devices & Sessions home in the remote web app that lists every Mac,
+  window, and terminal tab together, retains offline Macs with last-seen state,
+  and keeps account management in a separate focused view.
+- A Claude Accounts & Usage dashboard for every configured subscription with
+  5-hour, 7-day, and Fable allowances, reset times, refresh progress, burn rate,
+  available pace, and warnings when current usage is likely to hit a limit.
+- Branded TerminalDB marketing, sign-in, signup, password, and authenticator
+  experiences on `terminaldb.app`, `app.terminaldb.app`, and
+  `auth.terminaldb.app`.
+- Lossless long-paste handling with a clear confirmation before large terminal
+  input is sent.
 
 - Account setup and security actions now start in TerminalDB's in-window
   Remote Control panel. Connecting another Mac uses a signed, short-lived Mac
@@ -25,6 +42,13 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Remote sessions now open from a stable device-and-session list instead of
+  flashing through intermediate dashboards or automatically jumping into a
+  terminal. Account password changes, logout, and deletion remain easy to find
+  without crowding the primary terminal workflow.
+- Claude subscription selection in both the Mac and remote app uses stable
+  account lists. Background usage refreshes update rows in place and expose
+  progress instead of moving subscription cards around.
 - Command History now opens inside the active terminal window and presents one
   search field, one scope filter, and three clear next steps: run again, paste
   to edit, or save as a Playbook. AI, bookmarks, export, and deletion remain
@@ -52,6 +76,21 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Copying terminal selections no longer includes invisible fixed-width screen
   padding, so copied output matches the visible text instead of containing
   hundreds of trailing spaces per line.
+- Terminal paste is no longer truncated, including multi-paragraph goal text;
+  Shift-Enter inserts a newline in Claude Code, and Control-C or Claude exit
+  returns cleanly to a usable shell instead of leaving the app stuck or
+  crashing.
+- Claude Code scrollback can be reviewed with normal trackpad and mouse
+  scrolling. Resizing no longer duplicates alternate-screen content, and
+  periodic terminal updates no longer make the viewport jump or redraw.
+- Remote Claude sessions now survive alternate-screen transitions and report
+  accurate ready, running, disconnected, and closed states.
+- Claude allowance data refreshes automatically for every authenticated
+  subscription, preserves real account profiles during QA, shows Fable usage,
+  and avoids presenting stale snapshots as current data.
+- In-window panels now scroll to their final controls, show neutral dismiss
+  icons, remove the unused private-notes surface, and avoid separate utility
+  windows for command details, history, Playbooks, and Remote Control.
 - Account enrollment and returning password-plus-TOTP sign-in now remain on
   `app.terminaldb.app`. The centered enrollment screen shows the QR code beside
   an always-visible, selectable setup key with a copy action, while incomplete
@@ -65,6 +104,17 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Deleting an account from the web now causes enrolled Macs to discard the
   revoked account binding on their next live reconnect, return to one-time-link
   mode, and stop retrying a permanently deleted principal.
+
+### Security
+
+- Cognito remains the authentication authority while TerminalDB keeps terminal
+  content and Claude credentials end-to-end encrypted between the browser and
+  Mac. Account ownership is rechecked at every HTTP, ticket, WebSocket, key,
+  and relay boundary.
+- Account creation requires a short-lived, single-use grant approved by an
+  enrolled Mac. Password changes and account deletion require fresh
+  password-plus-TOTP authentication and revoke existing browser and controller
+  sessions.
 
 ## [0.3.0] - 2026-08-08
 
