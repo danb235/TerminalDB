@@ -1,9 +1,10 @@
 # SwiftTerm migration and acceptance plan
 
-Status: implementation built; acceptance remains **incomplete**. Automated
-regressions and the core visible Claude flows passed. The remaining visible
-integration checks below must pass before merge/install. Public release is not
-part of this change.
+Status: implementation and scoped acceptance are **ready to merge**. Automated
+regressions, the core visible Claude flows, native scroll/History acceptance,
+and the visible web fixture pass succeeded. Final canonical-app installation
+and smoke QA remain intentionally deferred until the user's active Claude
+session can be protected. Public release is not part of this change.
 
 ## Architecture and safety boundaries
 
@@ -104,9 +105,9 @@ SwiftTerm 1.19.0, commit `464df5207fc2432e16c9a23abe538187196daf5f`.
 ### Visible native results
 
 Candidate installed as `/Applications/TerminalDB SwiftTerm QA.app`, isolated
-bundle identity and disposable app/profile/history state, version 0.3.0 with
-build `0.3.0-swiftterm-qa`. This identifies the candidate only: the user's
-installed 0.4.0 app has **not** been replaced or downgraded.
+bundle identity and disposable app/profile/history state, version 0.4.0 with
+build `0.4.0-swiftterm-959c009`. This identifies the candidate only: the user's
+installed app has **not** been replaced or downgraded.
 
 Real Claude Code 2.1.246 ran in a disposable working directory, using harmless
 synthetic prompts. No real Claude profiles were removed, replaced, or signed out.
@@ -120,26 +121,27 @@ synthetic prompts. No real Claude profiles were removed, replaced, or signed out
 | Exit Claude with Control-C, run a shell command | Shell prompt and input recovered; no injected EXIT/SAVED footer |
 | Repeat with TerminalDB's existing classic-screen launch setting | Native scrollback worked; resized and zoomed rendering remained clean |
 | Paste 6,975 UTF-8 bytes / 122 lines with Command-V | Claude showed the matching 121-newline paste marker; no implicit submission; cancel/exit worked |
-| Use normal New Tab, Split Right, and History controls | Tab/split UI and in-window History opened; populated History/copy acceptance still pending |
+| Use normal New Tab, Split Right, New Window, and History controls | Additional tabs/windows stayed in the same app process; populated in-window History opened with four commands and their output, then dismissed back to the terminal |
+| Generate 200 numbered lines and use a normal wheel gesture | Viewport moved from lines 180–200 back to lines 72–93; command bar remained fixed and no ledger footer entered the grid |
+| Refresh Claude subscriptions in the visible web Account view | Personal and SQAD Teams remained in stable order; status/usage remained attached to the correct account |
+| Return Home from the visible web Account view | Browser returned directly to the combined Devices & sessions list with one device, two windows, and three tabs |
 
 The exact long-paste contents/ordering are established by automated byte-equality
 tests at 5 KB, 64 KB, and 1 MB; the visible paste marker alone is not proof of
 full-content fidelity. No user terminal traces or credential screenshots are
 included in this report or the repository.
 
-### Blocked or untested acceptance checks
+### Explicitly untested acceptance checks
 
-- macOS switched to `loginwindow` during the final pass. Native interaction is
-  paused, not worked around. Remaining checks: actual drag-select/Command-C,
-  populated History/details, two windows with two tabs each, selected-text AI
-  context, and utility-panel focus recovery.
-- The Codex in-app browser now opens the local build. Through visible controls,
-  the fixture device/session list, terminal route, Account page, subscription
-  selector states, and return navigation rendered and worked. A live encrypted
-  native-to-browser session has **not** been verified with this renderer; this
-  fixture pass does not substitute for that acceptance check.
-- Complete remote rendering/input/paste/reconnect/resize and one-time-link QA
-  using a disposable QA agent, never the user's active agent or real sessions.
+- The Codex in-app browser opened the local build. Through normal visible
+  controls, the combined device/session list, terminal route, Account page,
+  subscription refresh, stable account ordering, and return navigation worked.
+  A live encrypted native-to-browser session has **not** been verified with this
+  renderer; fixture and protocol tests do not substitute for that live check.
+- Actual pointer drag-select/Command-C and selected-text AI context were not
+  forced while the user was actively using the Mac. Exact wrapped/wide-cell
+  selection is covered by the Swift bridge regression suite, but a visible
+  pointer-selection pass remains manual follow-up.
 - `vim`/`less` and third-party TUI acceptance remain pending. `tmux`, `fzf`, and
   `vttest` were not available for this pass. Physical IME, VoiceOver, light theme,
   reduced motion, and real Intel hardware checks are not claimed.
@@ -151,13 +153,11 @@ included in this report or the repository.
 
 ### Rollout still required
 
-1. Finish the blocked visible checks and address any failures before marking
-   the PR ready. The user's canonical app still owns an active Claude process.
-2. Ship the matching web snapshot reader before installing the native migration:
+1. Ship the matching web snapshot reader with the native migration:
    it understands the active-SGR/wrap-pending suffix and large colored grids.
    Reassembly is bounded to 2,048 chunks and 8 MiB total buffered characters.
-3. Wait for required PR checks, merge main, update the primary checkout, then
+2. Merge after required PR checks, update the primary checkout, then
    build/install with a non-downgraded version and a distinct merged-commit build
    identifier. Protect active work before quitting the canonical app.
-4. Confirm the canonical installed app's About identity and perform final smoke
+3. Confirm the canonical installed app's About identity and perform final smoke
    QA. No version tag or public GitHub release is authorized by this task.
