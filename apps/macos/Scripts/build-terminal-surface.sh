@@ -13,6 +13,12 @@ xcrun swift build --package-path "${package}" --scratch-path "${scratch}" --arch
   --configuration release --product TerminalDBTerminal
 package_bin="$(xcrun swift build --package-path "${package}" --scratch-path "${scratch}" --arch "${arch}" \
   --configuration release --show-bin-path)"
+generated_header="$(find "${scratch}" -path '*/TerminalDBTerminal.build/include/TerminalDBTerminal-Swift.h' -print -quit)"
+if [[ -z "${generated_header}" ]]; then
+  printf '%s\n' "SwiftPM did not generate TerminalDBTerminal-Swift.h" >&2
+  exit 1
+fi
+generated_header_dir="$(dirname "${generated_header}")"
 optimization=(-O2)
 if [[ "${configuration}" == "debug" ]]; then optimization=(-O0 -g); fi
 object_files=()
@@ -20,7 +26,7 @@ for source in src/*.m; do
   object="${objects}/$(basename "${source}" .m).o"
   clang -c -fobjc-arc -Wall -Wextra -arch "${arch}" \
     -mmacosx-version-min=13.0 "${optimization[@]}" \
-    -I "${package_bin}/TerminalDBTerminal.build/include" \
+    -I "${generated_header_dir}" \
     "${source}" -o "${object}"
   object_files+=("${object}")
 done
