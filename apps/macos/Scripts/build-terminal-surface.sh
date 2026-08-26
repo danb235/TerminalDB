@@ -15,8 +15,16 @@ package_bin="$(xcrun swift build --package-path "${package}" --scratch-path "${s
   --configuration release --show-bin-path)"
 generated_header="$(find "${scratch}" -path '*/TerminalDBTerminal.build/include/TerminalDBTerminal-Swift.h' -print -quit)"
 if [[ -z "${generated_header}" ]]; then
-  printf '%s\n' "SwiftPM did not generate TerminalDBTerminal-Swift.h" >&2
-  exit 1
+  # Swift 6.2's CI toolchain does not always emit the Objective-C compatibility
+  # header for a static SwiftPM library. Generate it deterministically from the
+  # same sources and already-built SwiftTerm module instead of relying on cache.
+  generated_header="${objects}/TerminalDBTerminal-Swift.h"
+  xcrun swiftc -target "${arch}-apple-macosx13.0" -swift-version 5 \
+    -parse-as-library -module-name TerminalDBTerminal \
+    -I "${package_bin}/Modules" -emit-module \
+    -emit-module-path "${objects}/TerminalDBTerminal.swiftmodule" \
+    -emit-objc-header -emit-objc-header-path "${generated_header}" \
+    "${package}"/Sources/TerminalDBTerminal/*.swift
 fi
 generated_header_dir="$(dirname "${generated_header}")"
 optimization=(-O2)
