@@ -133,9 +133,11 @@ included in this report or the repository.
   paused, not worked around. Remaining checks: actual drag-select/Command-C,
   populated History/details, two windows with two tabs each, selected-text AI
   context, and utility-panel focus recovery.
-- The Codex in-app browser loaded the production sign-in page, but local
-  development navigation returned `ERR_BLOCKED_BY_CLIENT`. A live encrypted
-  native-to-browser session has **not** been verified with this renderer.
+- The Codex in-app browser now opens the local build. Through visible controls,
+  the fixture device/session list, terminal route, Account page, subscription
+  selector states, and return navigation rendered and worked. A live encrypted
+  native-to-browser session has **not** been verified with this renderer; this
+  fixture pass does not substitute for that acceptance check.
 - Complete remote rendering/input/paste/reconnect/resize and one-time-link QA
   using a disposable QA agent, never the user's active agent or real sessions.
 - `vim`/`less` and third-party TUI acceptance remain pending. `tmux`, `fzf`, and
