@@ -4,7 +4,14 @@ interface SnapshotAssembly {
   readonly chunks: Array<string | undefined>;
   readonly createdAt: number;
   received: number;
+  characters: number;
 }
+
+// A 500x200 native grid can contain a different true-color rendition in every
+// cell. Bound memory, not just the old small text renderer's 64-chunk count.
+const maximumChunkCount = 2048;
+const maximumChunkCharacters = 4096;
+const maximumBufferedCharacters = 8 * 1024 * 1024;
 
 export class SnapshotAssembler {
   readonly #snapshots = new Map<string, SnapshotAssembly>();
@@ -20,12 +27,16 @@ export class SnapshotAssembler {
     const chunkIndex = candidate.chunkIndex ?? 0;
     const snapshotId = candidate.snapshotId;
     const text = candidate.text ?? "";
+    if (text.length > maximumBufferedCharacters) {
+      throw new Error("Viewport snapshot is too large");
+    }
     if (chunkCount === 1) return text;
     if (
       !snapshotId ||
       !Number.isInteger(chunkCount) ||
       chunkCount < 2 ||
-      chunkCount > 64 ||
+      chunkCount > maximumChunkCount ||
+      text.length > maximumChunkCharacters ||
       !Number.isInteger(chunkIndex) ||
       chunkIndex < 0 ||
       chunkIndex >= chunkCount
@@ -43,6 +54,7 @@ export class SnapshotAssembler {
         chunks: new Array<string | undefined>(chunkCount),
         createdAt: this.#now(),
         received: 0,
+        characters: 0,
       };
       this.#snapshots.set(key, assembly);
     }
@@ -51,8 +63,17 @@ export class SnapshotAssembler {
       throw new Error("Viewport snapshot chunk count changed");
     }
     if (assembly.chunks[chunkIndex] === undefined) {
+      const buffered = [...this.#snapshots.values()].reduce(
+        (total, item) => total + item.characters,
+        0,
+      );
+      if (buffered + text.length > maximumBufferedCharacters) {
+        this.#snapshots.clear();
+        throw new Error("Viewport snapshots exceed the buffer limit");
+      }
       assembly.chunks[chunkIndex] = text;
       assembly.received += 1;
+      assembly.characters += text.length;
     }
     if (assembly.received !== chunkCount) return undefined;
     const complete = assembly.chunks.join("");

@@ -21,4 +21,18 @@ describe("independent web terminal viewport", () => {
     const output = "plain output\r\n";
     expect(adaptSnapshotToLocalViewport(output, 24, 40, 160)).toBe(output);
   });
+
+  it("preserves SwiftTerm's rendition while translating the cursor", () => {
+    const snapshot = "grid\x1b[0m\x1b[13;9H\x1b[?25h\x1b[0;38;2;30;200;90;49m";
+    expect(adaptSnapshotToLocalViewport(snapshot, 17, 40, 160)).toBe(
+      "grid\x1b[0m\x1b[36;9H\x1b[?25h\x1b[0;38;2;30;200;90;49m",
+    );
+  });
+
+  it("preserves the wrap-pending glyph when translating the cursor", () => {
+    const tail = "\x1b[?25h\x1b[0;39;49m界\x1b[0;31m";
+    expect(adaptSnapshotToLocalViewport(`grid\x1b[0m\x1b[13;39H${tail}`, 17, 40, 40)).toBe(
+      `grid\x1b[0m\x1b[36;39H${tail}`,
+    );
+  });
 });
