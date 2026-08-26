@@ -1177,6 +1177,118 @@ test("discovers tenant sessions without exposing legacy enrollment codes", async
   expect(storedAccessMode).toBe("account");
 });
 
+test("replaces a stale account controller after its Mac starts a new session", async ({ page }) => {
+  let registeredSessionId: string | undefined;
+  let ticketSessionId: string | undefined;
+  let reportedSessionId = "ended-session";
+  await page.evaluate(async () => {
+    localStorage.setItem("terminaldb.account.tokens.v1", JSON.stringify({
+      accessToken: "reconnect-access-token",
+      refreshToken: "reconnect-refresh-token",
+      expiresAt: Date.now() + 3_600_000,
+    }));
+    const key = await crypto.subtle.generateKey(
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["encrypt", "decrypt"],
+    );
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("terminaldb-remote", 1);
+      request.onupgradeneeded = () => request.result.createObjectStore("keys");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction("keys", "readwrite");
+      transaction.objectStore("keys").put({
+        controllerId: "stale-controller",
+        sessionId: "ended-session",
+        generation: 1,
+        sendKey: key,
+        receiveKey: key,
+        accessMode: "account",
+      }, "controller-session-v1");
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    });
+    database.close();
+  });
+  await page.route("**/api/config", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        apiBaseUrl: "",
+        websocketUrl: "/socket",
+        protocolVersion: 1,
+        region: "us-west-2",
+        pairingEnabled: true,
+        accountAuth: {
+          clientId: "web-client",
+          domain: "https://login.example.invalid",
+          issuer: "https://issuer.example.invalid/pool",
+          callbackPath: "/auth/callback",
+        },
+      }),
+    });
+  });
+  await page.route("**/api/v1/account/devices", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        devices: [{
+          deviceId: "mac-one",
+          deviceName: "Studio Mac",
+          state: "online",
+          lastSeenAt: 1_800_000_000,
+          sessionId: reportedSessionId,
+          sessionCreatedAt: 1_800_000_000,
+        }],
+      }),
+    });
+  });
+  await page.route("**/api/v1/account/sessions/current-session/controllers", async (route) => {
+    registeredSessionId = "current-session";
+    const registration = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        controllerId: "current-controller",
+        sessionId: "current-session",
+        generation: 1,
+        protocolVersion: 1,
+        keySalt: "current-controller-key-salt",
+        macAgreementPublicKey: registration.agreementPublicKey,
+      }),
+    });
+  });
+  await page.route("**/api/v1/account/tickets", async (route) => {
+    ticketSessionId = (route.request().postDataJSON() as { sessionId?: string }).sessionId;
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "QA stops before a deployed WebSocket" }),
+    });
+  });
+
+  await page.goto("/");
+
+  const backToDevices = page.getByRole("button", { name: "Back to devices and sessions" });
+  if (await backToDevices.isVisible()) {
+    await backToDevices.click();
+  }
+
+  await expect(page.getByRole("heading", { name: "Devices & sessions" })).toBeVisible();
+  await expect(page.getByText("Studio Mac")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Connecting to your terminals" }))
+    .toHaveCount(0);
+  expect(ticketSessionId).toBe("ended-session");
+
+  reportedSessionId = "current-session";
+  await expect.poll(() => registeredSessionId, { timeout: 8_000 }).toBe("current-session");
+  await expect.poll(() => ticketSessionId, { timeout: 8_000 }).toBe("current-session");
+});
+
 test("returns to sign-in when native account management revokes browser access", async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem("terminaldb.account.tokens.v1", JSON.stringify({

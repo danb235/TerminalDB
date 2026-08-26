@@ -527,6 +527,20 @@ export function accountDeviceActivityLabel(
   return `Last seen ${Math.floor(seconds / (24 * 60 * 60))}d ago`;
 }
 
+export function replacementAccountDevice(
+  devices: readonly AccountDeviceSummary[],
+  activeSessionId?: string,
+): AccountDeviceSummary | undefined {
+  if (activeSessionId && devices.some((device) =>
+    device.state === "online" && device.sessionId === activeSessionId)) {
+    return undefined;
+  }
+  return [...devices]
+    .filter((device) => device.state === "online" && Boolean(device.sessionId))
+    .sort((left, right) =>
+      (right.sessionCreatedAt ?? 0) - (left.sessionCreatedAt ?? 0))[0];
+}
+
 function AccountSignIn({
   configuration,
   onComplete,
@@ -2410,6 +2424,7 @@ export function App() {
   const [activeRemoteSessionId, setActiveRemoteSessionId] = useState<string>();
   const [accountDevices, setAccountDevices] = useState<readonly AccountDeviceSummary[]>([]);
   const [accountDevicesLoading, setAccountDevicesLoading] = useState(false);
+  const [accountDevicesLoaded, setAccountDevicesLoaded] = useState(false);
   const [accountDevicesError, setAccountDevicesError] = useState<string>();
   const [switchingDeviceId, setSwitchingDeviceId] = useState<string>();
   const [accountBootstrapToken, setAccountBootstrapToken] = useState<string | undefined>(() => {
@@ -2573,7 +2588,41 @@ export function App() {
         dispatch({ type: "version-mismatch" });
         return;
       }
-      const existingSession = await loadControllerSession();
+      let existingSession = await loadControllerSession();
+      if (
+        configuration.accountAuth &&
+        (!existingSession || existingSession.accessMode === "account")
+      ) {
+        try {
+          const accessToken = await accountAccessToken(configuration.accountAuth);
+          if (accessToken) {
+            const devices = await listAccountDevices(accessToken);
+            if (epoch !== connectionEpochRef.current) return;
+            setAccountDevices(devices);
+            setAccountDevicesLoaded(true);
+            setAccountDevicesError(undefined);
+            const replacement = replacementAccountDevice(
+              devices,
+              existingSession?.accessMode === "account"
+                ? existingSession.sessionId
+                : undefined,
+            );
+            if (replacement?.sessionId) {
+              existingSession = await openAccountSession({
+                sessionId: replacement.sessionId,
+                accessToken,
+              });
+              if (epoch !== connectionEpochRef.current) return;
+            }
+          }
+        } catch (error) {
+          if (epoch !== connectionEpochRef.current) return;
+          setAccountDevicesLoaded(true);
+          setAccountDevicesError(error instanceof Error
+            ? error.message
+            : "Your Macs could not be loaded.");
+        }
+      }
       const existingAccessMode = existingSession?.accessMode === "account" ? "account" : "pairing";
       activeAccessModeRef.current = existingAccessMode;
       setActiveAccessMode(existingAccessMode);
@@ -2779,6 +2828,7 @@ export function App() {
     if (accessState !== "paired" || activeAccessMode !== "account" || !configuration) {
       setAccountDevices([]);
       setAccountDevicesLoading(false);
+      setAccountDevicesLoaded(false);
       setAccountDevicesError(undefined);
       return;
     }
@@ -2791,10 +2841,12 @@ export function App() {
         const devices = await listAccountDevices(token);
         if (!cancelled) {
           setAccountDevices(devices);
+          setAccountDevicesLoaded(true);
           setAccountDevicesError(undefined);
         }
       } catch (error) {
         if (!cancelled) {
+          setAccountDevicesLoaded(true);
           setAccountDevicesError(error instanceof Error
             ? error.message
             : "Your devices could not be refreshed.");
@@ -2839,6 +2891,25 @@ export function App() {
       setSwitchingDeviceId(undefined);
     }
   }, [activeRemoteSessionId, connect, remoteConfiguration, switchingDeviceId]);
+
+  useEffect(() => {
+    if (
+      accessState !== "paired" ||
+      activeAccessMode !== "account" ||
+      !accountDevicesLoaded ||
+      switchingDeviceId
+    ) return;
+    const replacement = replacementAccountDevice(accountDevices, activeRemoteSessionId);
+    if (replacement) void openAccountDevice(replacement);
+  }, [
+    accessState,
+    accountDevices,
+    accountDevicesLoaded,
+    activeAccessMode,
+    activeRemoteSessionId,
+    openAccountDevice,
+    switchingDeviceId,
+  ]);
 
   useEffect(() => {
     const onVisible = () => {
@@ -3385,8 +3456,16 @@ export function App() {
     allTabs.length,
     connection.state,
   );
+  const accountDashboardReady = activeAccessMode === "account" && accountDevicesLoaded;
+  const visibleDashboardPresentation = accountDashboardReady && dashboardPresentation === "loading"
+    ? accountDevices.length === 0
+      ? "empty"
+      : accountDevices.some((device) => device.state === "online")
+        ? "sessions"
+        : "offline"
+    : dashboardPresentation;
 
-  if (view === "dashboard" && dashboardPresentation === "loading") {
+  if (view === "dashboard" && dashboardPresentation === "loading" && !accountDashboardReady) {
     return <SessionLoadingView connectionState={connection.state} />;
   }
 
@@ -3405,7 +3484,7 @@ export function App() {
       {view === "dashboard" ? (
         <Dashboard
           inventory={inventory}
-          presentation={dashboardPresentation}
+          presentation={visibleDashboardPresentation}
           accountDevices={accountDevices}
           activeSessionId={activeRemoteSessionId}
           devicesLoading={accountDevicesLoading}

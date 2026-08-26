@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   dashboardDeviceRows,
   dashboardSessionPresentation,
+  replacementAccountDevice,
   shouldOpenInitialTerminal,
   terminalSessionLabel,
   terminalWindowLabel,
@@ -35,6 +36,43 @@ describe("remote session dashboard presentation", () => {
     expect(shouldOpenInitialTerminal("account", "dashboard")).toBe(false);
     expect(shouldOpenInitialTerminal("pairing", "dashboard")).toBe(true);
     expect(shouldOpenInitialTerminal("pairing", "accounts")).toBe(false);
+  });
+
+  it("replaces a stale account controller with the newest online Mac session", () => {
+    const devices = [
+      {
+        deviceId: "older",
+        deviceName: "MacBook Air",
+        registeredAt: 1,
+        lastSeenAt: 20,
+        state: "online" as const,
+        sessionId: "session-older",
+        sessionCreatedAt: 20,
+      },
+      {
+        deviceId: "newer",
+        deviceName: "Mac Studio",
+        registeredAt: 1,
+        lastSeenAt: 30,
+        state: "online" as const,
+        sessionId: "session-newer",
+        sessionCreatedAt: 30,
+      },
+    ];
+
+    expect(replacementAccountDevice(devices, "session-ended")?.sessionId)
+      .toBe("session-newer");
+    expect(replacementAccountDevice(devices, "session-older")).toBeUndefined();
+  });
+
+  it("does not replace an account controller when every Mac is offline", () => {
+    expect(replacementAccountDevice([{
+      deviceId: "offline",
+      deviceName: "Office iMac",
+      registeredAt: 1,
+      lastSeenAt: 2,
+      state: "offline",
+    }], "session-ended")).toBeUndefined();
   });
 
   it("combines account devices with the current Mac's windows and tabs", () => {
