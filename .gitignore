@@ -12,4 +12,5 @@ cdk.out/
 infra/cdk/terminaldb-remote.local.json
 *.tsbuildinfo
 apps/macos/build/
+apps/macos/TerminalSurface/.build/
 design/remote/*.generated.html

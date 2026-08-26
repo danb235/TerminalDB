@@ -217,6 +217,10 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
 }
 
 - (NSString *)remoteDirectory {
+    // Match the agent's explicit state override so isolated QA never attaches
+    // its synthetic terminal to the user's enrolled, running remote agent.
+    NSString *override = NSProcessInfo.processInfo.environment[@"TERMINALDB_REMOTE_STATE_DIR"];
+    if (override.isAbsolutePath) return override;
     NSString *support = [NSSearchPathForDirectoriesInDomains(
         NSApplicationSupportDirectory, NSUserDomainMask, YES) firstObject];
     return [[support stringByAppendingPathComponent:@"TerminalDB"]
@@ -967,8 +971,8 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
     if ([self.scheduledViewportSnapshots containsObject:tabIdentifier]) return;
     [self.scheduledViewportSnapshots addObject:tabIdentifier];
     // Let the PTY's coalesced raw output arrive first, then replace it with
-    // the exact native screen. This captures TerminalDB-only ledger blocks
-    // without duplicating every normal terminal output batch.
+    // the exact native screen after an explicit viewport resynchronization.
+    // Ledger metadata stays outside the terminal grid.
     dispatch_after(
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
         dispatch_get_main_queue(), ^{
@@ -998,11 +1002,14 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
     NSUInteger offset = 0;
     while (offset < text.length) {
         NSUInteger length = MIN(maximumChunkCharacters, text.length - offset);
-        NSRange range = [text rangeOfComposedCharacterSequencesForRange:
-            NSMakeRange(offset, length)];
-        if (NSMaxRange(range) > text.length) {
-            range.length = text.length - range.location;
+        // Chunks are joined before parsing. Combining sequences may span them,
+        // but a UTF-16 surrogate pair must stay intact for JSON encoding. Do not
+        // expand to a whole grapheme: an arbitrary combining run is unbounded.
+        if (offset + length < text.length &&
+            CFStringIsSurrogateHighCharacter([text characterAtIndex:offset + length - 1])) {
+            length--;
         }
+        NSRange range = NSMakeRange(offset, length);
         [chunks addObject:[text substringWithRange:range]];
         offset = NSMaxRange(range);
     }

@@ -12,6 +12,8 @@
 #import "TerminalRemoteBridge.h"
 #import "TerminalTheme.h"
 #import "TerminalUpdater.h"
+#import "TerminalDBTerminal-Swift.h"
+#define TerminalView TDBTerminalSurface
 
 #include <errno.h>
 #include <fcntl.h>
@@ -27,519 +29,7 @@
 #include <unistd.h>
 #include <util.h>
 
-typedef NS_ENUM(NSUInteger, TerminalParserState) {
-    TerminalParserGround,
-    TerminalParserEscape,
-    TerminalParserCSI,
-    TerminalParserOSC,
-    TerminalParserOSCEscape,
-    TerminalParserString,
-    TerminalParserStringEscape,
-};
-
 static int TerminalDBExitStatus = 0;
-static NSUInteger const TerminalDBMaximumScrollbackCharacters = 2000000;
-static NSUInteger const TerminalDBRetainedScrollbackCharacters = 1500000;
-
-static NSString *TerminalDBClipboardString(NSString *selection) {
-    if (selection.length == 0) return @"";
-
-    NSArray<NSString *> *lines =
-        [selection componentsSeparatedByString:@"\n"];
-    NSMutableString *copy =
-        [NSMutableString stringWithCapacity:selection.length];
-    [lines enumerateObjectsUsingBlock:^(NSString *line,
-                                        NSUInteger index,
-                                        BOOL *stop) {
-        (void)stop;
-        NSUInteger end = line.length;
-        while (end > 0) {
-            unichar character = [line characterAtIndex:end - 1];
-            if (character != ' ' && character != '\t') break;
-            end--;
-        }
-        if (end > 0) {
-            [copy appendString:[line substringToIndex:end]];
-        }
-        if (index + 1 < lines.count) [copy appendString:@"\n"];
-    }];
-    return copy;
-}
-
-@interface TerminalView : NSTextView
-@property(nonatomic) int pty;
-@property(nonatomic) BOOL applicationCursorKeys;
-@property(nonatomic) BOOL bracketedPaste;
-@property(nonatomic) BOOL inputEnabled;
-@property(nonatomic) NSUInteger terminalCursorIndex;
-@property(nonatomic) BOOL terminalCursorVisible;
-@property(nonatomic, strong) NSColor *terminalCursorColor;
-@property(nonatomic, copy, nullable) void (^userDidSendInput)(void);
-@property(nonatomic, copy, nullable) void (^pasteDidSend)(NSUInteger byteCount,
-                                                         NSUInteger lineCount);
-@property(nonatomic, copy, nullable) void (^cycleRegionsHandler)(void);
-- (NSRect)terminalCursorRect;
-- (BOOL)enqueueInputData:(NSData *)data;
-@end
-
-@interface TerminalView ()
-@property(nonatomic, strong) NSMutableData *pendingInput;
-@property(nonatomic) NSUInteger pendingInputOffset;
-@property(nonatomic) dispatch_source_t writeSource;
-@property(nonatomic) BOOL writeSourceSuspended;
-@end
-
-@implementation TerminalView
-
-- (void)setPty:(int)pty {
-    if (_pty == pty) return;
-    if (self.writeSource != nil) {
-        if (self.writeSourceSuspended) {
-            dispatch_resume(self.writeSource);
-            self.writeSourceSuspended = NO;
-        }
-        dispatch_source_cancel(self.writeSource);
-        self.writeSource = nil;
-    }
-    [self.pendingInput setLength:0];
-    self.pendingInputOffset = 0;
-    _pty = pty;
-    if (pty < 0) return;
-
-    if (self.pendingInput == nil) self.pendingInput = [NSMutableData data];
-    self.writeSource = dispatch_source_create(
-        DISPATCH_SOURCE_TYPE_WRITE, (uintptr_t)pty, 0,
-        dispatch_get_main_queue());
-    self.writeSourceSuspended = YES;
-    __weak typeof(self) weakSelf = self;
-    dispatch_source_set_event_handler(self.writeSource, ^{
-        [weakSelf drainPendingInput];
-    });
-}
-
-- (void)compactPendingInput {
-    if (self.pendingInputOffset == 0) return;
-    if (self.pendingInputOffset >= self.pendingInput.length) {
-        [self.pendingInput setLength:0];
-        self.pendingInputOffset = 0;
-        return;
-    }
-    if (self.pendingInputOffset < 65536) return;
-    [self.pendingInput replaceBytesInRange:
-        NSMakeRange(0, self.pendingInputOffset) withBytes:NULL length:0];
-    self.pendingInputOffset = 0;
-}
-
-- (void)drainPendingInput {
-    if (self.pty < 0 || self.pendingInputOffset >= self.pendingInput.length) {
-        [self compactPendingInput];
-        if (self.writeSource != nil && !self.writeSourceSuspended) {
-            dispatch_suspend(self.writeSource);
-            self.writeSourceSuspended = YES;
-        }
-        return;
-    }
-
-    const uint8_t *bytes = self.pendingInput.bytes;
-    while (self.pendingInputOffset < self.pendingInput.length) {
-        size_t remaining = self.pendingInput.length - self.pendingInputOffset;
-        ssize_t written = write(self.pty,
-                                bytes + self.pendingInputOffset,
-                                remaining);
-        if (written > 0) {
-            self.pendingInputOffset += (NSUInteger)written;
-            continue;
-        }
-        if (written < 0 && errno == EINTR) continue;
-        if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
-
-        // The PTY has closed. Discard bytes that can no longer have a
-        // destination instead of accidentally delivering them to a reused fd.
-        [self.pendingInput setLength:0];
-        self.pendingInputOffset = 0;
-        break;
-    }
-    [self compactPendingInput];
-    BOOL hasPending = self.pendingInputOffset < self.pendingInput.length;
-    if (hasPending && self.writeSourceSuspended) {
-        dispatch_resume(self.writeSource);
-        self.writeSourceSuspended = NO;
-    } else if (!hasPending && self.writeSource != nil &&
-               !self.writeSourceSuspended) {
-        dispatch_suspend(self.writeSource);
-        self.writeSourceSuspended = YES;
-    }
-}
-
-- (BOOL)enqueueInputData:(NSData *)data {
-    NSAssert(NSThread.isMainThread,
-             @"Terminal input must be serialized on the main thread");
-    if (self.pty < 0) return NO;
-    if (data.length == 0) return YES;
-    if (self.pendingInput == nil) self.pendingInput = [NSMutableData data];
-    [self compactPendingInput];
-    [self.pendingInput appendData:data];
-    [self drainPendingInput];
-    return YES;
-}
-
-- (void)setTerminalCursorIndex:(NSUInteger)terminalCursorIndex {
-    if (_terminalCursorIndex == terminalCursorIndex) return;
-    _terminalCursorIndex = terminalCursorIndex;
-    self.needsDisplay = YES;
-}
-
-- (void)setTerminalCursorVisible:(BOOL)terminalCursorVisible {
-    if (_terminalCursorVisible == terminalCursorVisible) return;
-    _terminalCursorVisible = terminalCursorVisible;
-    self.needsDisplay = YES;
-}
-
-- (NSRect)terminalCursorRect {
-    NSLayoutManager *layoutManager = self.layoutManager;
-    NSTextContainer *textContainer = self.textContainer;
-    NSFont *font = self.font;
-    if (layoutManager == nil || textContainer == nil || font == nil) {
-        return NSZeroRect;
-    }
-
-    [layoutManager ensureLayoutForTextContainer:textContainer];
-    CGFloat cellWidth = MAX(1.0,
-        [@" " sizeWithAttributes:@{NSFontAttributeName : font}].width);
-    CGFloat lineHeight = MAX(1.0,
-        font.ascender - font.descender + font.leading);
-    CGFloat lineHeightMultiple =
-        self.defaultParagraphStyle.lineHeightMultiple;
-    if (lineHeightMultiple > 0) lineHeight *= lineHeightMultiple;
-    NSPoint origin = self.textContainerOrigin;
-    NSUInteger length = self.textStorage.length;
-    NSUInteger cursor = MIN(self.terminalCursorIndex, length);
-    NSRect glyphRect = NSZeroRect;
-    BOOL resolvedCursorPosition = NO;
-
-    if (cursor < length) {
-        NSRange glyphRange = [layoutManager
-            glyphRangeForCharacterRange:NSMakeRange(cursor, 1)
-                    actualCharacterRange:nil];
-        if (glyphRange.location != NSNotFound && glyphRange.length > 0) {
-            glyphRect = [layoutManager
-                boundingRectForGlyphRange:glyphRange
-                         inTextContainer:textContainer];
-            resolvedCursorPosition = !NSIsEmptyRect(glyphRect);
-        }
-    } else if (length > 0 &&
-               [self.textStorage.string characterAtIndex:length - 1] != '\n') {
-        NSRange glyphRange = [layoutManager
-            glyphRangeForCharacterRange:NSMakeRange(length - 1, 1)
-                    actualCharacterRange:nil];
-        if (glyphRange.location != NSNotFound && glyphRange.length > 0) {
-            glyphRect = [layoutManager
-                boundingRectForGlyphRange:glyphRange
-                         inTextContainer:textContainer];
-            glyphRect.origin.x = NSMaxX(glyphRect);
-            resolvedCursorPosition = !NSIsEmptyRect(glyphRect);
-        }
-    } else if (layoutManager.extraLineFragmentTextContainer ==
-               textContainer) {
-        glyphRect = layoutManager.extraLineFragmentRect;
-        resolvedCursorPosition = !NSIsEmptyRect(glyphRect);
-    }
-
-    if (!resolvedCursorPosition) {
-        NSString *contents = self.textStorage.string;
-        NSRange preceding = NSMakeRange(0, cursor);
-        NSRange newline = cursor > 0
-            ? [contents rangeOfString:@"\n"
-                              options:NSBackwardsSearch
-                                range:preceding]
-            : NSMakeRange(NSNotFound, 0);
-        NSUInteger lineStart =
-            newline.location == NSNotFound ? 0 : NSMaxRange(newline);
-        NSString *linePrefix = [contents
-            substringWithRange:NSMakeRange(lineStart, cursor - lineStart)];
-        CGFloat x = [linePrefix
-            sizeWithAttributes:@{NSFontAttributeName : font}].width;
-        NSUInteger line = 0;
-        for (NSUInteger index = 0; index < lineStart; index++) {
-            if ([contents characterAtIndex:index] == '\n') line++;
-        }
-        glyphRect = NSMakeRect(x, line * lineHeight, 0, lineHeight);
-    }
-    return NSMakeRect(origin.x + glyphRect.origin.x,
-                      origin.y + glyphRect.origin.y,
-                      cellWidth,
-                      MAX(lineHeight, glyphRect.size.height));
-}
-
-- (void)drawRect:(NSRect)dirtyRect {
-    [super drawRect:dirtyRect];
-    if (!self.inputEnabled || !self.terminalCursorVisible) return;
-
-    NSRect cursorRect = [self terminalCursorRect];
-    if (NSIsEmptyRect(cursorRect) ||
-        !NSIntersectsRect(dirtyRect, cursorRect)) {
-        return;
-    }
-    NSColor *color = self.terminalCursorColor ?: self.insertionPointColor;
-    if (self.window.isKeyWindow && self.window.firstResponder == self) {
-        [color setFill];
-        NSRectFill(cursorRect);
-    } else {
-        [[color colorWithAlphaComponent:0.7] setStroke];
-        NSFrameRectWithWidth(cursorRect, 1.0);
-    }
-}
-
-- (BOOL)becomeFirstResponder {
-    BOOL became = [super becomeFirstResponder];
-    if (became) self.needsDisplay = YES;
-    return became;
-}
-
-- (BOOL)resignFirstResponder {
-    BOOL resigned = [super resignFirstResponder];
-    if (resigned) self.needsDisplay = YES;
-    return resigned;
-}
-
-- (void)sendBytes:(const char *)bytes length:(size_t)length {
-    if (bytes == NULL || length == 0) return;
-    [self enqueueInputData:[NSData dataWithBytes:bytes length:length]];
-}
-
-- (void)sendUserBytes:(const char *)bytes length:(size_t)length {
-    if (self.userDidSendInput != nil) self.userDidSendInput();
-    [self sendBytes:bytes length:length];
-}
-
-- (void)pasteString:(NSString *)paste {
-    if (!self.inputEnabled || paste.length == 0) return;
-    paste = [paste stringByReplacingOccurrencesOfString:@"\r\n"
-                                             withString:@"\n"];
-    paste = [paste stringByReplacingOccurrencesOfString:@"\r"
-                                             withString:@"\n"];
-    if (self.bracketedPaste) {
-        NSData *data = [paste dataUsingEncoding:NSUTF8StringEncoding];
-        NSMutableData *framed = [NSMutableData dataWithCapacity:data.length + 12];
-        [framed appendBytes:"\033[200~" length:6];
-        [framed appendData:data];
-        [framed appendBytes:"\033[201~" length:6];
-        if (self.userDidSendInput != nil) self.userDidSendInput();
-        if ([self enqueueInputData:framed] && self.pasteDidSend != nil) {
-            NSUInteger lineCount = 1;
-            for (NSUInteger index = 0; index < paste.length; index++) {
-                if ([paste characterAtIndex:index] == '\n') lineCount++;
-            }
-            self.pasteDidSend(data.length, lineCount);
-        }
-        return;
-    }
-
-    paste = [paste stringByReplacingOccurrencesOfString:@"\n"
-                                             withString:@"\r"];
-    NSData *data = [paste dataUsingEncoding:NSUTF8StringEncoding];
-    if (self.userDidSendInput != nil) self.userDidSendInput();
-    BOOL sent = [self enqueueInputData:data];
-    if (sent && self.pasteDidSend != nil) {
-        NSUInteger lineCount = 1;
-        for (NSUInteger index = 0; index < paste.length; index++) {
-            if ([paste characterAtIndex:index] == '\r') lineCount++;
-        }
-        self.pasteDidSend(data.length, lineCount);
-    }
-}
-
-- (void)paste:(id)sender {
-    (void)sender;
-    NSString *paste =
-        [NSPasteboard.generalPasteboard
-            stringForType:NSPasteboardTypeString];
-    [self pasteString:paste];
-}
-
-- (void)copy:(id)sender {
-    (void)sender;
-    NSRange selection = self.selectedRange;
-    NSString *contents = self.string ?: @"";
-    if (selection.length == 0 || NSMaxRange(selection) > contents.length) {
-        return;
-    }
-
-    NSString *copy = TerminalDBClipboardString(
-        [contents substringWithRange:selection]);
-    [NSPasteboard.generalPasteboard clearContents];
-    [NSPasteboard.generalPasteboard setString:copy
-                                       forType:NSPasteboardTypeString];
-}
-
-- (void)keyDown:(NSEvent *)event {
-    NSEventModifierFlags modifiers =
-        event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
-    NSString *unmodified = event.charactersIgnoringModifiers.lowercaseString;
-
-    if ((modifiers & NSEventModifierFlagCommand) != 0) {
-        if ([unmodified isEqualToString:@"c"]) {
-            if (self.selectedRange.length > 0) [self copy:nil];
-            return;
-        }
-        if ([unmodified isEqualToString:@"v"]) {
-            NSString *paste =
-                [NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeString];
-            [self pasteString:paste];
-            return;
-        }
-        if ([unmodified isEqualToString:@"a"]) {
-            [self selectAll:nil];
-            return;
-        }
-        return;
-    }
-
-    if (!self.inputEnabled) {
-        NSBeep();
-        return;
-    }
-
-    if ((modifiers & NSEventModifierFlagControl) != 0 &&
-        unmodified.length > 0) {
-        unichar base = [unmodified characterAtIndex:0];
-        unsigned char control = 0;
-        BOOL mapped = YES;
-        if (base >= 'a' && base <= 'z') {
-            control = (unsigned char)(base - 'a' + 1);
-        } else {
-            switch (base) {
-                case ' ':
-                case '@': control = 0x00; break;
-                case '[': control = 0x1b; break;
-                case '\\': control = 0x1c; break;
-                case ']': control = 0x1d; break;
-                case '^': control = 0x1e; break;
-                case '_': control = 0x1f; break;
-                case '?': control = 0x7f; break;
-                default: mapped = NO; break;
-            }
-        }
-        if (mapped) {
-            [self sendUserBytes:(const char *)&control length:1];
-            return;
-        }
-    }
-
-    NSString *characters = event.characters;
-    if (characters.length == 0) return;
-
-    unichar key = [characters characterAtIndex:0];
-    if (key == NSF6FunctionKey && self.cycleRegionsHandler != nil) {
-        self.cycleRegionsHandler();
-        return;
-    }
-    switch (key) {
-        case NSUpArrowFunctionKey:
-            [self sendUserBytes:
-                self.applicationCursorKeys ? "\033OA" : "\033[A"
-                           length:3];
-            return;
-        case NSDownArrowFunctionKey:
-            [self sendUserBytes:
-                self.applicationCursorKeys ? "\033OB" : "\033[B"
-                           length:3];
-            return;
-        case NSRightArrowFunctionKey:
-            [self sendUserBytes:
-                self.applicationCursorKeys ? "\033OC" : "\033[C"
-                           length:3];
-            return;
-        case NSLeftArrowFunctionKey:
-            [self sendUserBytes:
-                self.applicationCursorKeys ? "\033OD" : "\033[D"
-                           length:3];
-            return;
-        case NSDeleteCharacter:
-            [self sendUserBytes:"\x7f" length:1];
-            return;
-        case NSInsertFunctionKey:
-            [self sendUserBytes:"\033[2~" length:4];
-            return;
-        case NSDeleteFunctionKey:
-            [self sendUserBytes:"\033[3~" length:4];
-            return;
-        case NSHomeFunctionKey:
-            [self sendUserBytes:"\033OH" length:3];
-            return;
-        case NSEndFunctionKey:
-            [self sendUserBytes:"\033OF" length:3];
-            return;
-        case NSPageUpFunctionKey:
-            [self sendUserBytes:"\033[5~" length:4];
-            return;
-        case NSPageDownFunctionKey:
-            [self sendUserBytes:"\033[6~" length:4];
-            return;
-        case NSF1FunctionKey:
-            [self sendUserBytes:"\033OP" length:3];
-            return;
-        case NSF2FunctionKey:
-            [self sendUserBytes:"\033OQ" length:3];
-            return;
-        case NSF3FunctionKey:
-            [self sendUserBytes:"\033OR" length:3];
-            return;
-        case NSF4FunctionKey:
-            [self sendUserBytes:"\033OS" length:3];
-            return;
-        case NSF5FunctionKey:
-            [self sendUserBytes:"\033[15~" length:5];
-            return;
-        case NSF7FunctionKey:
-            [self sendUserBytes:"\033[18~" length:5];
-            return;
-        case NSF8FunctionKey:
-            [self sendUserBytes:"\033[19~" length:5];
-            return;
-        case NSF9FunctionKey:
-            [self sendUserBytes:"\033[20~" length:5];
-            return;
-        case NSF10FunctionKey:
-            [self sendUserBytes:"\033[21~" length:5];
-            return;
-        case NSF11FunctionKey:
-            [self sendUserBytes:"\033[23~" length:5];
-            return;
-        case NSF12FunctionKey:
-            [self sendUserBytes:"\033[24~" length:5];
-            return;
-        case NSCarriageReturnCharacter:
-        case NSNewlineCharacter:
-            // Claude Code and other modern terminal UIs use Escape + Return
-            // for a deliberate line break. Preserve Shift here instead of
-            // collapsing it to the same carriage return that submits the
-            // prompt.
-            if ((modifiers & NSEventModifierFlagShift) != 0) {
-                [self sendUserBytes:"\033\r" length:2];
-            } else {
-                [self sendUserBytes:"\r" length:1];
-            }
-            return;
-        case NSBackTabCharacter:
-            [self sendUserBytes:"\033[Z" length:3];
-            return;
-        case 0x1b:
-            [self sendUserBytes:"\033" length:1];
-            return;
-        default:
-            break;
-    }
-
-    NSData *data = [characters dataUsingEncoding:NSUTF8StringEncoding];
-    [self sendUserBytes:data.bytes length:data.length];
-}
-
-- (BOOL)acceptsFirstResponder {
-    return YES;
-}
-
-@end
 
 @protocol TerminalTabActionTarget <NSObject>
 - (void)newWindowForTab:(id)sender;
@@ -575,69 +65,11 @@ static NSString *TerminalDBClipboardString(NSString *selection) {
 
 @end
 
-@interface TerminalScrollView : NSScrollView
-@property(nonatomic, copy, nullable) void (^userWillScroll)(void);
-@property(nonatomic, copy, nullable) void (^userDidScroll)(void);
-@end
-
-@implementation TerminalScrollView
-
-- (void)scrollWheel:(NSEvent *)event {
-    // Suspend output following before AppKit applies even the first (often
-    // sub-line) trackpad delta. Waiting until after the scroll meant the
-    // terminal still looked "at bottom" within its line-height tolerance,
-    // so Claude's next redraw immediately pulled the viewport back down.
-    if (self.userWillScroll != nil) self.userWillScroll();
-    [super scrollWheel:event];
-    if (self.userDidScroll == nil) return;
-
-    // A trackpad begins with tiny deltas that can leave the clip view at the
-    // exact bottom for a frame. Do not decide that following should resume
-    // until that gesture (including momentum) has actually ended. Traditional
-    // mouse-wheel events are unphased, so settle those after each discrete
-    // event.
-    NSEventPhase phase = event.phase;
-    NSEventPhase momentumPhase = event.momentumPhase;
-    BOOL unphased = phase == NSEventPhaseNone &&
-                    momentumPhase == NSEventPhaseNone;
-    BOOL gestureEnded = (phase & (NSEventPhaseEnded |
-                                  NSEventPhaseCancelled)) != 0;
-    BOOL momentumEnded = (momentumPhase & (NSEventPhaseEnded |
-                                           NSEventPhaseCancelled)) != 0;
-    if (unphased || gestureEnded || momentumEnded) {
-        dispatch_async(dispatch_get_main_queue(), self.userDidScroll);
-    }
-}
-
-@end
-
-static void ConfigureTerminalTextViewForScrolling(
-    TerminalView *terminalView,
-    NSSize viewportSize) {
-    // NSTextView only grows its document height when its width tracks the
-    // enclosing clip view. The previous production configuration made the
-    // view height follow the viewport and gave the text container an
-    // effectively infinite width. AppKit could lay out retained scrollback,
-    // but the NSScrollView's document never became taller than its viewport,
-    // so wheel gestures had nowhere to go.
-    terminalView.frame = NSMakeRect(0, 0,
-        MAX(1.0, viewportSize.width), MAX(1.0, viewportSize.height));
-    terminalView.verticallyResizable = YES;
-    terminalView.horizontallyResizable = NO;
-    terminalView.autoresizingMask = NSViewWidthSizable;
-    terminalView.minSize = NSMakeSize(0, MAX(1.0, viewportSize.height));
-    terminalView.maxSize = NSMakeSize(CGFLOAT_MAX, CGFLOAT_MAX);
-    terminalView.textContainer.widthTracksTextView = YES;
-    terminalView.textContainer.containerSize =
-        NSMakeSize(MAX(1.0, viewportSize.width), CGFLOAT_MAX);
-    terminalView.textContainer.lineFragmentPadding = 0;
-}
 
 @interface AppDelegate : NSObject <
     NSApplicationDelegate,
     NSWindowDelegate,
     NSMenuDelegate,
-    NSTextViewDelegate,
     TerminalTabActionTarget,
     ClaudeStatusBarDelegate,
     ClaudeAssistantViewDelegate,
@@ -670,48 +102,20 @@ static void ConfigureTerminalTextViewForScrolling(
 @property(nonatomic, strong, nullable) NSDate *lastPTYOutputAt;
 @property(nonatomic) BOOL tabIsBusy;
 @property(nonatomic) BOOL tabActivityAnimating;
-@property(nonatomic, strong) NSScrollView *terminalScrollView;
+@property(nonatomic, strong) NSView *terminalScrollView;
 @property(nonatomic, strong) TerminalView *terminalView;
 @property(nonatomic) int pty;
 @property(nonatomic) pid_t shellPid;
 @property(nonatomic) dispatch_source_t readSource;
-@property(nonatomic) TerminalParserState parserState;
-@property(nonatomic, strong) NSMutableString *csiParameters;
-@property(nonatomic, strong) NSMutableData *oscData;
-@property(nonatomic, strong) NSMutableData *pendingUTF8Data;
-@property(nonatomic) NSUInteger outputCursor;
-@property(nonatomic) NSUInteger savedOutputCursor;
-@property(nonatomic) BOOL alternateScreenActive;
-@property(nonatomic) NSUInteger alternateViewportStart;
-@property(nonatomic) NSUInteger primaryViewportStart;
-@property(nonatomic, strong, nullable)
-    NSAttributedString *primaryScreenContents;
-@property(nonatomic) NSUInteger primaryOutputCursor;
-@property(nonatomic) NSUInteger primarySavedOutputCursor;
-@property(nonatomic) BOOL primaryFollowsOutput;
-@property(nonatomic) NSPoint primaryScrollOrigin;
 @property(nonatomic, copy, nullable) NSString *reportedWindowTitle;
 @property(nonatomic) NSUInteger terminalRows;
 @property(nonatomic) NSUInteger terminalColumns;
 @property(nonatomic) NSUInteger appliedPTYRows;
 @property(nonatomic) NSUInteger appliedPTYColumns;
 @property(nonatomic) BOOL remoteGeometryActive;
-@property(nonatomic) BOOL textStorageEditing;
-@property(nonatomic) BOOL synchronizedOutput;
-@property(nonatomic) BOOL followSynchronizedOutput;
-@property(nonatomic) BOOL followsOutput;
-@property(nonatomic) BOOL scrollCorrectionScheduled;
 @property(nonatomic, copy) NSArray<NSColor *> *ansiColors;
 @property(nonatomic, strong) NSColor *defaultForeground;
 @property(nonatomic, strong) NSColor *defaultBackground;
-@property(nonatomic, strong) NSColor *currentForeground;
-@property(nonatomic, strong, nullable) NSColor *currentBackground;
-@property(nonatomic, strong) NSMutableParagraphStyle *terminalParagraphStyle;
-@property(nonatomic) BOOL textBold;
-@property(nonatomic) BOOL textItalic;
-@property(nonatomic) BOOL textUnderlined;
-@property(nonatomic) BOOL textInverse;
-@property(nonatomic) BOOL textDim;
 @property(nonatomic) BOOL usingJetBrainsMono;
 @property(nonatomic) CGFloat terminalFontSize;
 @property(nonatomic) CGFloat terminalLineHeightMultiple;
@@ -725,7 +129,6 @@ static void ConfigureTerminalTextViewForScrolling(
 @property(nonatomic, copy) NSString *activeLedgerCommand;
 @property(nonatomic, copy) NSString *activeLedgerDirectory;
 @property(nonatomic, strong, nullable) NSDate *activeLedgerStartedAt;
-@property(nonatomic) NSUInteger activeLedgerOutputStart;
 @property(nonatomic) BOOL privateSession;
 @property(nonatomic) BOOL focusMode;
 @property(nonatomic, strong) ClaudeAssistantView *assistantView;
@@ -799,12 +202,9 @@ static void ConfigureTerminalTextViewForScrolling(
 - (void)hideUtilityPanel:(nullable id)sender;
 - (void)saveRunbookFromRecord:(NSDictionary *)record;
 - (void)newTerminalSplitVertical:(BOOL)vertical;
-- (void)appendLedgerFooterForRecord:(NSDictionary *)record;
-- (void)trimTerminalScrollbackIfNeeded;
 - (void)updateUpdaterMenuItem;
 - (BOOL)claudeIsForeground;
 - (void)refreshPersistentTerminalContext;
-- (void)recoverTerminalModesAtShellPrompt;
 - (BOOL)applyRemoteTerminalColumns:(NSUInteger)columns
                               rows:(NSUInteger)rows;
 @end
@@ -828,8 +228,11 @@ static void ConfigureTerminalTextViewForScrolling(
         containsObject:@"--background-tab-qa"];
     BOOL visualQA = [NSProcessInfo.processInfo.arguments
         containsObject:@"--visual-qa"];
+    // Real interactive terminal, disposable storage, no scripted UI fixtures.
+    BOOL terminalQA = [NSProcessInfo.processInfo.arguments
+        containsObject:@"--terminal-qa"];
     NSString *launchFixtureRoot = nil;
-    if (backgroundTabQA || visualQA) {
+    if (backgroundTabQA || visualQA || terminalQA) {
         launchFixtureRoot = [NSTemporaryDirectory()
             stringByAppendingPathComponent:[NSString stringWithFormat:
                 @"terminaldb-launch-qa-%@", NSUUID.UUID.UUIDString]];
@@ -841,6 +244,7 @@ static void ConfigureTerminalTextViewForScrolling(
     self.apiConfiguration = [[ClaudeAPIConfiguration alloc] init];
     self.theme = [TerminalTheme preferredTheme];
     self.productStore = [TerminalProductStore sharedStore];
+    if (terminalQA) self.productStore = [TerminalProductStore ephemeralStoreForTesting];
     self.updater = [[TerminalUpdater alloc]
         initWithRepository:@"danb235/TerminalDB"];
     __weak AppDelegate *weakRoot = self;
@@ -992,7 +396,7 @@ static void ConfigureTerminalTextViewForScrolling(
         [NSFileManager.defaultManager removeItemAtPath:launchFixtureRoot
                                                   error:nil];
     }
-    if (!backgroundTabQA && !visualQA &&
+    if (!backgroundTabQA && !visualQA && !terminalQA &&
         self.apiConfiguration.hasAPIKey) {
         [self.apiConfiguration
             refreshModelsWithCompletion:^(
@@ -1007,7 +411,7 @@ static void ConfigureTerminalTextViewForScrolling(
                                                   error:nil];
     } else {
         [self newTerminalWindow:nil];
-        if (!visualQA) {
+        if (!visualQA && !terminalQA) {
             // Start the per-user agent so an account-enrolled Mac can restore
             // its remote session whenever TerminalDB is open. The agent stays
             // disabled for Macs that have never opted into Remote Control.
@@ -1061,37 +465,9 @@ static void ConfigureTerminalTextViewForScrolling(
                          "./photos/IMG_1092.jpg\n"
                          "./photos/IMG_1178.JPG\n"
                          "./exports/cover.jpg";
-                    [controller.terminalView.textStorage
-                        setAttributedString:[[NSAttributedString alloc]
-                            initWithString:scrollback
-                               attributes:@{
-                        NSFontAttributeName : controller.terminalView.font,
-                        NSForegroundColorAttributeName :
-                            controller.theme.terminalForeground,
-                        NSParagraphStyleAttributeName :
-                            controller.terminalParagraphStyle,
-                    }]];
-                    controller.activeLedgerCommand =
-                        visualRecord[@"command"];
-                    controller.activeLedgerOutputStart =
-                        [scrollback rangeOfString:@"./photos"].location;
-                    [controller appendLedgerFooterForRecord:visualRecord];
-                    NSAttributedString *prompt =
-                        [[NSAttributedString alloc]
-                            initWithString:@"➜  /  "
-                               attributes:@{
-                        NSFontAttributeName : controller.terminalView.font,
-                        NSForegroundColorAttributeName :
-                            controller.theme.ansiColors[6],
-                        NSParagraphStyleAttributeName :
-                            controller.terminalParagraphStyle,
-                    }];
-                    [controller.terminalView.textStorage
-                        appendAttributedString:prompt];
-                    controller.outputCursor =
-                        controller.terminalView.textStorage.length;
-                    controller.terminalView.terminalCursorIndex =
-                        controller.outputCursor;
+                    [controller.terminalView feedText:[scrollback
+                        stringByReplacingOccurrencesOfString:@"\n" withString:@"\r\n"]];
+                    [controller.terminalView feedText:@"\r\n➜  /  "];
                 }
                 [controller.assistantView beginWithModelName:@"Claude Sonnet 5"
                     messages:@[
@@ -1247,14 +623,14 @@ static void ConfigureTerminalTextViewForScrolling(
                         });
                 }
             }
-        } else if ([NSUserDefaults.standardUserDefaults
+        } else if (!terminalQA && [NSUserDefaults.standardUserDefaults
                        boolForKey:@"TerminalDBRestoreWorkspaceOnLaunch"] &&
                    self.productStore.workspaces.count > 0) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 [self showProductSection:
                     TerminalProductSectionWorkspaces];
             });
-        } else if (![NSUserDefaults.standardUserDefaults
+        } else if (!terminalQA && ![NSUserDefaults.standardUserDefaults
                        boolForKey:@"TerminalDBDidCompleteOnboarding"] &&
                    !self.apiConfiguration.hasAPIKey &&
                    self.profileManager.profiles.count == 0 &&
@@ -1263,7 +639,7 @@ static void ConfigureTerminalTextViewForScrolling(
                 [self showProductSection:TerminalProductSectionOnboarding];
             });
         }
-        if (!visualQA) [self.updater checkOnLaunchIfDue];
+        if (!visualQA && !terminalQA) [self.updater checkOnLaunchIfDue];
     }
 }
 
@@ -2332,192 +1708,8 @@ static void ConfigureTerminalTextViewForScrolling(
     return nil;
 }
 
-- (NSColor *)terminalRemoteColor:(NSColor *)color
-                 compositedOver:(NSColor *)background {
-    NSColor *foreground = [color
-        colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
-    NSColor *backdrop = [background
-        colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
-    if (foreground == nil) return backdrop ?: color;
-    if (backdrop == nil || foreground.alphaComponent >= 0.999) {
-        return foreground;
-    }
-    CGFloat foregroundRed = 0;
-    CGFloat foregroundGreen = 0;
-    CGFloat foregroundBlue = 0;
-    CGFloat foregroundAlpha = 0;
-    CGFloat backgroundRed = 0;
-    CGFloat backgroundGreen = 0;
-    CGFloat backgroundBlue = 0;
-    CGFloat backgroundAlpha = 0;
-    [foreground getRed:&foregroundRed
-                 green:&foregroundGreen
-                  blue:&foregroundBlue
-                 alpha:&foregroundAlpha];
-    [backdrop getRed:&backgroundRed
-               green:&backgroundGreen
-                blue:&backgroundBlue
-               alpha:&backgroundAlpha];
-    CGFloat resolvedAlpha =
-        foregroundAlpha + backgroundAlpha * (1.0 - foregroundAlpha);
-    if (resolvedAlpha <= 0.0) return NSColor.clearColor;
-    CGFloat backgroundContribution =
-        backgroundAlpha * (1.0 - foregroundAlpha);
-    return [NSColor colorWithSRGBRed:
-        (foregroundRed * foregroundAlpha +
-            backgroundRed * backgroundContribution) / resolvedAlpha
-        green:
-        (foregroundGreen * foregroundAlpha +
-            backgroundGreen * backgroundContribution) / resolvedAlpha
-        blue:
-        (foregroundBlue * foregroundAlpha +
-            backgroundBlue * backgroundContribution) / resolvedAlpha
-        alpha:resolvedAlpha];
-}
-
-- (NSString *)terminalRemoteANSIForAttributes:
-    (NSDictionary<NSAttributedStringKey, id> *)attributes {
-    NSMutableArray<NSString *> *codes = [NSMutableArray arrayWithObject:@"0"];
-    NSFont *font = [attributes[NSFontAttributeName] isKindOfClass:NSFont.class]
-        ? attributes[NSFontAttributeName] : self.terminalView.font;
-    if (font != nil) {
-        NSFontTraitMask traits =
-            [NSFontManager.sharedFontManager traitsOfFont:font];
-        if ((traits & NSBoldFontMask) != 0) [codes addObject:@"1"];
-        if ((traits & NSItalicFontMask) != 0) [codes addObject:@"3"];
-    }
-    if ([attributes[NSUnderlineStyleAttributeName] integerValue] != 0) {
-        [codes addObject:@"4"];
-    }
-    NSColor *background = [self
-        terminalRemoteColor:(attributes[NSBackgroundColorAttributeName]
-            ?: self.defaultBackground)
-        compositedOver:self.defaultBackground];
-    NSColor *foreground = [self
-        terminalRemoteColor:(attributes[NSForegroundColorAttributeName]
-            ?: self.defaultForeground)
-        compositedOver:background];
-    NSArray<NSDictionary *> *colors = @[
-        @{
-            @"color" : foreground,
-            @"prefix" : @"38",
-        },
-        @{
-            @"color" : background,
-            @"prefix" : @"48",
-        },
-    ];
-    for (NSDictionary *entry in colors) {
-        NSColor *color = [entry[@"color"]
-            colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
-        if (color == nil) continue;
-        CGFloat red = 0;
-        CGFloat green = 0;
-        CGFloat blue = 0;
-        CGFloat alpha = 0;
-        [color getRed:&red green:&green blue:&blue alpha:&alpha];
-        [codes addObject:[NSString stringWithFormat:@"%@;2;%ld;%ld;%ld",
-            entry[@"prefix"],
-            (long)lround(red * 255.0),
-            (long)lround(green * 255.0),
-            (long)lround(blue * 255.0)]];
-    }
-    return [NSString stringWithFormat:@"\x1b[%@m",
-        [codes componentsJoinedByString:@";"]];
-}
-
 - (NSString *)terminalRemoteANSISnapshot {
-    NSTextStorage *storage = self.terminalView.textStorage;
-    NSString *plain = storage.string ?: @"";
-    NSUInteger rows = MAX((NSUInteger)1, self.terminalRows);
-    NSUInteger columns = MAX((NSUInteger)1, self.terminalColumns);
-    NSUInteger visibleStart = plain.length;
-    NSUInteger lineBreaks = 0;
-    while (visibleStart > 0 && lineBreaks < rows) {
-        visibleStart--;
-        if ([plain characterAtIndex:visibleStart] == '\n') {
-            lineBreaks++;
-            if (lineBreaks == rows) {
-                visibleStart++;
-                break;
-            }
-        }
-    }
-
-    // A viewport replacement also seeds xterm's local scrollback. Keep the
-    // most recent native history in the encrypted snapshot so scrolling up in
-    // the browser behaves like scrolling the TerminalDB text view on the Mac.
-    NSUInteger historyStart = 0;
-    // xterm retains 10,000 lines locally. Seed enough Mac-authoritative
-    // history to make tab switches and reconnects preserve a comparable
-    // scrollback window; TerminalRemoteBridge transports this in bounded,
-    // independently encrypted chunks.
-    const NSUInteger maximumHistoryCharacters = 250000;
-    if (plain.length > maximumHistoryCharacters) {
-        historyStart = plain.length - maximumHistoryCharacters;
-        while (historyStart < visibleStart && historyStart > 0 &&
-               [plain characterAtIndex:historyStart - 1] != '\n') {
-            historyStart++;
-        }
-    }
-    NSUInteger cursor = MIN(self.outputCursor, plain.length);
-    if (cursor < visibleStart) cursor = visibleStart;
-    NSUInteger cursorRow = 1;
-    NSUInteger cursorColumn = 1;
-    for (NSUInteger index = visibleStart; index < cursor; index++) {
-        if ([plain characterAtIndex:index] == '\n') {
-            cursorRow++;
-            cursorColumn = 1;
-        } else {
-            cursorColumn++;
-        }
-    }
-    cursorRow = MIN(rows, MAX((NSUInteger)1, cursorRow));
-    cursorColumn = MIN(columns, MAX((NSUInteger)1, cursorColumn));
-    NSString *cursorSuffix = [NSString stringWithFormat:
-        @"\x1b[0m\x1b[%lu;%luH%@",
-        (unsigned long)cursorRow,
-        (unsigned long)cursorColumn,
-        self.terminalView.terminalCursorVisible ? @"\x1b[?25h" : @"\x1b[?25l"];
-    NSMutableString *(^styledSnapshot)(NSUInteger) =
-        ^NSMutableString *(NSUInteger start) {
-            NSRange range = NSMakeRange(start, plain.length - start);
-            NSMutableString *encoded = [NSMutableString
-                stringWithString:@"\x1b[0m\x1b[2J\x1b[H"];
-            [storage enumerateAttributesInRange:range
-                                       options:0
-                                    usingBlock:^(
-                NSDictionary<NSAttributedStringKey,id> *attributes,
-                NSRange attributeRange,
-                BOOL *stop) {
-                (void)stop;
-                [encoded appendString:
-                    [self terminalRemoteANSIForAttributes:attributes]];
-                NSString *segment = [[plain substringWithRange:attributeRange]
-                    stringByReplacingOccurrencesOfString:@"\n"
-                                               withString:@"\r\n"];
-                [encoded appendString:segment];
-            }];
-            [encoded appendString:cursorSuffix];
-            return encoded;
-        };
-
-    NSMutableString *snapshot = styledSnapshot(historyStart);
-    // SnapshotAssembler accepts at most 64 chunks. Keep the encoded snapshot
-    // within 60 4K chunks while retaining attributes; if necessary, discard
-    // only the oldest complete lines, never the color styling itself.
-    const NSUInteger maximumEncodedSnapshotCharacters = 240000;
-    while (snapshot.length > maximumEncodedSnapshotCharacters &&
-           historyStart < visibleStart) {
-        NSUInteger remainingHistory = visibleStart - historyStart;
-        historyStart += MAX((NSUInteger)1, remainingHistory / 3);
-        while (historyStart < visibleStart && historyStart > 0 &&
-               [plain characterAtIndex:historyStart - 1] != '\n') {
-            historyStart++;
-        }
-        snapshot = styledSnapshot(historyStart);
-    }
-    return snapshot;
+    return [self.terminalView ansiSnapshot];
 }
 
 - (NSDictionary *)terminalRemoteViewportForTabIdentifier:
@@ -2985,7 +2177,7 @@ static void ConfigureTerminalTextViewForScrolling(
     attachSelection.keyEquivalentModifierMask =
         NSEventModifierFlagOption | NSEventModifierFlagShift;
     attachSelection.enabled =
-        controller.terminalView.selectedRange.length > 0;
+        controller.terminalView.selectionText.length > 0;
     [menu addItem:attachSelection];
     [menu addItem:NSMenuItem.separatorItem];
 
@@ -3245,12 +2437,8 @@ static void ConfigureTerminalTextViewForScrolling(
     (void)sender;
     AppDelegate *controller = [[self rootController] activeTerminalController];
     if (controller == nil) return;
-    NSRange selection = controller.terminalView.selectedRange;
-    NSString *terminal = controller.terminalView.string ?: @"";
-    if (selection.length == 0 || NSMaxRange(selection) > terminal.length) {
-        return;
-    }
-    NSString *selected = [terminal substringWithRange:selection];
+    NSString *selected = controller.terminalView.selectionText;
+    if (selected.length == 0) return;
     if (selected.length > 24000) {
         NSRange end = [selected
             rangeOfComposedCharacterSequencesForRange:
@@ -3572,32 +2760,6 @@ static void ConfigureTerminalTextViewForScrolling(
                                       weight:NSFontWeightRegular];
     controller.terminalView.font = base;
 
-    NSMutableArray<NSDictionary *> *fontRuns =
-        [NSMutableArray array];
-    NSRange fullRange =
-        NSMakeRange(0, controller.terminalView.textStorage.length);
-    [controller.terminalView.textStorage
-        enumerateAttribute:NSFontAttributeName
-                   inRange:fullRange
-                   options:0
-                usingBlock:^(NSFont *font, NSRange range, BOOL *stop) {
-        (void)stop;
-        if (font == nil) return;
-        NSFont *resized = [NSFontManager.sharedFontManager
-            convertFont:font toSize:size];
-        [fontRuns addObject:@{
-            @"range" : [NSValue valueWithRange:range],
-            @"font" : resized,
-        }];
-    }];
-    [controller.terminalView.textStorage beginEditing];
-    for (NSDictionary *run in fontRuns) {
-        [controller.terminalView.textStorage
-            addAttribute:NSFontAttributeName
-                   value:run[@"font"]
-                   range:[run[@"range"] rangeValue]];
-    }
-    [controller.terminalView.textStorage endEditing];
     controller.terminalView.needsDisplay = YES;
     [controller updatePTYWindowSize];
 }
@@ -4458,15 +3620,6 @@ static void ConfigureTerminalTextViewForScrolling(
 
 - (void)createTerminalWindow {
     self.pty = -1;
-    self.parserState = TerminalParserGround;
-    self.csiParameters = [NSMutableString string];
-    self.oscData = [NSMutableData data];
-    self.pendingUTF8Data = [NSMutableData data];
-    self.outputCursor = 0;
-    self.savedOutputCursor = 0;
-    self.terminalRows = 36;
-    self.terminalColumns = 120;
-    self.followsOutput = YES;
     self.assistantMessages = [NSMutableArray array];
     self.privateSession = [NSUserDefaults.standardUserDefaults
         boolForKey:@"TerminalDBPrivateSessionDefault"];
@@ -4474,13 +3627,13 @@ static void ConfigureTerminalTextViewForScrolling(
     self.terminalInspector = [[TerminalInspector alloc] init];
     self.permissionCenter =
         [[TerminalPermissionCenter alloc] initWithTheme:self.theme];
-    self.ledgerStore = [NSProcessInfo.processInfo.arguments
-        containsObject:@"--visual-qa"]
+    self.ledgerStore = ([NSProcessInfo.processInfo.arguments
+        containsObject:@"--visual-qa"] || [NSProcessInfo.processInfo.arguments
+        containsObject:@"--terminal-qa"])
         ? [TerminalLedgerStore ephemeralStoreForTesting]
         : [TerminalLedgerStore sharedStore];
     self.activeLedgerCommand = @"";
     self.activeLedgerDirectory = @"";
-    self.activeLedgerOutputStart = 0;
     self.assistantResponse = @"";
     self.assistantDirectory = @"";
     self.assistantSystemPrompt = @"";
@@ -4491,7 +3644,6 @@ static void ConfigureTerminalTextViewForScrolling(
     self.ansiColors = self.theme.ansiColors;
     self.terminalFontSize = self.theme.fontSize;
     self.terminalLineHeightMultiple = self.theme.lineHeightMultiple;
-    [self resetTextAttributes];
 
     NSRect frame = NSMakeRect(0, 0, 960, 600);
     self.window = [[TerminalWindow alloc]
@@ -4519,34 +3671,18 @@ static void ConfigureTerminalTextViewForScrolling(
     const CGFloat ledgerBarHeight = 132;
     NSView *contentView = [[NSView alloc] initWithFrame:frame];
     self.workspaceView = contentView;
-    TerminalScrollView *scrollView = [[TerminalScrollView alloc]
-        initWithFrame:NSMakeRect(0, statusBarHeight,
-                                 frame.size.width,
-                                 frame.size.height -
-                                     statusBarHeight - ledgerBarHeight)];
+    NSView *scrollView = [[NSView alloc]
+        initWithFrame:NSMakeRect(0, statusBarHeight, frame.size.width,
+            frame.size.height - statusBarHeight - ledgerBarHeight)];
     self.terminalScrollView = scrollView;
     scrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    scrollView.hasVerticalScroller = YES;
-    scrollView.borderType = NSNoBorder;
-
-    NSSize terminalViewport = scrollView.contentSize;
-    self.terminalView = [[TerminalView alloc]
-        initWithFrame:NSMakeRect(0, 0,
-                                 terminalViewport.width,
-                                 terminalViewport.height)];
-    self.terminalView.editable = NO;
-    self.terminalView.delegate = self;
-    self.terminalView.selectable = YES;
-    self.terminalView.richText = NO;
-    ConfigureTerminalTextViewForScrolling(self.terminalView,
-                                          terminalViewport);
-    scrollView.hasHorizontalScroller = NO;
+    self.terminalView = [[TerminalView alloc] initWithFrame:scrollView.bounds];
+    self.terminalView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     self.terminalView.backgroundColor = self.defaultBackground;
     self.terminalView.textColor = self.defaultForeground;
-    self.terminalView.insertionPointColor = self.theme.cursorColor;
     self.terminalView.terminalCursorColor = self.theme.cursorColor;
-    self.terminalView.terminalCursorIndex = 0;
-    self.terminalView.terminalCursorVisible = YES;
+    self.terminalView.selectionColor = self.theme.selectionBackground;
+    [self.terminalView installANSIColors:self.ansiColors];
     NSFont *font = [NSFont fontWithName:self.theme.fontName
                                   size:self.terminalFontSize];
     self.usingJetBrainsMono =
@@ -4554,22 +3690,12 @@ static void ConfigureTerminalTextViewForScrolling(
     self.terminalView.font = font ?: [NSFont
         monospacedSystemFontOfSize:self.terminalFontSize
                            weight:NSFontWeightRegular];
-    self.terminalParagraphStyle = [[NSMutableParagraphStyle alloc] init];
-    self.terminalParagraphStyle.lineHeightMultiple =
-        self.terminalLineHeightMultiple;
-    self.terminalView.defaultParagraphStyle = self.terminalParagraphStyle;
-    self.terminalView.selectedTextAttributes = @{
-        NSBackgroundColorAttributeName : self.theme.selectionBackground,
-        NSForegroundColorAttributeName : self.defaultForeground,
-    };
-    self.terminalView.textContainerInset = NSMakeSize(12, 10);
     self.terminalView.pty = -1;
     self.terminalView.inputEnabled = YES;
     __weak typeof(self) weakSelf = self;
     self.terminalView.userDidSendInput = ^{
         AppDelegate *strongSelf = weakSelf;
         if (strongSelf == nil) return;
-        strongSelf.followsOutput = YES;
         [strongSelf scrollTerminalToBottom];
     };
     self.terminalView.pasteDidSend = ^(NSUInteger byteCount,
@@ -4586,23 +3712,32 @@ static void ConfigureTerminalTextViewForScrolling(
         AppDelegate *strongSelf = weakSelf;
         if (strongSelf == nil) return;
         if (!strongSelf.assistantView.hidden &&
-            strongSelf.window.firstResponder == strongSelf.terminalView) {
+            strongSelf.terminalView.hasKeyboardFocus) {
             [strongSelf.assistantView focusComposer];
         } else {
             [strongSelf.window makeFirstResponder:strongSelf.terminalView];
         }
     };
-    scrollView.documentView = self.terminalView;
-    scrollView.userWillScroll = ^{
+    self.terminalView.titleChanged = ^(NSString *title) {
         AppDelegate *strongSelf = weakSelf;
-        if (strongSelf == nil) return;
-        [strongSelf beginUserTerminalScroll];
+        strongSelf.reportedWindowTitle =
+            [strongSelf sanitizedTabTitle:title maximumLength:80];
+        [strongSelf updateWindowTitle];
     };
-    scrollView.userDidScroll = ^{
+    self.terminalView.commandBoundary = ^(NSString *boundary) {
+        if ([boundary isEqualToString:@"C"]) [weakSelf beginLedgerCommand];
+        if ([boundary isEqualToString:@"D"]) [weakSelf finishLedgerCommand];
+    };
+    self.terminalView.gridSizeChanged = ^{ [weakSelf updatePTYWindowSize]; };
+    self.terminalView.inputFailed = ^{
         AppDelegate *strongSelf = weakSelf;
-        if (strongSelf == nil) return;
-        [strongSelf finishUserTerminalScroll];
+        if (strongSelf == nil || strongSelf.window.attachedSheet != nil) return;
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"Terminal input could not be delivered";
+        alert.informativeText = @"The terminal process stopped accepting input. Some of your text may not have arrived. Open a new tab to continue.";
+        [alert beginSheetModalForWindow:strongSelf.window completionHandler:nil];
     };
+    [scrollView addSubview:self.terminalView];
     [contentView addSubview:scrollView];
 
     self.ledgerBar = [[TerminalLedgerBar alloc]
@@ -5383,228 +4518,7 @@ static void ConfigureTerminalTextViewForScrolling(
 }
 
 - (void)consumeTerminalData:(NSData *)data {
-    const unsigned char *bytes = data.bytes;
-    NSMutableData *visible = [NSMutableData dataWithCapacity:data.length];
-    if (!self.textStorageEditing) {
-        self.followSynchronizedOutput = self.followsOutput;
-        [self.terminalView.textStorage beginEditing];
-        self.textStorageEditing = YES;
-    }
-
-    for (NSUInteger index = 0; index < data.length; index++) {
-        unsigned char byte = bytes[index];
-
-        if (self.parserState == TerminalParserGround) {
-            if (byte == 0x1b) {
-                [self flushVisibleData:visible];
-                self.parserState = TerminalParserEscape;
-            } else if (byte == '\r') {
-                [self flushVisibleData:visible];
-                self.outputCursor = [self lineStartForCursor:self.outputCursor];
-            } else if (byte == '\n') {
-                [self flushVisibleData:visible];
-                [self moveCursorToNextLine];
-            } else if (byte == '\b') {
-                [self flushVisibleData:visible];
-                NSUInteger start = [self lineStartForCursor:self.outputCursor];
-                if (self.outputCursor > start) self.outputCursor--;
-            } else if (byte == '\t') {
-                [self flushVisibleData:visible];
-                NSUInteger column =
-                    self.outputCursor - [self lineStartForCursor:self.outputCursor];
-                [self moveCursorToColumn:((column / 8) + 1) * 8];
-            } else if (byte == 0x07) {
-                [self flushVisibleData:visible];
-                NSBeep();
-            } else if (byte >= 0x20) {
-                [visible appendBytes:&byte length:1];
-            }
-            continue;
-        }
-
-        switch (self.parserState) {
-            case TerminalParserEscape:
-                if (byte == '[') {
-                    [self.csiParameters setString:@""];
-                    self.parserState = TerminalParserCSI;
-                } else if (byte == ']') {
-                    [self.oscData setLength:0];
-                    self.parserState = TerminalParserOSC;
-                } else if (byte == 'P' || byte == 'X' ||
-                           byte == '^' || byte == '_') {
-                    self.parserState = TerminalParserString;
-                } else if (byte == '7') {
-                    self.savedOutputCursor = self.outputCursor;
-                    self.parserState = TerminalParserGround;
-                } else if (byte == '8') {
-                    self.outputCursor =
-                        MIN(self.savedOutputCursor,
-                            self.terminalView.textStorage.length);
-                    self.parserState = TerminalParserGround;
-                } else if (byte == 'D') {
-                    [self moveCursorVertically:1 preserveColumn:YES];
-                    self.parserState = TerminalParserGround;
-                } else if (byte == 'E') {
-                    [self moveCursorVertically:1 preserveColumn:NO];
-                    self.parserState = TerminalParserGround;
-                } else if (byte == 'M') {
-                    [self moveCursorVertically:-1 preserveColumn:YES];
-                    self.parserState = TerminalParserGround;
-                } else if (byte == 'c') {
-                    [self.terminalView.textStorage
-                        setAttributedString:[[NSAttributedString alloc]
-                            initWithString:@""]];
-                    self.outputCursor = 0;
-                    self.savedOutputCursor = 0;
-                    [self setViewportStart:0];
-                    [self resetTextAttributes];
-                    self.parserState = TerminalParserGround;
-                } else if (byte >= 0x30 && byte <= 0x7e) {
-                    self.parserState = TerminalParserGround;
-                }
-                break;
-
-            case TerminalParserCSI:
-                if (byte >= 0x40 && byte <= 0x7e) {
-                    [self applyCSICommand:(char)byte];
-                    self.parserState = TerminalParserGround;
-                } else if (byte >= 0x20 && byte <= 0x3f) {
-                    [self.csiParameters appendFormat:@"%c", byte];
-                }
-                break;
-
-            case TerminalParserOSC:
-                if (byte == 0x07) {
-                    [self applyOSCData];
-                    self.parserState = TerminalParserGround;
-                } else if (byte == 0x1b) {
-                    self.parserState = TerminalParserOSCEscape;
-                } else {
-                    [self.oscData appendBytes:&byte length:1];
-                }
-                break;
-
-            case TerminalParserOSCEscape:
-                if (byte == '\\') {
-                    [self applyOSCData];
-                    self.parserState = TerminalParserGround;
-                } else {
-                    const unsigned char escape = 0x1b;
-                    [self.oscData appendBytes:&escape length:1];
-                    [self.oscData appendBytes:&byte length:1];
-                    self.parserState = TerminalParserOSC;
-                }
-                break;
-
-            case TerminalParserString:
-                if (byte == 0x1b) {
-                    self.parserState = TerminalParserStringEscape;
-                }
-                break;
-
-            case TerminalParserStringEscape:
-                self.parserState = (byte == '\\')
-                    ? TerminalParserGround
-                    : TerminalParserString;
-                break;
-
-            case TerminalParserGround:
-                break;
-        }
-    }
-
-    [self flushVisibleData:visible];
-    if (!self.synchronizedOutput && self.textStorageEditing) {
-        [self.terminalView.textStorage endEditing];
-        self.textStorageEditing = NO;
-        if (self.followSynchronizedOutput) [self scrollTerminalToBottom];
-    }
-    [self trimTerminalScrollbackIfNeeded];
-    self.terminalView.terminalCursorIndex = self.outputCursor;
-    self.terminalView.needsDisplay = YES;
-}
-
-- (void)trimTerminalScrollbackIfNeeded {
-    NSTextStorage *storage = self.terminalView.textStorage;
-    if (storage.length <= TerminalDBMaximumScrollbackCharacters) return;
-
-    NSUInteger approximate =
-        storage.length - TerminalDBRetainedScrollbackCharacters;
-    NSUInteger liveViewportStart = [self viewportStart];
-    if (liveViewportStart > 0) {
-        // Never trim into the terminal's live viewport. Only the history
-        // prefix before it is eligible for bounded scrollback.
-        approximate = MIN(approximate, liveViewportStart - 1);
-    } else if (self.alternateScreenActive) {
-        return;
-    }
-    NSString *plain = storage.string ?: @"";
-    NSUInteger searchEnd = liveViewportStart > 0
-        ? liveViewportStart
-        : plain.length;
-    NSRange searchRange = NSMakeRange(
-        approximate, MIN((NSUInteger)4096, searchEnd - approximate));
-    NSRange newline = [plain rangeOfString:@"\n"
-                                   options:0
-                                     range:searchRange];
-    NSUInteger removeCount = newline.location != NSNotFound
-        ? NSMaxRange(newline)
-        : [plain rangeOfComposedCharacterSequenceAtIndex:approximate].location;
-    if (removeCount == 0 || removeCount >= storage.length) return;
-
-    [storage deleteCharactersInRange:NSMakeRange(0, removeCount)];
-    self.outputCursor =
-        self.outputCursor > removeCount ? self.outputCursor - removeCount : 0;
-    self.savedOutputCursor =
-        self.savedOutputCursor > removeCount
-            ? self.savedOutputCursor - removeCount : 0;
-    self.activeLedgerOutputStart =
-        self.activeLedgerOutputStart > removeCount
-            ? self.activeLedgerOutputStart - removeCount : 0;
-    if (self.alternateScreenActive) {
-        self.alternateViewportStart =
-            self.alternateViewportStart > removeCount
-                ? self.alternateViewportStart - removeCount : 0;
-    } else {
-        self.primaryViewportStart =
-            self.primaryViewportStart > removeCount
-                ? self.primaryViewportStart - removeCount : 0;
-    }
-    self.terminalView.terminalCursorIndex = self.outputCursor;
-}
-
-- (void)flushVisibleData:(NSMutableData *)visible {
-    if (visible.length > 0) {
-        [self.pendingUTF8Data appendData:visible];
-        [visible setLength:0];
-    }
-    if (self.pendingUTF8Data.length == 0) return;
-
-    NSString *text = [[NSString alloc]
-        initWithData:self.pendingUTF8Data
-            encoding:NSUTF8StringEncoding];
-    if (text != nil) {
-        [self writeTerminalText:text];
-        [self.pendingUTF8Data setLength:0];
-        return;
-    }
-
-    // PTY reads may split one UTF-8 scalar across two dispatches. Emit the
-    // longest valid prefix and retain only the incomplete tail.
-    NSUInteger length = self.pendingUTF8Data.length;
-    for (NSUInteger tail = 1; tail <= MIN((NSUInteger)3, length); tail++) {
-        NSData *prefix =
-            [self.pendingUTF8Data subdataWithRange:NSMakeRange(0, length - tail)];
-        NSString *prefixText = [[NSString alloc]
-            initWithData:prefix
-                encoding:NSUTF8StringEncoding];
-        if (prefixText == nil) continue;
-        NSData *remainder = [self.pendingUTF8Data
-            subdataWithRange:NSMakeRange(length - tail, tail)];
-        [self writeTerminalText:prefixText];
-        [self.pendingUTF8Data setData:remainder];
-        return;
-    }
+    [self.terminalView feedData:data];
 }
 
 - (NSString *)ledgerFileContentsAtPath:(NSString *)path {
@@ -5623,7 +4537,7 @@ static void ConfigureTerminalTextViewForScrolling(
     self.activeLedgerCommand = command;
     self.activeLedgerDirectory = [self currentAssistantDirectory];
     self.activeLedgerStartedAt = [NSDate date];
-    self.activeLedgerOutputStart = self.terminalView.string.length;
+    [self.terminalView beginCommandCapture];
     [self.ledgerBar beginCommand:command
                        directory:self.activeLedgerDirectory];
     NSString *lower = command.lowercaseString;
@@ -5660,9 +4574,7 @@ static void ConfigureTerminalTextViewForScrolling(
         [[self ledgerFileContentsAtPath:self.shellExitPath] integerValue];
     NSTimeInterval duration =
         -self.activeLedgerStartedAt.timeIntervalSinceNow;
-    NSString *terminalText = self.terminalView.string ?: @"";
-    NSUInteger start = MIN(self.activeLedgerOutputStart, terminalText.length);
-    NSString *output = [terminalText substringFromIndex:start];
+    NSString *output = [self.terminalView endCommandCapture];
     NSDictionary *record = nil;
     if (self.privateSession) {
         NSMutableDictionary *privateRecord = [@{
@@ -5701,7 +4613,6 @@ static void ConfigureTerminalTextViewForScrolling(
     self.pendingExecutionApproval = nil;
     if (record.count > 0) {
         [self.ledgerBar displayRecord:record];
-        [self appendLedgerFooterForRecord:record];
     } else {
         [self.ledgerBar finishCommand:self.activeLedgerCommand
                              directory:self.activeLedgerDirectory
@@ -5718,147 +4629,6 @@ static void ConfigureTerminalTextViewForScrolling(
     self.activeLedgerCommand = @"";
     self.activeLedgerDirectory = @"";
     self.activeLedgerStartedAt = nil;
-    self.activeLedgerOutputStart = 0;
-}
-
-- (void)appendLedgerFooterForRecord:(NSDictionary *)record {
-    if (self.alternateScreenActive || record.count == 0) return;
-    NSMutableAttributedString *storage = self.terminalView.textStorage;
-    NSString *terminalText = storage.string ?: @"";
-    NSUInteger end = storage.length;
-    NSUInteger blockStart = MIN(self.activeLedgerOutputStart, end);
-    if (blockStart > 0 && self.activeLedgerCommand.length > 0) {
-        NSString *prefix = [terminalText substringToIndex:blockStart];
-        NSRange commandRange = [prefix
-            rangeOfString:self.activeLedgerCommand
-                  options:NSBackwardsSearch];
-        if (commandRange.location != NSNotFound) {
-            blockStart = [prefix lineRangeForRange:commandRange].location;
-        }
-    }
-    if (end > blockStart) {
-        NSColor *blockBackground =
-            [self.theme.statusBarBackground colorWithAlphaComponent:0.72];
-        [storage addAttribute:NSBackgroundColorAttributeName
-                        value:blockBackground
-                        range:NSMakeRange(blockStart, end - blockStart)];
-    }
-
-    NSInteger exitCode = [record[@"exit_code"] integerValue];
-    NSString *state = exitCode == 0
-        ? @"✓ EXIT 0"
-        : [NSString stringWithFormat:@"× EXIT %ld", (long)exitCode];
-    NSString *privacy = [record[@"private"] boolValue] ? @"PRIVATE" : @"SAVED";
-    NSString *footer = [NSString stringWithFormat:
-        @"\n╰─ %@  ·  %@  ·  %.2fs  ·  %@  ·  [DETAILS]\n\n",
-        state,
-        record[@"environment"] ?: @"LOCAL",
-        [record[@"duration"] doubleValue],
-        privacy];
-    NSFont *font = [NSFont fontWithName:self.theme.fontName
-                                   size:10.5]
-        ?: [NSFont monospacedSystemFontOfSize:10.5
-                                       weight:NSFontWeightRegular];
-    NSMutableAttributedString *styled =
-        [[NSMutableAttributedString alloc] initWithString:footer
-                                              attributes:@{
-        NSFontAttributeName : font,
-        NSForegroundColorAttributeName :
-            exitCode == 0 ? self.theme.ansiColors[2]
-                          : self.theme.ansiColors[1],
-        NSParagraphStyleAttributeName : self.terminalParagraphStyle,
-    }];
-    NSRange details = [footer rangeOfString:@"[DETAILS]"];
-    NSString *identifier = record[@"id"];
-    if (details.location != NSNotFound &&
-        identifier.length > 0 &&
-        ![identifier isEqualToString:@"private"]) {
-        NSURL *link = [NSURL URLWithString:[NSString stringWithFormat:
-            @"terminaldb://block/%@", identifier]];
-        if (link != nil) {
-            [styled addAttributes:@{
-                NSLinkAttributeName : link,
-                NSForegroundColorAttributeName : self.theme.ansiColors[6],
-                NSUnderlineStyleAttributeName :
-                    @(NSUnderlineStyleSingle),
-            } range:details];
-        }
-    }
-    [storage appendAttributedString:styled];
-    self.outputCursor = storage.length;
-    self.terminalView.terminalCursorIndex = self.outputCursor;
-    [self.terminalView setNeedsDisplay:YES];
-    if (self.followsOutput && storage.length > 0) {
-        [self.terminalView
-            scrollRangeToVisible:NSMakeRange(storage.length - 1, 1)];
-    }
-    [[[self rootController] remoteBridge]
-        publishViewportForTabIdentifier:self.remoteTabIdentifier];
-}
-
-- (BOOL)textView:(NSTextView *)textView
-   clickedOnLink:(id)link
-         atIndex:(NSUInteger)charIndex {
-    (void)charIndex;
-    if (textView != self.terminalView ||
-        ![link isKindOfClass:NSURL.class]) {
-        return NO;
-    }
-    NSURL *url = link;
-    if (![url.scheme isEqualToString:@"terminaldb"] ||
-        ![url.host isEqualToString:@"block"]) {
-        return NO;
-    }
-    NSString *identifier = url.path.lastPathComponent;
-    NSDictionary *record =
-        [self.ledgerStore recordWithIdentifier:identifier];
-    if (record == nil) return NO;
-    [self showCommandInspectorForRecord:record];
-    return YES;
-}
-
-- (void)applyOSCData {
-    if (self.oscData.length == 0) return;
-    NSString *payload = [[NSString alloc]
-        initWithData:self.oscData encoding:NSUTF8StringEncoding];
-    [self.oscData setLength:0];
-    if (payload.length == 0) return;
-
-    NSRange separator = [payload rangeOfString:@";"];
-    if (separator.location == NSNotFound) return;
-    NSInteger command =
-        [[payload substringToIndex:separator.location] integerValue];
-    NSString *value = [payload substringFromIndex:NSMaxRange(separator)];
-    if (command == 633) {
-        if ([value isEqualToString:@"C"]) {
-            [self beginLedgerCommand];
-        } else if ([value isEqualToString:@"D"]) {
-            [self recoverTerminalModesAtShellPrompt];
-            [self finishLedgerCommand];
-        }
-        return;
-    }
-    if (command != 0 && command != 1 && command != 2) return;
-
-    self.reportedWindowTitle =
-        [self sanitizedTabTitle:value maximumLength:80];
-    if (self.window != nil) [self updateWindowTitle];
-}
-
-- (void)recoverTerminalModesAtShellPrompt {
-    // A full-screen program can terminate after emitting only part of its
-    // teardown sequence. The shell's precmd marker is authoritative: at this
-    // point no alternate-screen, synchronized-output, paste, cursor-key, or
-    // hidden-cursor mode should survive into the next prompt.
-    if (self.alternateScreenActive) [self leaveAlternateScreen];
-    self.synchronizedOutput = NO;
-    self.terminalView.applicationCursorKeys = NO;
-    self.terminalView.bracketedPaste = NO;
-    self.terminalView.terminalCursorVisible = YES;
-    if (self.textStorageEditing) {
-        [self.terminalView.textStorage endEditing];
-        self.textStorageEditing = NO;
-    }
 }
 
 - (NSString *)currentAssistantDirectory {
@@ -5874,33 +4644,8 @@ static void ConfigureTerminalTextViewForScrolling(
 }
 
 - (NSString *)visibleTerminalContext {
-    NSString *allText = self.terminalView.string ?: @"";
-    if (allText.length == 0) return @"The terminal is currently empty.";
-
-    NSRange range = NSMakeRange(NSNotFound, 0);
-    NSLayoutManager *layoutManager = self.terminalView.layoutManager;
-    NSTextContainer *container = self.terminalView.textContainer;
-    if (layoutManager != nil && container != nil) {
-        NSRange glyphRange = [layoutManager
-            glyphRangeForBoundingRect:self.terminalView.visibleRect
-                      inTextContainer:container];
-        range = [layoutManager characterRangeForGlyphRange:glyphRange
-                                         actualGlyphRange:NULL];
-    }
-    if (range.location == NSNotFound || range.location >= allText.length) {
-        NSUInteger start = allText.length > 8000 ? allText.length - 8000 : 0;
-        range = NSMakeRange(start, allText.length - start);
-    } else {
-        range = NSIntersectionRange(range, NSMakeRange(0, allText.length));
-    }
-
-    NSString *visible = [allText substringWithRange:range];
-    visible = [visible stringByTrimmingCharactersInSet:
-        NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    if (visible.length == 0) {
-        NSUInteger start = allText.length > 4000 ? allText.length - 4000 : 0;
-        visible = [allText substringFromIndex:start];
-    }
+    NSString *visible = [self.terminalView visibleText];
+    if (visible.length == 0) return @"The terminal is currently empty.";
     if (visible.length > 12000) {
         visible = [visible substringFromIndex:visible.length - 12000];
     }
@@ -6840,782 +5585,13 @@ static void ConfigureTerminalTextViewForScrolling(
     [[self rootController] showClaudeAPISettings:nil];
 }
 
-- (void)enterAlternateScreen {
-    if (self.alternateScreenActive) return;
-    self.primaryScreenContents =
-        [self.terminalView.textStorage copy];
-    self.primaryOutputCursor = self.outputCursor;
-    self.primarySavedOutputCursor = self.savedOutputCursor;
-    self.primaryFollowsOutput = self.followsOutput;
-    self.primaryScrollOrigin =
-        self.terminalScrollView != nil
-            ? self.terminalScrollView.contentView.bounds.origin
-            : NSZeroPoint;
-
-    self.alternateScreenActive = YES;
-    self.alternateViewportStart = 0;
-    [self.terminalView.textStorage
-        setAttributedString:[[NSAttributedString alloc] initWithString:@""]];
-    self.outputCursor = 0;
-    self.savedOutputCursor = 0;
-    self.followsOutput = YES;
-    self.followSynchronizedOutput = YES;
-    [self resetTextAttributes];
-}
-
-- (void)leaveAlternateScreen {
-    if (!self.alternateScreenActive) return;
-    NSAttributedString *primary =
-        self.primaryScreenContents
-            ?: [[NSAttributedString alloc] initWithString:@""];
-    [self.terminalView.textStorage setAttributedString:primary];
-    self.outputCursor =
-        MIN(self.primaryOutputCursor, self.terminalView.textStorage.length);
-    self.savedOutputCursor =
-        MIN(self.primarySavedOutputCursor,
-            self.terminalView.textStorage.length);
-    self.followsOutput = self.primaryFollowsOutput;
-    self.followSynchronizedOutput = self.followsOutput;
-    self.alternateScreenActive = NO;
-    self.alternateViewportStart = 0;
-    self.primaryScreenContents = nil;
-    [self resetTextAttributes];
-
-    if (self.terminalScrollView == nil) return;
-    if (self.followsOutput) {
-        [self scrollTerminalToBottom];
-    } else {
-        NSPoint origin = self.primaryScrollOrigin;
-        __weak typeof(self) weakSelf = self;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            AppDelegate *strongSelf = weakSelf;
-            if (strongSelf == nil || strongSelf.alternateScreenActive) return;
-            [strongSelf.terminalScrollView.contentView scrollToPoint:origin];
-            [strongSelf.terminalScrollView reflectScrolledClipView:
-                strongSelf.terminalScrollView.contentView];
-        });
-    }
-}
-
-- (NSUInteger)lineStartForCursor:(NSUInteger)cursor {
-    NSTextStorage *storage = self.terminalView.textStorage;
-    if (cursor == 0 || storage.length == 0) return 0;
-    NSUInteger safeCursor = MIN(cursor, storage.length);
-    NSRange searchRange = NSMakeRange(0, safeCursor);
-    NSRange newline = [storage.string rangeOfString:@"\n"
-                                           options:NSBackwardsSearch
-                                             range:searchRange];
-    return newline.location == NSNotFound ? 0 : NSMaxRange(newline);
-}
-
-- (NSUInteger)lineEndForCursor:(NSUInteger)cursor {
-    NSTextStorage *storage = self.terminalView.textStorage;
-    if (cursor >= storage.length) return storage.length;
-    NSRange searchRange = NSMakeRange(cursor, storage.length - cursor);
-    NSRange newline = [storage.string rangeOfString:@"\n"
-                                           options:0
-                                             range:searchRange];
-    return newline.location == NSNotFound ? storage.length : newline.location;
-}
-
-- (NSAttributedString *)blankCells:(NSUInteger)count {
-    if (count == 0) return [[NSAttributedString alloc] initWithString:@""];
-    NSString *spaces = [@"" stringByPaddingToLength:count
-                                         withString:@" "
-                                    startingAtIndex:0];
-    return [[NSAttributedString alloc]
-        initWithString:spaces
-            attributes:[self terminalAttributes]];
-}
-
-- (void)moveCursorToColumn:(NSUInteger)column {
-    NSTextStorage *storage = self.terminalView.textStorage;
-    NSUInteger start = [self lineStartForCursor:self.outputCursor];
-    NSUInteger end = [self lineEndForCursor:self.outputCursor];
-    NSUInteger length = end - start;
-    if (column > length) {
-        [storage insertAttributedString:[self blankCells:column - length]
-                                atIndex:end];
-    }
-    self.outputCursor = start + column;
-}
-
-- (void)moveCursorVertically:(NSInteger)rows
-              preserveColumn:(BOOL)preserveColumn {
-    NSTextStorage *storage = self.terminalView.textStorage;
-    NSUInteger column = preserveColumn
-        ? self.outputCursor - [self lineStartForCursor:self.outputCursor]
-        : 0;
-
-    NSUInteger currentRow = 0;
-    NSUInteger line = [self viewportStart];
-    NSUInteger cursorLine = [self lineStartForCursor:self.outputCursor];
-    while (line < cursorLine) {
-        NSUInteger end = [self lineEndForCursor:line];
-        if (end >= cursorLine || end == storage.length) break;
-        line = end + 1;
-        currentRow++;
-    }
-    NSInteger targetRow = (NSInteger)currentRow + rows;
-    targetRow = MAX((NSInteger)0, targetRow);
-    targetRow = MIN((NSInteger)MAX((NSUInteger)1, self.terminalRows) - 1,
-                    targetRow);
-    [self moveCursorToScreenRow:(NSUInteger)targetRow column:column];
-}
-
-- (NSUInteger)viewportStart {
-    return self.alternateScreenActive
-        ? self.alternateViewportStart
-        : self.primaryViewportStart;
-}
-
-- (void)setViewportStart:(NSUInteger)start {
-    NSUInteger safeStart = MIN(start, self.terminalView.textStorage.length);
-    if (self.alternateScreenActive) {
-        self.alternateViewportStart = safeStart;
-    } else {
-        self.primaryViewportStart = safeStart;
-    }
-}
-
-- (void)moveCursorToScreenRow:(NSUInteger)row column:(NSUInteger)column {
-    NSTextStorage *storage = self.terminalView.textStorage;
-    NSUInteger target = [self viewportStart];
-    for (NSUInteger index = 0; index < row; index++) {
-        NSUInteger end = [self lineEndForCursor:target];
-        if (end == storage.length) {
-            [storage appendAttributedString:[[NSAttributedString alloc]
-                initWithString:@"\n"
-                    attributes:[self terminalAttributes]]];
-        }
-        target = end + 1;
-    }
-    self.outputCursor = MIN(target, storage.length);
-    [self moveCursorToColumn:column];
-}
-
-- (NSUInteger)screenRowForCursor:(NSUInteger)cursor {
-    NSTextStorage *storage = self.terminalView.textStorage;
-    NSUInteger cursorLine = [self lineStartForCursor:cursor];
-    NSUInteger line = MIN([self viewportStart], storage.length);
-    NSUInteger row = 0;
-    while (line < cursorLine) {
-        NSUInteger end = [self lineEndForCursor:line];
-        if (end >= cursorLine || end == storage.length) break;
-        line = end + 1;
-        row++;
-    }
-    return row;
-}
-
-- (void)ensureScreenRows {
-    NSTextStorage *storage = self.terminalView.textStorage;
-    NSUInteger line = MIN([self viewportStart], storage.length);
-    NSUInteger rows = MAX((NSUInteger)1, self.terminalRows);
-    for (NSUInteger row = 1; row < rows; row++) {
-        NSUInteger end = [self lineEndForCursor:line];
-        if (end == storage.length) {
-            [storage appendAttributedString:[[NSAttributedString alloc]
-                initWithString:@"\n"
-                    attributes:[self terminalAttributes]]];
-        }
-        line = end + 1;
-    }
-}
-
-- (void)scrollScreenUpByLines:(NSUInteger)count
-                    cursorRow:(NSUInteger)cursorRow
-                 cursorColumn:(NSUInteger)cursorColumn {
-    if (count == 0) return;
-    NSTextStorage *storage = self.terminalView.textStorage;
-    [self ensureScreenRows];
-    for (NSUInteger index = 0; index < count; index++) {
-        NSUInteger firstEnd =
-            [self lineEndForCursor:[self viewportStart]];
-        if (firstEnd == storage.length) {
-            [storage appendAttributedString:[[NSAttributedString alloc]
-                initWithString:@"\n"
-                    attributes:[self terminalAttributes]]];
-        }
-        [self setViewportStart:firstEnd + 1];
-        [self ensureScreenRows];
-    }
-    NSUInteger lastRow = MAX((NSUInteger)1, self.terminalRows) - 1;
-    [self moveCursorToScreenRow:MIN(cursorRow, lastRow)
-                         column:cursorColumn];
-}
-
-- (void)replaceRangeWithBlankCells:(NSRange)range {
-    if (range.length == 0) return;
-    [self.terminalView.textStorage
-        replaceCharactersInRange:range
-            withAttributedString:[self blankCells:range.length]];
-}
-
-- (void)moveCursorToNextLine {
-    NSTextStorage *storage = self.terminalView.textStorage;
-    NSUInteger row = [self screenRowForCursor:self.outputCursor];
-    NSUInteger lastRow = MAX((NSUInteger)1, self.terminalRows) - 1;
-    if (row >= lastRow) {
-        [self scrollScreenUpByLines:1
-                          cursorRow:lastRow
-                       cursorColumn:0];
-        return;
-    }
-    NSUInteger lineEnd = [self lineEndForCursor:self.outputCursor];
-    if (lineEnd < storage.length) {
-        self.outputCursor = lineEnd + 1;
-        return;
-    }
-
-    NSAttributedString *newline = [[NSAttributedString alloc]
-        initWithString:@"\n"
-            attributes:[self terminalAttributes]];
-    [storage appendAttributedString:newline];
-    self.outputCursor = storage.length;
-}
-
-- (NSArray<NSString *> *)csiParts {
-    NSString *parameters = self.csiParameters;
-    while (parameters.length > 0) {
-        unichar first = [parameters characterAtIndex:0];
-        if (first != '?' && first != '>' && first != '!' && first != '=') {
-            break;
-        }
-        parameters = [parameters substringFromIndex:1];
-    }
-    return parameters.length == 0
-        ? @[]
-        : [parameters componentsSeparatedByString:@";"];
-}
-
-- (NSUInteger)csiValueAtIndex:(NSUInteger)index
-                 defaultValue:(NSUInteger)defaultValue {
-    NSArray<NSString *> *parts = [self csiParts];
-    if (index >= parts.count || parts[index].length == 0) return defaultValue;
-    NSInteger value = parts[index].integerValue;
-    return value < 0 ? defaultValue : (NSUInteger)value;
-}
-
-- (NSUInteger)csiCount {
-    NSUInteger value = [self csiValueAtIndex:0 defaultValue:1];
-    return value == 0 ? 1 : value;
-}
-
-- (void)applyCSICommand:(char)command {
-    NSTextStorage *storage = self.terminalView.textStorage;
-    NSUInteger count = [self csiCount];
-
-    switch (command) {
-        case 'A':
-            [self moveCursorVertically:-(NSInteger)count preserveColumn:YES];
-            break;
-        case 'B':
-            [self moveCursorVertically:(NSInteger)count preserveColumn:YES];
-            break;
-        case 'D': {
-            NSUInteger start = [self lineStartForCursor:self.outputCursor];
-            self.outputCursor -= MIN(count, self.outputCursor - start);
-            break;
-        }
-        case 'C': {
-            NSUInteger column =
-                self.outputCursor - [self lineStartForCursor:self.outputCursor];
-            [self moveCursorToColumn:column + count];
-            break;
-        }
-        case 'E':
-            [self moveCursorVertically:(NSInteger)count preserveColumn:NO];
-            break;
-        case 'F':
-            [self moveCursorVertically:-(NSInteger)count preserveColumn:NO];
-            break;
-        case 'H':
-        case 'f': {
-            NSUInteger row = [self csiValueAtIndex:0 defaultValue:1];
-            NSUInteger column = [self csiValueAtIndex:1 defaultValue:1];
-            [self moveCursorToScreenRow:row > 0 ? row - 1 : 0
-                                 column:column > 0 ? column - 1 : 0];
-            break;
-        }
-        case 'G': {
-            [self moveCursorToColumn:count - 1];
-            break;
-        }
-        case 'd': {
-            NSUInteger column =
-                self.outputCursor - [self lineStartForCursor:self.outputCursor];
-            [self moveCursorToScreenRow:count - 1 column:column];
-            break;
-        }
-        case 'K': {
-            NSInteger mode = (NSInteger)
-                [self csiValueAtIndex:0 defaultValue:0];
-            NSUInteger start = [self lineStartForCursor:self.outputCursor];
-            NSUInteger end = [self lineEndForCursor:self.outputCursor];
-            NSRange eraseRange;
-            if (mode == 1) {
-                if (self.outputCursor == end) {
-                    [storage insertAttributedString:[self blankCells:1]
-                                            atIndex:end];
-                    end++;
-                }
-                eraseRange =
-                    NSMakeRange(start, self.outputCursor - start + 1);
-            } else if (mode == 2) {
-                eraseRange = NSMakeRange(start, end - start);
-            } else {
-                eraseRange = NSMakeRange(self.outputCursor,
-                                         end - self.outputCursor);
-            }
-            [self replaceRangeWithBlankCells:eraseRange];
-            break;
-        }
-        case 'J': {
-            NSInteger mode = (NSInteger)
-                [self csiValueAtIndex:0 defaultValue:0];
-            if (mode == 3) {
-                [storage setAttributedString:[[NSAttributedString alloc]
-                    initWithString:@""]];
-                self.outputCursor = 0;
-                self.savedOutputCursor = 0;
-                [self setViewportStart:0];
-            } else if (mode == 2) {
-                NSUInteger start = [self viewportStart];
-                if (start < storage.length) {
-                    [storage deleteCharactersInRange:
-                        NSMakeRange(start, storage.length - start)];
-                }
-                self.outputCursor = start;
-                self.savedOutputCursor = start;
-            } else if (mode == 0) {
-                NSUInteger lineEnd = [self lineEndForCursor:self.outputCursor];
-                [self replaceRangeWithBlankCells:
-                    NSMakeRange(self.outputCursor,
-                                lineEnd - self.outputCursor)];
-                if (lineEnd < storage.length) {
-                    [storage deleteCharactersInRange:
-                        NSMakeRange(lineEnd + 1,
-                                    storage.length - lineEnd - 1)];
-                }
-            } else if (mode == 1) {
-                NSUInteger start = [self viewportStart];
-                NSUInteger length = self.outputCursor - start;
-                [self replaceRangeWithBlankCells:NSMakeRange(start, length)];
-            }
-            break;
-        }
-        case 'P': {
-            NSUInteger end = [self lineEndForCursor:self.outputCursor];
-            NSUInteger length = MIN(count, end - self.outputCursor);
-            if (length > 0) {
-                [storage deleteCharactersInRange:
-                    NSMakeRange(self.outputCursor, length)];
-            }
-            break;
-        }
-        case '@':
-            [storage insertAttributedString:[self blankCells:count]
-                                    atIndex:self.outputCursor];
-            break;
-        case 'X': {
-            NSUInteger end = [self lineEndForCursor:self.outputCursor];
-            if (self.outputCursor + count > end) {
-                [storage insertAttributedString:
-                    [self blankCells:self.outputCursor + count - end]
-                                        atIndex:end];
-            }
-            [self replaceRangeWithBlankCells:
-                NSMakeRange(self.outputCursor, count)];
-            break;
-        }
-        case 'L': {
-            NSUInteger start = [self lineStartForCursor:self.outputCursor];
-            NSString *newlines = [@"" stringByPaddingToLength:count
-                                                   withString:@"\n"
-                                              startingAtIndex:0];
-            [storage insertAttributedString:[[NSAttributedString alloc]
-                initWithString:newlines
-                    attributes:[self terminalAttributes]]
-                                    atIndex:start];
-            self.outputCursor = start;
-            break;
-        }
-        case 'M': {
-            NSUInteger start = [self lineStartForCursor:self.outputCursor];
-            if (start == [self viewportStart]) {
-                [self scrollScreenUpByLines:count
-                                  cursorRow:0
-                               cursorColumn:0];
-                break;
-            }
-            NSUInteger end = start;
-            for (NSUInteger index = 0; index < count; index++) {
-                end = [self lineEndForCursor:end];
-                if (end < storage.length) end++;
-            }
-            if (end > start) {
-                [storage deleteCharactersInRange:NSMakeRange(start, end - start)];
-            }
-            self.outputCursor = MIN(start, storage.length);
-            [self ensureScreenRows];
-            break;
-        }
-        case 'S': {
-            NSUInteger row = [self screenRowForCursor:self.outputCursor];
-            NSUInteger column = self.outputCursor -
-                [self lineStartForCursor:self.outputCursor];
-            [self scrollScreenUpByLines:count
-                              cursorRow:row
-                           cursorColumn:column];
-            break;
-        }
-        case 's':
-            self.savedOutputCursor = self.outputCursor;
-            break;
-        case 'u':
-            self.outputCursor =
-                MIN(self.savedOutputCursor, storage.length);
-            break;
-        case 'h':
-        case 'l': {
-            BOOL enabled = command == 'h';
-            if ([self.csiParameters hasPrefix:@"?"]) {
-                for (NSString *part in [self csiParts]) {
-                    NSInteger mode = part.integerValue;
-                    if (mode == 1) {
-                        self.terminalView.applicationCursorKeys = enabled;
-                    } else if (mode == 47 || mode == 1047 ||
-                               mode == 1049) {
-                        if (enabled) {
-                            [self enterAlternateScreen];
-                        } else {
-                            [self leaveAlternateScreen];
-                        }
-                    } else if (mode == 1048) {
-                        if (enabled) {
-                            self.savedOutputCursor = self.outputCursor;
-                        } else {
-                            self.outputCursor =
-                                MIN(self.savedOutputCursor, storage.length);
-                        }
-                    } else if (mode == 2004) {
-                        self.terminalView.bracketedPaste = enabled;
-                    } else if (mode == 2026) {
-                        self.synchronizedOutput = enabled;
-                    } else if (mode == 25) {
-                        self.terminalView.terminalCursorVisible = enabled;
-                    }
-                }
-            }
-            break;
-        }
-        case 'n':
-            if ([self csiValueAtIndex:0 defaultValue:0] == 6) {
-                NSUInteger row = 1;
-                NSUInteger start = [self viewportStart];
-                NSUInteger line = start;
-                while (line < self.outputCursor) {
-                    NSUInteger end = [self lineEndForCursor:line];
-                    if (end >= self.outputCursor || end == storage.length) break;
-                    line = end + 1;
-                    row++;
-                }
-                NSUInteger column =
-                    self.outputCursor -
-                    [self lineStartForCursor:self.outputCursor] + 1;
-                NSString *response = [NSString
-                    stringWithFormat:@"\033[%lu;%luR",
-                    (unsigned long)row, (unsigned long)column];
-                NSData *data =
-                    [response dataUsingEncoding:NSASCIIStringEncoding];
-                [self.terminalView sendBytes:data.bytes length:data.length];
-            }
-            break;
-        case 'c': {
-            const char *response = [self.csiParameters hasPrefix:@">"]
-                ? "\033[>0;10;1c"
-                : "\033[?1;2c";
-            [self.terminalView sendBytes:response length:strlen(response)];
-            break;
-        }
-        case 'm':
-            [self applySGRParameters];
-            break;
-        default:
-            break;
-    }
-}
-
-- (void)resetTextAttributes {
-    self.currentForeground = self.defaultForeground;
-    self.currentBackground = nil;
-    self.textBold = NO;
-    self.textItalic = NO;
-    self.textUnderlined = NO;
-    self.textInverse = NO;
-    self.textDim = NO;
-}
-
-- (NSColor *)colorFor256Index:(NSInteger)index {
-    if (index < 0) return self.defaultForeground;
-    if (index < 16) return self.ansiColors[(NSUInteger)index];
-    if (index < 232) {
-        NSInteger cube = index - 16;
-        NSInteger red = cube / 36;
-        NSInteger green = (cube / 6) % 6;
-        NSInteger blue = cube % 6;
-        NSInteger (^component)(NSInteger) = ^NSInteger(NSInteger value) {
-            return value == 0 ? 0 : 55 + value * 40;
-        };
-        return [NSColor colorWithSRGBRed:component(red) / 255.0
-                                  green:component(green) / 255.0
-                                   blue:component(blue) / 255.0
-                                  alpha:1.0];
-    }
-    if (index < 256) {
-        CGFloat gray = (8 + (index - 232) * 10) / 255.0;
-        return [NSColor colorWithSRGBRed:gray green:gray blue:gray alpha:1.0];
-    }
-    return self.defaultForeground;
-}
-
-- (void)applySGRParameters {
-    NSArray<NSString *> *parts = self.csiParameters.length == 0
-        ? @[@"0"]
-        : [self.csiParameters componentsSeparatedByString:@";"];
-
-    for (NSUInteger index = 0; index < parts.count; index++) {
-        NSInteger code = parts[index].length == 0 ? 0 : parts[index].integerValue;
-        if (code == 0) {
-            [self resetTextAttributes];
-        } else if (code == 1) {
-            self.textBold = YES;
-        } else if (code == 2) {
-            self.textDim = YES;
-        } else if (code == 3) {
-            self.textItalic = YES;
-        } else if (code == 4) {
-            self.textUnderlined = YES;
-        } else if (code == 7) {
-            self.textInverse = YES;
-        } else if (code == 22) {
-            self.textBold = NO;
-            self.textDim = NO;
-        } else if (code == 23) {
-            self.textItalic = NO;
-        } else if (code == 24) {
-            self.textUnderlined = NO;
-        } else if (code == 27) {
-            self.textInverse = NO;
-        } else if (code >= 30 && code <= 37) {
-            self.currentForeground = self.ansiColors[(NSUInteger)(code - 30)];
-        } else if (code == 39) {
-            self.currentForeground = self.defaultForeground;
-        } else if (code >= 40 && code <= 47) {
-            self.currentBackground = self.ansiColors[(NSUInteger)(code - 40)];
-        } else if (code == 49) {
-            self.currentBackground = nil;
-        } else if (code >= 90 && code <= 97) {
-            self.currentForeground = self.ansiColors[(NSUInteger)(code - 90 + 8)];
-        } else if (code >= 100 && code <= 107) {
-            self.currentBackground = self.ansiColors[(NSUInteger)(code - 100 + 8)];
-        } else if ((code == 38 || code == 48) && index + 1 < parts.count) {
-            BOOL foreground = code == 38;
-            NSInteger mode = parts[++index].integerValue;
-            NSColor *color = nil;
-            if (mode == 5 && index + 1 < parts.count) {
-                color = [self colorFor256Index:parts[++index].integerValue];
-            } else if (mode == 2 && index + 3 < parts.count) {
-                CGFloat red = parts[++index].integerValue / 255.0;
-                CGFloat green = parts[++index].integerValue / 255.0;
-                CGFloat blue = parts[++index].integerValue / 255.0;
-                color = [NSColor colorWithSRGBRed:red green:green blue:blue alpha:1.0];
-            }
-            if (color != nil) {
-                if (foreground) {
-                    self.currentForeground = color;
-                } else {
-                    self.currentBackground = color;
-                }
-            }
-        }
-    }
-}
-
-- (NSFont *)fontForCurrentStyle {
-    if (self.usingJetBrainsMono) {
-        NSString *name = @"JetBrainsMono-Regular";
-        if (self.textBold && self.textItalic) {
-            name = @"JetBrainsMono-BoldItalic";
-        } else if (self.textBold) {
-            name = @"JetBrainsMono-Bold";
-        } else if (self.textItalic) {
-            name = @"JetBrainsMono-Italic";
-        }
-        NSFont *font = [NSFont fontWithName:name size:self.terminalFontSize];
-        if (font != nil) return font;
-    }
-
-    NSFontTraitMask traits = 0;
-    if (self.textBold) traits |= NSBoldFontMask;
-    if (self.textItalic) traits |= NSItalicFontMask;
-    return [NSFontManager.sharedFontManager
-        convertFont:self.terminalView.font
-        toHaveTrait:traits];
-}
-
-- (NSDictionary<NSAttributedStringKey, id> *)terminalAttributes {
-    NSColor *foreground = self.textInverse
-        ? (self.currentBackground ?: self.defaultBackground)
-        : self.currentForeground;
-    NSColor *background = self.textInverse
-        ? self.currentForeground
-        : self.currentBackground;
-    if (self.textDim) foreground = [foreground colorWithAlphaComponent:0.65];
-
-    NSMutableDictionary<NSAttributedStringKey, id> *attributes =
-        [@{
-            NSForegroundColorAttributeName : foreground,
-            NSFontAttributeName : [self fontForCurrentStyle],
-            NSParagraphStyleAttributeName : self.terminalParagraphStyle,
-        } mutableCopy];
-    if (background != nil) {
-        attributes[NSBackgroundColorAttributeName] = background;
-    }
-    if (self.textUnderlined) {
-        attributes[NSUnderlineStyleAttributeName] = @(NSUnderlineStyleSingle);
-    }
-    return attributes;
-}
-
-- (void)writeTerminalText:(NSString *)text {
-    NSTextStorage *storage = self.terminalView.textStorage;
-    NSDictionary *attributes = [self terminalAttributes];
-
-    [text enumerateSubstringsInRange:NSMakeRange(0, text.length)
-                             options:NSStringEnumerationByComposedCharacterSequences
-                          usingBlock:^(NSString *substring,
-                                       NSRange substringRange,
-                                       NSRange enclosingRange,
-                                       BOOL *stop) {
-        (void)substringRange;
-        (void)enclosingRange;
-        (void)stop;
-
-        NSUInteger column =
-            self.outputCursor - [self lineStartForCursor:self.outputCursor];
-        if (self.terminalColumns > 0 &&
-            column >= self.terminalColumns) {
-            [self moveCursorToNextLine];
-        }
-
-        NSAttributedString *character = [[NSAttributedString alloc]
-            initWithString:substring
-                attributes:attributes];
-        if (self.outputCursor < storage.length &&
-            [storage.string characterAtIndex:self.outputCursor] != '\n') {
-            NSRange composed = [storage.string
-                rangeOfComposedCharacterSequenceAtIndex:self.outputCursor];
-            [storage replaceCharactersInRange:composed
-                         withAttributedString:character];
-        } else {
-            [storage insertAttributedString:character
-                                    atIndex:self.outputCursor];
-        }
-        self.outputCursor += substring.length;
-    }];
-}
-
 - (void)appendText:(NSString *)text {
-    self.outputCursor = self.terminalView.textStorage.length;
-    [self writeTerminalText:text];
-    self.terminalView.terminalCursorIndex = self.outputCursor;
-    [self scrollTerminalToBottom];
-}
-
-- (BOOL)terminalIsScrolledToBottom {
-    NSClipView *clipView = self.terminalScrollView.contentView;
-    NSView *documentView = self.terminalScrollView.documentView;
-    if (clipView == nil || documentView == nil) return YES;
-    CGFloat lineHeight =
-        self.terminalView.font.ascender -
-        self.terminalView.font.descender +
-        self.terminalView.font.leading;
-    CGFloat tolerance =
-        MAX(2.0, lineHeight * self.terminalLineHeightMultiple);
-    return NSMaxY(clipView.bounds) >=
-        NSMaxY(documentView.bounds) - tolerance;
-}
-
-- (BOOL)terminalIsAtBottomAnchor {
-    NSClipView *clipView = self.terminalScrollView.contentView;
-    NSView *documentView = self.terminalScrollView.documentView;
-    if (clipView == nil || documentView == nil) return YES;
-    CGFloat bottom = MAX(NSMinY(documentView.bounds),
-        NSMaxY(documentView.bounds) - NSHeight(clipView.bounds));
-    return fabs(NSMinY(clipView.bounds) - bottom) < 0.5;
-}
-
-- (void)beginUserTerminalScroll {
-    self.followsOutput = NO;
-    // A synchronized Claude frame may already be in progress when the user
-    // starts scrolling. Cancel its remembered follow state as well so the
-    // frame's closing marker cannot snap the viewport back to the prompt.
-    self.followSynchronizedOutput = NO;
-}
-
-- (void)finishUserTerminalScroll {
-    self.followsOutput = [self terminalIsAtBottomAnchor];
-    self.followSynchronizedOutput = self.followsOutput;
-}
-
-- (void)performScrollTerminalToBottom {
-    if (self.terminalScrollView == nil || self.terminalView == nil) return;
-    // CSI commands can replace the entire terminal buffer while
-    // consumeTerminalData: owns an NSTextStorage editing transaction. AppKit
-    // must not be asked to lay out or scroll that half-committed buffer. In
-    // particular, Claude emits ?1049l when it leaves its alternate screen;
-    // scrolling here before endEditing used to raise an NSBigMutableString
-    // range exception and terminate the app.
-    if (self.textStorageEditing) return;
-    NSLayoutManager *layoutManager = self.terminalView.layoutManager;
-    if (layoutManager != nil && self.terminalView.textContainer != nil) {
-        [layoutManager ensureLayoutForTextContainer:
-            self.terminalView.textContainer];
-    }
-    NSClipView *clipView = self.terminalScrollView.contentView;
-    NSView *documentView = self.terminalScrollView.documentView;
-    CGFloat bottom = MAX(NSMinY(documentView.bounds),
-        NSMaxY(documentView.bounds) - NSHeight(clipView.bounds));
-    // scrollRangeToVisible: and a second explicit clip-view scroll choose
-    // subtly different line-fragment anchors while a full-screen program is
-    // replacing a frame. Claude refreshes those frames frequently, so the
-    // two passes made otherwise stationary text bump vertically. Keep one
-    // exact bottom anchor and do nothing when it is already in place.
-    if ([self terminalIsAtBottomAnchor]) return;
-    [clipView scrollToPoint:
-        NSMakePoint(NSMinX(clipView.bounds), bottom)];
-    [self.terminalScrollView reflectScrolledClipView:clipView];
+    [self.terminalView feedText:[text
+        stringByReplacingOccurrencesOfString:@"\n" withString:@"\r\n"]];
 }
 
 - (void)scrollTerminalToBottom {
-    if (self.textStorageEditing) {
-        self.followSynchronizedOutput = self.followsOutput;
-        return;
-    }
-    [self performScrollTerminalToBottom];
-    if (self.scrollCorrectionScheduled) return;
-    self.scrollCorrectionScheduled = YES;
-    __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        AppDelegate *strongSelf = weakSelf;
-        if (strongSelf == nil) return;
-        strongSelf.scrollCorrectionScheduled = NO;
-        if (strongSelf.followsOutput && !strongSelf.textStorageEditing) {
-            [strongSelf performScrollTerminalToBottom];
-        }
-    });
+    [self.terminalView scrollToBottom];
 }
 
 - (void)claudeStatusBar:(ClaudeStatusBar *)statusBar
@@ -8122,19 +6098,11 @@ static void ConfigureTerminalTextViewForScrolling(
 }
 
 - (struct winsize)currentTerminalWindowSize {
-    NSSize content = self.terminalScrollView.contentSize;
-    content.width = MAX(1.0,
-        content.width - self.terminalView.textContainerInset.width * 2.0);
-    content.height = MAX(1.0,
-        content.height - self.terminalView.textContainerInset.height * 2.0);
-    NSDictionary *attributes = @{NSFontAttributeName : self.terminalView.font};
-    NSSize cell = [@"M" sizeWithAttributes:attributes];
-    cell.height *= self.terminalLineHeightMultiple;
     struct winsize size = {
-        .ws_row = (unsigned short)MAX(1, floor(content.height / cell.height)),
-        .ws_col = (unsigned short)MAX(1, floor(content.width / cell.width)),
-        .ws_xpixel = (unsigned short)content.width,
-        .ws_ypixel = (unsigned short)content.height,
+        .ws_row = (unsigned short)MAX(2, self.terminalView.terminalRows),
+        .ws_col = (unsigned short)MAX(2, self.terminalView.terminalColumns),
+        .ws_xpixel = (unsigned short)MAX(0, self.terminalView.bounds.size.width),
+        .ws_ypixel = (unsigned short)MAX(0, self.terminalView.bounds.size.height),
     };
     self.terminalRows = size.ws_row;
     self.terminalColumns = size.ws_col;
@@ -8162,6 +6130,7 @@ static void ConfigureTerminalTextViewForScrolling(
     if (columns < 20 || columns > 500 || rows < 5 || rows > 200) {
         return NO;
     }
+    [self.terminalView resizeGridWithColumns:columns rows:rows];
     self.terminalRows = rows;
     self.terminalColumns = columns;
     NSDictionary *attributes = @{NSFontAttributeName : self.terminalView.font};
@@ -8201,10 +6170,6 @@ static void ConfigureTerminalTextViewForScrolling(
     [self.tabActivityTimer invalidate];
     self.tabActivityTimer = nil;
     [self setTabBusy:NO];
-    if (self.textStorageEditing) {
-        [self.terminalView.textStorage endEditing];
-        self.textStorageEditing = NO;
-    }
     if (self.readSource != nil) {
         dispatch_source_cancel(self.readSource);
         self.readSource = nil;
@@ -8253,14 +6218,6 @@ static void ConfigureTerminalTextViewForScrolling(
         terminal.terminalRows = 24;
         terminal.terminalColumns = 80;
         terminal.pty = -1;
-        terminal.parserState = TerminalParserGround;
-        terminal.csiParameters = [NSMutableString string];
-        terminal.oscData = [NSMutableData data];
-        terminal.pendingUTF8Data = [NSMutableData data];
-        terminal.terminalParagraphStyle =
-            [[NSMutableParagraphStyle alloc] init];
-        terminal.terminalParagraphStyle.lineHeightMultiple =
-            theme.lineHeightMultiple;
         terminal.terminalView =
             [[TerminalView alloc] initWithFrame:NSMakeRect(0, 0, 800, 500)];
         terminal.terminalView.font =
@@ -8270,8 +6227,10 @@ static void ConfigureTerminalTextViewForScrolling(
         terminal.terminalView.pty = -1;
         terminal.terminalView.inputEnabled = YES;
         terminal.terminalView.terminalCursorColor = theme.cursorColor;
-        terminal.terminalView.terminalCursorVisible = YES;
-        [terminal resetTextAttributes];
+        __weak AppDelegate *weakTerminal = terminal;
+        terminal.terminalView.titleChanged = ^(NSString *title) {
+            weakTerminal.reportedWindowTitle = title;
+        };
         return terminal;
     };
 
@@ -8289,324 +6248,6 @@ static void ConfigureTerminalTextViewForScrolling(
             [terminal consumeTerminalData:
                 [NSData dataWithBytes:bytes length:length]];
         };
-
-    expect(@"clipboard removes terminal cell padding",
-           TerminalDBClipboardString(
-               @"first value       \nsecond\t   \n  indented value  \n"),
-           @"first value\nsecond\n  indented value\n");
-    expect(@"clipboard preserves meaningful whitespace",
-           TerminalDBClipboardString(@"alpha  beta\n\ncharlie"),
-           @"alpha  beta\n\ncharlie");
-
-    AppDelegate *spacing = newTerminal();
-    const char spacingBytes[] = "Welcome\033[3Cto";
-    feed(spacing, spacingBytes, sizeof(spacingBytes) - 1);
-    expect(@"cursor-forward spacing", spacing.terminalView.string,
-           @"Welcome   to");
-
-    AppDelegate *redraw = newTerminal();
-    const char redrawInitial[] = "first\r\nsecond\r\nthird";
-    const char redrawUpdate[] = "\033[1A\r\033[2Knew";
-    feed(redraw, redrawInitial, sizeof(redrawInitial) - 1);
-    feed(redraw, redrawUpdate, sizeof(redrawUpdate) - 1);
-    expect(@"cursor-up line redraw", redraw.terminalView.string,
-           @"first\nnew   \nthird");
-
-    AppDelegate *shellRecovery = newTerminal();
-    const char recoveryPrimary[] = "shell prompt";
-    const char recoveryModes[] =
-        "\033[?1049hfull screen\033[?1h\033[?2004h"
-        "\033[?25l\033[?2026hbuffered";
-    const char recoveryPrompt[] = "\033]633;D\a";
-    feed(shellRecovery, recoveryPrimary, sizeof(recoveryPrimary) - 1);
-    feed(shellRecovery, recoveryModes, sizeof(recoveryModes) - 1);
-    BOOL recoveryWasNecessary =
-        shellRecovery.alternateScreenActive &&
-        shellRecovery.synchronizedOutput &&
-        shellRecovery.textStorageEditing &&
-        shellRecovery.terminalView.applicationCursorKeys &&
-        shellRecovery.terminalView.bracketedPaste &&
-        !shellRecovery.terminalView.terminalCursorVisible;
-    feed(shellRecovery, recoveryPrompt, sizeof(recoveryPrompt) - 1);
-    if (!recoveryWasNecessary || shellRecovery.alternateScreenActive ||
-        shellRecovery.synchronizedOutput || shellRecovery.textStorageEditing ||
-        shellRecovery.terminalView.applicationCursorKeys ||
-        shellRecovery.terminalView.bracketedPaste ||
-        !shellRecovery.terminalView.terminalCursorVisible ||
-        ![shellRecovery.terminalView.string isEqualToString:@"shell prompt"]) {
-        fprintf(stderr, "FAIL shell prompt recovers leaked full-screen modes\n");
-        failures++;
-    }
-
-    AppDelegate *absolute = newTerminal();
-    const char absoluteBytes[] = "\033[2J\033[Hleft\033[5Cright";
-    feed(absolute, absoluteBytes, sizeof(absoluteBytes) - 1);
-    expect(@"absolute cursor and clear", absolute.terminalView.string,
-           @"left     right");
-
-    AppDelegate *cursor = newTerminal();
-    NSFont *compactFont =
-        [NSFont fontWithName:cursor.theme.fontName size:7.0]
-            ?: [NSFont monospacedSystemFontOfSize:7.0
-                                           weight:NSFontWeightRegular];
-    NSAttributedString *mixedHeightPrefix = [[NSAttributedString alloc]
-        initWithString:@"metadata\nmetadata\nmetadata\n"
-            attributes:@{
-                NSFontAttributeName : compactFont,
-                NSParagraphStyleAttributeName : cursor.terminalParagraphStyle,
-            }];
-    [cursor.terminalView.textStorage
-        setAttributedString:mixedHeightPrefix];
-    cursor.outputCursor = cursor.terminalView.textStorage.length;
-    const char promptBytes[] = "\033[32m\xe2\x9e\x9c\033[0m  ~ ";
-    feed(cursor, promptBytes, sizeof(promptBytes) - 1);
-    NSRect cursorRect = [cursor.terminalView terminalCursorRect];
-    NSLayoutManager *cursorLayout = cursor.terminalView.layoutManager;
-    [cursorLayout ensureLayoutForTextContainer:
-        cursor.terminalView.textContainer];
-    NSRange finalGlyphRange = [cursorLayout
-        glyphRangeForCharacterRange:
-            NSMakeRange(cursor.terminalView.string.length - 1, 1)
-                actualCharacterRange:nil];
-    NSRect finalGlyphRect = [cursorLayout
-        boundingRectForGlyphRange:finalGlyphRange
-                 inTextContainer:cursor.terminalView.textContainer];
-    CGFloat expectedCursorY =
-        cursor.terminalView.textContainerOrigin.y + finalGlyphRect.origin.y;
-    BOOL visiblePromptCursor =
-        cursor.terminalView.terminalCursorVisible &&
-        cursor.terminalView.terminalCursorIndex ==
-            cursor.terminalView.string.length &&
-        cursorRect.size.width > 0 && cursorRect.size.height > 0 &&
-        cursorRect.origin.x > cursor.terminalView.textContainerOrigin.x &&
-        fabs(cursorRect.origin.y - expectedCursorY) < 0.5;
-    const char hideCursor[] = "\033[?25l";
-    const char showCursor[] = "\033[?25h";
-    feed(cursor, hideCursor, sizeof(hideCursor) - 1);
-    BOOL cursorHidden = !cursor.terminalView.terminalCursorVisible;
-    feed(cursor, showCursor, sizeof(showCursor) - 1);
-    if (!visiblePromptCursor || !cursorHidden ||
-        !cursor.terminalView.terminalCursorVisible) {
-        fprintf(stderr,
-                "FAIL visible terminal block cursor "
-                "visible=%s hidden=%s shown=%s index=%lu length=%lu "
-                "rect={%.1f,%.1f,%.1f,%.1f}\n",
-                visiblePromptCursor ? "yes" : "no",
-                cursorHidden ? "yes" : "no",
-                cursor.terminalView.terminalCursorVisible ? "yes" : "no",
-                (unsigned long)cursor.terminalView.terminalCursorIndex,
-                (unsigned long)cursor.terminalView.string.length,
-                cursorRect.origin.x, cursorRect.origin.y,
-                cursorRect.size.width, cursorRect.size.height);
-        failures++;
-    }
-
-    AppDelegate *picker = newTerminal();
-    const char pickerInitial[] =
-        "Welcome\033[9Gto\033[12GClaude\033[19GCode\r\n"
-        "\033[2GLet's\033[8Gget\033[12Gstarted.\r\n"
-        "\033[4G1.\033[7GAuto\r\n"
-        "\033[2G\xe2\x9d\xaf\033[4G2.\033[7GDark";
-    const char pickerRedraw[] =
-        "\033[H\033[2K\033[1B\033[2K\033[1B\033[2K"
-        "\033[1B\033[2K\033[H"
-        "Welcome\033[9Gto\033[12GClaude\033[19GCode\r\n"
-        "\033[2GLet's\033[8Gget\033[12Gstarted.\r\n"
-        "\033[4G1.\033[7GAuto\r\n"
-        "\033[2G\xe2\x9d\xaf\033[4G2.\033[7GDark";
-    feed(picker, pickerInitial, sizeof(pickerInitial) - 1);
-    feed(picker, pickerRedraw, sizeof(pickerRedraw) - 1);
-    expect(@"Claude picker spacing and redraw", picker.terminalView.string,
-           @"Welcome to Claude Code\n"
-            " Let's get started.\n"
-            "   1. Auto\n"
-            " ❯ 2. Dark");
-
-    AppDelegate *unicode = newTerminal();
-    const unsigned char unicodeStart[] = {0xe2, 0x96};
-    const unsigned char unicodeEnd[] = {0x88};
-    feed(unicode, unicodeStart, sizeof(unicodeStart));
-    feed(unicode, unicodeEnd, sizeof(unicodeEnd));
-    expect(@"split UTF-8 scalar", unicode.terminalView.string, @"█");
-
-    AppDelegate *utf8ControlByte = newTerminal();
-    const unsigned char utf8ControlByteSequence[] = {0xe2, 0x9b, 0x9b};
-    feed(utf8ControlByte, utf8ControlByteSequence,
-         sizeof(utf8ControlByteSequence));
-    expect(@"UTF-8 continuation is not a C1 control",
-           utf8ControlByte.terminalView.string, @"⛛");
-
-    AppDelegate *alternate = newTerminal();
-    NSScrollView *alternateScrollView = [[NSScrollView alloc]
-        initWithFrame:NSMakeRect(0, 0, 800, 500)];
-    alternateScrollView.documentView = alternate.terminalView;
-    alternate.terminalScrollView = alternateScrollView;
-    const char primaryScreen[] = "shell prompt $ ";
-    const char enterAlternate[] = "\033[?1049hfull screen app";
-    const char leaveAlternate[] = "\033[?1049l";
-    feed(alternate, primaryScreen, sizeof(primaryScreen) - 1);
-    feed(alternate, enterAlternate, sizeof(enterAlternate) - 1);
-    expect(@"alternate screen contents", alternate.terminalView.string,
-           @"full screen app");
-    feed(alternate, leaveAlternate, sizeof(leaveAlternate) - 1);
-    expect(@"alternate screen restores primary", alternate.terminalView.string,
-           @"shell prompt $ ");
-
-    AppDelegate *alternateHistory = newTerminal();
-    alternateHistory.terminalRows = 4;
-    TerminalScrollView *alternateHistoryScrollView = [[TerminalScrollView alloc]
-        initWithFrame:NSMakeRect(0, 0, 360, 54)];
-    NSSize alternateHistoryViewport = alternateHistoryScrollView.contentSize;
-    alternateHistory.terminalView.frame =
-        NSMakeRect(0, 0, alternateHistoryViewport.width,
-                   alternateHistoryViewport.height);
-    alternateHistory.terminalView.minSize =
-        NSMakeSize(0, alternateHistoryViewport.height);
-    alternateHistory.terminalView.maxSize =
-        NSMakeSize(CGFLOAT_MAX, CGFLOAT_MAX);
-    alternateHistory.terminalView.verticallyResizable = YES;
-    alternateHistory.terminalView.horizontallyResizable = NO;
-    alternateHistory.terminalView.textContainer.widthTracksTextView = YES;
-    alternateHistoryScrollView.documentView = alternateHistory.terminalView;
-    alternateHistory.terminalScrollView = alternateHistoryScrollView;
-    const char alternateHistoryBytes[] =
-        "\033[?1049h"
-        "one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix";
-    feed(alternateHistory, alternateHistoryBytes,
-         sizeof(alternateHistoryBytes) - 1);
-    NSString *alternateHistoryString = alternateHistory.terminalView.string;
-    NSString *retainedPrefix = [alternateHistoryString
-        substringToIndex:MIN(alternateHistory.alternateViewportStart,
-                             alternateHistoryString.length)];
-    NSString *liveViewport = [alternateHistoryString
-        substringFromIndex:MIN(alternateHistory.alternateViewportStart,
-                               alternateHistoryString.length)];
-    BOOL displacedRowsRetained =
-        [retainedPrefix isEqualToString:@"one\ntwo\n"] &&
-        [liveViewport isEqualToString:@"three\nfour\nfive\nsix"];
-    const char alternateRedraw[] = "\033[H\033[2KTHREE";
-    feed(alternateHistory, alternateRedraw, sizeof(alternateRedraw) - 1);
-    BOOL redrawStayedInLiveViewport =
-        [alternateHistory.terminalView.string
-            hasPrefix:@"one\ntwo\nTHREE"];
-    const char alternateClear[] = "\033[2J\033[Hfresh";
-    feed(alternateHistory, alternateClear, sizeof(alternateClear) - 1);
-    BOOL clearPreservedHistory =
-        [alternateHistory.terminalView.string
-            isEqualToString:@"one\ntwo\nfresh"];
-    [alternateHistory.terminalView.layoutManager
-        ensureLayoutForTextContainer:alternateHistory.terminalView.textContainer];
-    BOOL retainedDocumentCanScroll =
-        NSHeight(alternateHistoryScrollView.documentView.bounds) >
-        NSHeight(alternateHistoryScrollView.contentView.bounds);
-    if (!displacedRowsRetained || !redrawStayedInLiveViewport ||
-        !clearPreservedHistory || !retainedDocumentCanScroll) {
-        fprintf(stderr,
-                "FAIL alternate screen retains native scrollback "
-                "prefix=%s live=%s final=%s scrollable=%s\n",
-                retainedPrefix.UTF8String, liveViewport.UTF8String,
-                alternateHistory.terminalView.string.UTF8String,
-                retainedDocumentCanScroll ? "yes" : "no");
-        failures++;
-    }
-
-    AppDelegate *primaryHistory = newTerminal();
-    primaryHistory.terminalRows = 4;
-    TerminalScrollView *primaryHistoryScrollView = [[TerminalScrollView alloc]
-        initWithFrame:NSMakeRect(0, 0, 360, 54)];
-    NSSize primaryHistoryViewport = primaryHistoryScrollView.contentSize;
-    primaryHistory.terminalView.frame =
-        NSMakeRect(0, 0, primaryHistoryViewport.width,
-                   primaryHistoryViewport.height);
-    primaryHistory.terminalView.minSize =
-        NSMakeSize(0, primaryHistoryViewport.height);
-    primaryHistory.terminalView.maxSize =
-        NSMakeSize(CGFLOAT_MAX, CGFLOAT_MAX);
-    primaryHistory.terminalView.verticallyResizable = YES;
-    primaryHistory.terminalView.horizontallyResizable = NO;
-    primaryHistory.terminalView.textContainer.widthTracksTextView = YES;
-    primaryHistoryScrollView.documentView = primaryHistory.terminalView;
-    primaryHistory.terminalScrollView = primaryHistoryScrollView;
-    const char primaryHistoryBytes[] =
-        "one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix";
-    feed(primaryHistory, primaryHistoryBytes,
-         sizeof(primaryHistoryBytes) - 1);
-    NSString *primaryHistoryString = primaryHistory.terminalView.string;
-    NSString *primaryRetainedPrefix = [primaryHistoryString
-        substringToIndex:MIN(primaryHistory.primaryViewportStart,
-                             primaryHistoryString.length)];
-    NSString *primaryLiveViewport = [primaryHistoryString
-        substringFromIndex:MIN(primaryHistory.primaryViewportStart,
-                               primaryHistoryString.length)];
-    BOOL primaryDisplacedRowsRetained =
-        [primaryRetainedPrefix isEqualToString:@"one\ntwo\n"] &&
-        [primaryLiveViewport isEqualToString:@"three\nfour\nfive\nsix"];
-    const char primaryRedraw[] = "\033[3A\033[3A\r\033[2KTHREE";
-    feed(primaryHistory, primaryRedraw, sizeof(primaryRedraw) - 1);
-    NSString *primaryRedrawString =
-        [primaryHistory.terminalView.string copy];
-    BOOL primaryRedrawStayedInLiveViewport =
-        [primaryRedrawString hasPrefix:@"one\ntwo\nTHREE"];
-    const char primaryClear[] = "\033[2J\033[Hfresh";
-    feed(primaryHistory, primaryClear, sizeof(primaryClear) - 1);
-    BOOL primaryClearPreservedHistory =
-        [primaryHistory.terminalView.string isEqualToString:@"one\ntwo\nfresh"];
-    [primaryHistory.terminalView.layoutManager
-        ensureLayoutForTextContainer:primaryHistory.terminalView.textContainer];
-    BOOL primaryRetainedDocumentCanScroll =
-        NSHeight(primaryHistoryScrollView.documentView.bounds) >
-        NSHeight(primaryHistoryScrollView.contentView.bounds);
-    if (!primaryDisplacedRowsRetained ||
-        !primaryRedrawStayedInLiveViewport ||
-        !primaryClearPreservedHistory ||
-        !primaryRetainedDocumentCanScroll) {
-        fprintf(stderr,
-                "FAIL primary screen retains native scrollback "
-                "prefix=%s live=%s redraw=%s final=%s "
-                "initial=%s redraw-ok=%s clear=%s scrollable=%s\n",
-                primaryRetainedPrefix.UTF8String,
-                primaryLiveViewport.UTF8String,
-                primaryRedrawString.UTF8String,
-                primaryHistory.terminalView.string.UTF8String,
-                primaryDisplacedRowsRetained ? "yes" : "no",
-                primaryRedrawStayedInLiveViewport ? "yes" : "no",
-                primaryClearPreservedHistory ? "yes" : "no",
-                primaryRetainedDocumentCanScroll ? "yes" : "no");
-        failures++;
-    }
-
-    AppDelegate *bounded = newTerminal();
-    NSMutableString *largeScrollback =
-        [NSMutableString stringWithCapacity:
-            TerminalDBMaximumScrollbackCharacters + 100000];
-    NSString *stressLine =
-        @"0123456789abcdefghijklmnopqrstuvwxyz"
-         "ABCDEFGHIJKLMNOPQRSTUVWXYZ — terminal stress line\n";
-    while (largeScrollback.length <=
-           TerminalDBMaximumScrollbackCharacters + 50000) {
-        [largeScrollback appendString:stressLine];
-    }
-    [bounded.terminalView.textStorage
-        setAttributedString:[[NSAttributedString alloc]
-            initWithString:largeScrollback]];
-    bounded.outputCursor = bounded.terminalView.textStorage.length;
-    bounded.savedOutputCursor = bounded.outputCursor;
-    bounded.activeLedgerOutputStart = 1000;
-    [bounded trimTerminalScrollbackIfNeeded];
-    BOOL boundedScrollback =
-        bounded.terminalView.textStorage.length <=
-            TerminalDBRetainedScrollbackCharacters &&
-        bounded.outputCursor == bounded.terminalView.textStorage.length &&
-        bounded.savedOutputCursor == bounded.outputCursor &&
-        bounded.activeLedgerOutputStart == 0 &&
-        [bounded.terminalView.string hasPrefix:@"0"];
-    if (!boundedScrollback) {
-        fprintf(stderr,
-                "FAIL bounded terminal scrollback length=%lu cursor=%lu\n",
-                (unsigned long)bounded.terminalView.textStorage.length,
-                (unsigned long)bounded.outputCursor);
-        failures++;
-    }
 
     AppDelegate *title = newTerminal();
     const char titleSequence[] = "\033]0;project — editor\007";
@@ -8746,9 +6387,7 @@ static void ConfigureTerminalTextViewForScrolling(
     }
 
     AppDelegate *contextTerminal = newTerminal();
-    [contextTerminal.terminalView.textStorage
-        setAttributedString:[[NSAttributedString alloc]
-            initWithString:@"build failed: missing header"]];
+    [contextTerminal.terminalView feedText:@"build failed: missing header\r\n"];
     NSString *terminalContext = [contextTerminal visibleTerminalContext];
     NSString *systemPrompt =
         [contextTerminal assistantSystemPromptForDirectory:@"/tmp/project"
@@ -9176,7 +6815,7 @@ static void ConfigureTerminalTextViewForScrolling(
             receiptBytes = byteCount;
             receiptLines = lineCount;
         };
-        input.bracketedPaste = YES;
+        [input feedText:@"\x1b[?2004h"];
         [input pasteString:@"one\ntwo"];
         const char expectedBracketedPaste[] =
             "\033[200~one\ntwo\033[201~";
@@ -9216,7 +6855,7 @@ static void ConfigureTerminalTextViewForScrolling(
             initWithFrame:NSMakeRect(0, 0, 100, 100)];
         backpressured.pty = backpressureSockets[0];
         backpressured.inputEnabled = YES;
-        backpressured.bracketedPaste = YES;
+        [backpressured feedText:@"\x1b[?2004h"];
         NSMutableString *largePaste = [NSMutableString string];
         for (NSUInteger index = 0; index < 12000; index++) {
             [largePaste appendString:@"paved-road-🙂-"];
@@ -9387,77 +7026,6 @@ static void ConfigureTerminalTextViewForScrolling(
         removeItemAtPath:claudeLaunch.windowRuntimeDirectory
         error:nil];
 
-    AppDelegate *scrolling = newTerminal();
-    TerminalScrollView *testScrollView = [[TerminalScrollView alloc]
-        initWithFrame:NSMakeRect(0, 0, 360, 120)];
-    NSSize testViewport = testScrollView.contentSize;
-    ConfigureTerminalTextViewForScrolling(scrolling.terminalView,
-                                          testViewport);
-    testScrollView.documentView = scrolling.terminalView;
-    scrolling.terminalScrollView = testScrollView;
-    scrolling.followsOutput = YES;
-
-    NSMutableString *screenful = [NSMutableString string];
-    for (NSUInteger line = 0; line < 24; line++) {
-        [screenful appendFormat:@"line %02lu\r\n", (unsigned long)line];
-    }
-    NSData *screenfulData =
-        [screenful dataUsingEncoding:NSUTF8StringEncoding];
-    feed(scrolling, screenfulData.bytes, screenfulData.length);
-    CGFloat firstDocumentHeight =
-        NSHeight(testScrollView.documentView.bounds);
-    CGFloat viewportHeight = NSHeight(testScrollView.contentView.bounds);
-    BOOL followedFirstScreen = [scrolling terminalIsScrolledToBottom];
-    BOOL firstScreenActuallyScrolled =
-        firstDocumentHeight > viewportHeight &&
-        NSMinY(testScrollView.contentView.bounds) > 0;
-
-    const char nextCommand[] = "prompt $ ls\r\nresult one\r\nresult two\r\n";
-    feed(scrolling, nextCommand, sizeof(nextCommand) - 1);
-    BOOL followedNextCommand = [scrolling terminalIsScrolledToBottom];
-    scrolling.followSynchronizedOutput = YES;
-    [scrolling beginUserTerminalScroll];
-    BOOL manualScrollSuspendedFollow =
-        !scrolling.followsOutput && !scrolling.followSynchronizedOutput;
-    [testScrollView.contentView scrollToPoint:NSZeroPoint];
-    [testScrollView reflectScrolledClipView:testScrollView.contentView];
-    [scrolling finishUserTerminalScroll];
-    NSPoint manualScrollOrigin = testScrollView.contentView.bounds.origin;
-    const char outputWhileReading[] = "background output\r\n";
-    feed(scrolling, outputWhileReading, sizeof(outputWhileReading) - 1);
-    BOOL manualScrollStayedPut =
-        !scrolling.followsOutput &&
-        fabs(testScrollView.contentView.bounds.origin.y -
-             manualScrollOrigin.y) < 0.5;
-    __weak AppDelegate *weakScrolling = scrolling;
-    scrolling.terminalView.userDidSendInput = ^{
-        AppDelegate *strongScrolling = weakScrolling;
-        if (strongScrolling == nil) return;
-        strongScrolling.followsOutput = YES;
-        [strongScrolling scrollTerminalToBottom];
-    };
-    [scrolling.terminalView sendUserBytes:"x" length:1];
-    BOOL inputReturnedToBottom = [scrolling terminalIsScrolledToBottom];
-    NSPoint stableBottomOrigin = testScrollView.contentView.bounds.origin;
-    const char synchronizedRedraw[] =
-        "\033[?2026h\033[Hline 00\033[?2026l";
-    feed(scrolling, synchronizedRedraw, sizeof(synchronizedRedraw) - 1);
-    BOOL synchronizedFrameStayedAnchored =
-        [scrolling terminalIsScrolledToBottom] &&
-        fabs(testScrollView.contentView.bounds.origin.y -
-             stableBottomOrigin.y) < 0.5;
-    scrolling.terminalView.userDidSendInput = nil;
-    if (!firstScreenActuallyScrolled ||
-        !followedFirstScreen ||
-        !followedNextCommand ||
-        !manualScrollSuspendedFollow ||
-        !manualScrollStayedPut ||
-        !inputReturnedToBottom ||
-        !synchronizedFrameStayedAnchored) {
-        fprintf(stderr, "FAIL terminal output follows bottom\n");
-        failures++;
-    }
-
     AppDelegate *activityState = newTerminal();
     [activityState setTabBusy:YES];
     BOOL busyStateSet = activityState.tabIsBusy;
@@ -9467,59 +7035,6 @@ static void ConfigureTerminalTextViewForScrolling(
         failures++;
     }
 
-    AppDelegate *remoteColors = newTerminal();
-    NSMutableString *longRemoteHistory = [NSMutableString string];
-    while (longRemoteHistory.length < 20000) {
-        [longRemoteHistory appendString:
-            @"remote history keeps native terminal attributes intact\n"];
-    }
-    NSMutableAttributedString *remoteStyled =
-        [[NSMutableAttributedString alloc]
-            initWithString:longRemoteHistory
-                attributes:@{
-                    NSFontAttributeName : remoteColors.terminalView.font,
-                    NSForegroundColorAttributeName : theme.terminalForeground,
-                    NSBackgroundColorAttributeName : theme.terminalBackground,
-                }];
-    NSArray<NSDictionary *> *remoteColorRuns = @[
-        @{ @"text" : @"Applications", @"color" : theme.ansiColors[6] },
-        @{ @"text" : @" EXIT 0 ", @"color" : theme.ansiColors[2] },
-        @{ @"text" : @"tmp", @"color" : theme.ansiColors[5] },
-    ];
-    for (NSDictionary *run in remoteColorRuns) {
-        [remoteStyled appendAttributedString:
-            [[NSAttributedString alloc]
-                initWithString:run[@"text"]
-                    attributes:@{
-                        NSFontAttributeName : remoteColors.terminalView.font,
-                        NSForegroundColorAttributeName : run[@"color"],
-                        NSBackgroundColorAttributeName :
-                            [theme.statusBarBackground
-                                colorWithAlphaComponent:0.72],
-                    }]];
-    }
-    [remoteColors.terminalView.textStorage
-        setAttributedString:remoteStyled];
-    remoteColors.outputCursor = remoteStyled.length;
-    NSString *remoteSnapshot = [remoteColors terminalRemoteANSISnapshot];
-    BOOL remoteColorsPreserved =
-        [remoteSnapshot rangeOfString:@"38;2;82;208;221"].location !=
-            NSNotFound &&
-        [remoteSnapshot rangeOfString:@"38;2;180;227;77"].location !=
-            NSNotFound &&
-        [remoteSnapshot rangeOfString:@"38;2;167;139;212"].location !=
-            NSNotFound &&
-        [remoteSnapshot rangeOfString:@"48;2;21;21;24"].location !=
-            NSNotFound &&
-        remoteSnapshot.length > 16000 &&
-        remoteSnapshot.length <= 240000;
-    if (!remoteColorsPreserved) {
-        fprintf(stderr,
-                "FAIL remote viewport preserves Graphite Ledger colors "
-                "length=%lu\n",
-                (unsigned long)remoteSnapshot.length);
-        failures++;
-    }
     AppDelegate *remoteGeometry = newTerminal();
     BOOL appliedRemoteGeometry =
         [remoteGeometry applyRemoteTerminalColumns:178 rows:35];

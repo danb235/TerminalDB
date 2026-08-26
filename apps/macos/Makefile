@@ -18,35 +18,18 @@ SCRIPT_RESOURCES := \
 	Resources/Scripts/claude-status-bridge.sh \
 	Resources/Scripts/claude-tab-state.sh
 
-.PHONY: all release run install test test-ci qa-tabs qa-claude-state qa-claude-status qa-remote-agent qa-signature qa-icon qa-secrets clean
+.PHONY: all release run install test test-ci test-surface qa-tabs qa-claude-state qa-claude-status qa-remote-agent qa-signature qa-icon qa-secrets clean
 
 all: $(BIN)
 
-$(BIN): $(SOURCES) $(REMOTE_AGENT_SOURCE) Info.plist Makefile $(FONT_RESOURCES) $(LICENSE_RESOURCES) $(SCRIPT_RESOURCES) $(ICON_RESOURCE)
-	mkdir -p $(APP)/Contents/MacOS
-	mkdir -p $(APP)/Contents/Resources/Fonts
-	mkdir -p $(APP)/Contents/Resources/Licenses
-	mkdir -p $(APP)/Contents/Resources/Scripts
-	cp Info.plist $(APP)/Contents/Info.plist
-	cp $(FONT_RESOURCES) $(APP)/Contents/Resources/Fonts/
-	cp $(LICENSE_RESOURCES) $(APP)/Contents/Resources/Licenses/
-	cp $(SCRIPT_RESOURCES) $(APP)/Contents/Resources/Scripts/
-	cp $(ICON_RESOURCE) $(APP)/Contents/Resources/
-	chmod 755 $(APP)/Contents/Resources/Scripts/claude-status-bridge.sh
-	chmod 755 $(APP)/Contents/Resources/Scripts/claude-tab-state.sh
-	clang -fobjc-arc -Wall -Wextra -framework AppKit -framework Foundation \
-		-framework CoreImage -framework LocalAuthentication \
-		$(SOURCES) -o $(BIN)
-	xcrun swiftc -parse-as-library -O \
-		-target $$(uname -m)-apple-macosx13.0 \
-		-strict-concurrency=minimal \
-		-framework Foundation -framework Security \
-		$(REMOTE_AGENT_SOURCE) \
-		-o $(APP)/Contents/MacOS/TerminalDBRemoteAgent
-	codesign --force --deep --sign - \
-		--identifier com.terminaldb.app \
-		--requirements '=designated => identifier "com.terminaldb.app"' \
-		$(APP)
+SURFACE_SOURCES := $(wildcard TerminalSurface/Sources/TerminalDBTerminal/*.swift)
+SURFACE_BUILD := Scripts/build-terminal-surface.sh TerminalSurface/Package.swift TerminalSurface/Package.resolved
+
+$(BIN): $(SOURCES) $(REMOTE_AGENT_SOURCE) Info.plist Makefile $(FONT_RESOURCES) $(LICENSE_RESOURCES) $(SCRIPT_RESOURCES) $(ICON_RESOURCE) $(SURFACE_SOURCES) $(SURFACE_BUILD) Scripts/build-app.sh
+	TERMINALDB_NATIVE_ONLY=1 ./Scripts/build-app.sh debug
+
+test-surface:
+	xcrun swift run --package-path TerminalSurface -c release TerminalSurfaceTests
 
 run: all
 	open $(APP)
@@ -70,6 +53,7 @@ install: release
 		printf '%s\n' "Installed $$target"
 
 test: all
+	$(MAKE) test-surface
 	$(BIN) --self-test
 	$(MAKE) qa-signature
 	$(MAKE) qa-icon
@@ -80,6 +64,7 @@ test: all
 	$(MAKE) qa-claude-status
 
 test-ci: all
+	$(MAKE) test-surface
 	$(BIN) --self-test
 	$(MAKE) qa-signature
 	$(MAKE) qa-icon
@@ -115,11 +100,11 @@ qa-icon: all
 
 qa-secrets:
 	@if command -v rg >/dev/null 2>&1; then \
-		rg -n --hidden --glob '!.git/**' --glob '!build/**' \
+		rg -n --hidden --glob '!.git/**' --glob '!build/**' --glob '!TerminalSurface/.build/**' \
 			'sk-ant-api0[0-9]-[A-Za-z0-9_-]{20,}' . >/dev/null; \
 		found="$$?"; \
 	else \
-		grep -Ern --exclude-dir=.git --exclude-dir=build \
+		grep -Ern --exclude-dir=.git --exclude-dir=build --exclude-dir=.build \
 			'sk-ant-api0[0-9]-[A-Za-z0-9_-]\{20,\}' . >/dev/null; \
 		found="$$?"; \
 	fi; \

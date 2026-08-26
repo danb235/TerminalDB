@@ -12,26 +12,9 @@ BIN_PATH="${CONTENTS_DIR}/MacOS/${APP_NAME}"
 VERSION="${TERMINALDB_VERSION:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)}"
 BUILD_NUMBER="${TERMINALDB_BUILD:-${VERSION}}"
 
-SOURCES=(
-  src/main.m
-  src/ClaudeAPI.m
-  src/ClaudeAssistantView.m
-  src/TerminalInspector.m
-  src/ClaudeProfile.m
-  src/ClaudeStatusBar.m
-  src/TerminalTheme.m
-  src/TerminalLedger.m
-  src/TerminalPermissions.m
-  src/TerminalProduct.m
-  src/TerminalUpdater.m
-  src/TerminalRemoteBridge.m
-)
-
 if [[ "${CONFIGURATION}" == "debug" ]]; then
-  CLANG_OPTIMIZATION_FLAGS=(-O0 -g)
   SWIFT_OPTIMIZATION_FLAGS=(-Onone -g)
 else
-  CLANG_OPTIMIZATION_FLAGS=(-O2)
   SWIFT_OPTIMIZATION_FLAGS=(-O)
 fi
 
@@ -60,46 +43,26 @@ chmod 755 "${CONTENTS_DIR}/Resources/Scripts/"*.sh
   -c "Set :CFBundleVersion ${BUILD_NUMBER}" \
   "${CONTENTS_DIR}/Info.plist"
 
-clang \
-  -fobjc-arc \
-  -Wall \
-  -Wextra \
-  -mmacosx-version-min=13.0 \
-  -arch arm64 \
-  -arch x86_64 \
-  "${CLANG_OPTIMIZATION_FLAGS[@]}" \
-  -framework AppKit \
-  -framework Foundation \
-  -framework CoreImage \
-  -framework LocalAuthentication \
-  "${SOURCES[@]}" \
-  -o "${BIN_PATH}"
-
-AGENT_SOURCE="remote-agent/TerminalDBRemoteAgent.swift"
-AGENT_ARM64="${CONTENTS_DIR}/MacOS/TerminalDBRemoteAgent.arm64"
-AGENT_X86_64="${CONTENTS_DIR}/MacOS/TerminalDBRemoteAgent.x86_64"
+architectures=(arm64 x86_64)
+if [[ "${TERMINALDB_NATIVE_ONLY:-0}" == "1" ]]; then architectures=("$(uname -m)"); fi
+app_slices=()
+agent_slices=()
+for arch in "${architectures[@]}"; do
+  slice="${BIN_PATH}.${arch}"
+  ./Scripts/build-terminal-surface.sh "${arch}" "${slice}" "${CONFIGURATION}"
+  app_slices+=("${slice}")
+  agent_slice="${CONTENTS_DIR}/MacOS/TerminalDBRemoteAgent.${arch}"
+  xcrun swiftc -parse-as-library -strict-concurrency=minimal \
+    -target "${arch}-apple-macosx13.0" "${SWIFT_OPTIMIZATION_FLAGS[@]}" \
+    -framework Foundation -framework Security \
+    remote-agent/TerminalDBRemoteAgent.swift -o "${agent_slice}"
+  agent_slices+=("${agent_slice}")
+done
 AGENT_PATH="${CONTENTS_DIR}/MacOS/TerminalDBRemoteAgent"
-xcrun swiftc \
-  -parse-as-library \
-  -strict-concurrency=minimal \
-  -target arm64-apple-macosx13.0 \
-  "${SWIFT_OPTIMIZATION_FLAGS[@]}" \
-  -framework Foundation \
-  -framework Security \
-  "${AGENT_SOURCE}" \
-  -o "${AGENT_ARM64}"
-xcrun swiftc \
-  -parse-as-library \
-  -strict-concurrency=minimal \
-  -target x86_64-apple-macosx13.0 \
-  "${SWIFT_OPTIMIZATION_FLAGS[@]}" \
-  -framework Foundation \
-  -framework Security \
-  "${AGENT_SOURCE}" \
-  -o "${AGENT_X86_64}"
-lipo -create "${AGENT_ARM64}" "${AGENT_X86_64}" -output "${AGENT_PATH}"
-rm "${AGENT_ARM64}" "${AGENT_X86_64}"
-chmod 755 "${AGENT_PATH}"
+lipo -create "${app_slices[@]}" -output "${BIN_PATH}"
+lipo -create "${agent_slices[@]}" -output "${AGENT_PATH}"
+rm "${app_slices[@]}" "${agent_slices[@]}"
+chmod 755 "${BIN_PATH}" "${AGENT_PATH}"
 
 IDENTITY_CN="TerminalDB Self-Signed"
 if security find-identity -p codesigning 2>/dev/null | grep -q "${IDENTITY_CN}"; then
@@ -122,8 +85,8 @@ else
 fi
 
 codesign --verify --deep --strict --verbose=2 "${APP_DIR}"
-lipo "${BIN_PATH}" -verify_arch arm64 x86_64
-lipo "${AGENT_PATH}" -verify_arch arm64 x86_64
+lipo "${BIN_PATH}" -verify_arch "${architectures[@]}"
+lipo "${AGENT_PATH}" -verify_arch "${architectures[@]}"
 
 echo "Built ${APP_DIR}"
 echo "Version: ${VERSION}"
