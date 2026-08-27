@@ -31,6 +31,25 @@
 
 static int TerminalDBExitStatus = 0;
 
+static BOOL TerminalDBCanRestartTrackedClaudeLogin(
+    pid_t foregroundProcessGroup,
+    pid_t shellProcessGroup,
+    pid_t trackedLoginProcessGroup,
+    BOOL loginCommandIsTracked,
+    NSTimeInterval secondsSinceLaunch) {
+    if (!loginCommandIsTracked || foregroundProcessGroup <= 0 ||
+        foregroundProcessGroup == shellProcessGroup) {
+        return NO;
+    }
+    if (trackedLoginProcessGroup > 0) {
+        return foregroundProcessGroup == trackedLoginProcessGroup;
+    }
+    // There is a short interval between writing the command to the PTY and
+    // the activity timer observing the job's process group. Only treat that
+    // unobserved interval as the login we launched while it is still fresh.
+    return secondsSinceLaunch >= 0 && secondsSinceLaunch < 5.0;
+}
+
 @protocol TerminalTabActionTarget <NSObject>
 - (void)newWindowForTab:(id)sender;
 - (BOOL)terminalWindowDidRequestCancel:(NSWindow *)window;
@@ -107,6 +126,12 @@ static int TerminalDBExitStatus = 0;
 @property(nonatomic) int pty;
 @property(nonatomic) pid_t shellPid;
 @property(nonatomic) dispatch_source_t readSource;
+@property(nonatomic, strong, nullable) ClaudeProfile *claudeLoginProfile;
+@property(nonatomic) pid_t claudeLoginProcessGroup;
+@property(nonatomic, strong, nullable) NSDate *claudeLoginStartedAt;
+@property(nonatomic, strong, nullable)
+    ClaudeProfile *claudeLoginRestartProfile;
+@property(nonatomic) NSUInteger claudeLoginRestartGeneration;
 @property(nonatomic, copy, nullable) NSString *reportedWindowTitle;
 @property(nonatomic) NSUInteger terminalRows;
 @property(nonatomic) NSUInteger terminalColumns;
@@ -5701,6 +5726,86 @@ static int TerminalDBExitStatus = 0;
     [self startClaudeLoginForProfile:profile];
 }
 
+- (void)clearClaudeLoginTracking {
+    self.claudeLoginProfile = nil;
+    self.claudeLoginProcessGroup = -1;
+    self.claudeLoginStartedAt = nil;
+    self.claudeLoginRestartProfile = nil;
+    self.claudeLoginRestartGeneration++;
+}
+
+- (void)launchClaudeLoginForProfile:(ClaudeProfile *)profile {
+    self.selectedProfile = profile;
+    [self.profileManager setLastSelectedProfile:profile];
+    [self.profileManager prepareRuntimeFilesForProfile:profile];
+    [self writeWindowProfileFile];
+    [self.claudeStatusBar selectProfile:profile];
+    [self updateWindowTitle];
+    [self.window makeKeyAndOrderFront:nil];
+    [self.window makeFirstResponder:self.terminalView];
+
+    self.claudeLoginProfile = profile;
+    self.claudeLoginProcessGroup = -1;
+    self.claudeLoginStartedAt = [NSDate date];
+    self.claudeLoginRestartProfile = nil;
+    self.claudeLoginRestartGeneration++;
+
+    const char *command = "claude auth login --claudeai\r";
+    [self.terminalView sendBytes:command length:strlen(command)];
+}
+
+- (void)restartTrackedClaudeLoginForProfile:(ClaudeProfile *)profile
+                      foregroundProcessGroup:(pid_t)foregroundProcessGroup {
+    self.claudeLoginRestartProfile = profile;
+    self.claudeLoginProcessGroup = foregroundProcessGroup;
+    NSUInteger generation = ++self.claudeLoginRestartGeneration;
+
+    // This is safe only because startClaudeLoginForProfile verified that the
+    // foreground process group belongs to the auth command TerminalDB itself
+    // launched. Never interrupt an arbitrary foreground command here.
+    const char interrupt = 0x03;
+    [self.terminalView sendBytes:&interrupt length:1];
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+        AppDelegate *strongSelf = weakSelf;
+        if (strongSelf == nil ||
+            strongSelf.claudeLoginRestartGeneration != generation ||
+            strongSelf.claudeLoginRestartProfile == nil) {
+            return;
+        }
+        pid_t current = strongSelf.pty >= 0
+            ? tcgetpgrp(strongSelf.pty)
+            : -1;
+        if (current == foregroundProcessGroup) {
+            // Some auth prompts temporarily disable the terminal's signal
+            // character. Deliver SIGINT to the known auth job as a fallback.
+            kill(-foregroundProcessGroup, SIGINT);
+        }
+    });
+
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+        AppDelegate *strongSelf = weakSelf;
+        if (strongSelf == nil ||
+            strongSelf.claudeLoginRestartGeneration != generation ||
+            strongSelf.claudeLoginRestartProfile == nil) {
+            return;
+        }
+        pid_t current = strongSelf.pty >= 0
+            ? tcgetpgrp(strongSelf.pty)
+            : -1;
+        if (current == foregroundProcessGroup) {
+            // A stuck auth helper has no terminal work to preserve. Terminate
+            // only its tracked process group so the shell can relaunch login.
+            kill(-foregroundProcessGroup, SIGTERM);
+        }
+    });
+}
+
 - (void)startClaudeLoginForProfile:(ClaudeProfile *)profile {
     if (self.claudeExecutable.length == 0) {
         NSAlert *alert = [[NSAlert alloc] init];
@@ -5715,6 +5820,19 @@ static int TerminalDBExitStatus = 0;
         self.pty >= 0 ? tcgetpgrp(self.pty) : -1;
     if (foregroundProcessGroup > 0 &&
         foregroundProcessGroup != self.shellPid) {
+        NSTimeInterval loginAge = self.claudeLoginStartedAt != nil
+            ? -self.claudeLoginStartedAt.timeIntervalSinceNow
+            : 60.0;
+        if (TerminalDBCanRestartTrackedClaudeLogin(
+                foregroundProcessGroup,
+                self.shellPid,
+                self.claudeLoginProcessGroup,
+                self.claudeLoginProfile != nil,
+                loginAge)) {
+            [self restartTrackedClaudeLoginForProfile:profile
+                               foregroundProcessGroup:foregroundProcessGroup];
+            return;
+        }
         NSAlert *alert = [[NSAlert alloc] init];
         alert.messageText = @"A command is already running";
         alert.informativeText =
@@ -5723,18 +5841,7 @@ static int TerminalDBExitStatus = 0;
         [alert runModal];
         return;
     }
-
-    self.selectedProfile = profile;
-    [self.profileManager setLastSelectedProfile:profile];
-    [self.profileManager prepareRuntimeFilesForProfile:profile];
-    [self writeWindowProfileFile];
-    [self.claudeStatusBar selectProfile:profile];
-    [self updateWindowTitle];
-    [self.window makeKeyAndOrderFront:nil];
-    [self.window makeFirstResponder:self.terminalView];
-
-    const char *command = "claude auth login --claudeai\r";
-    [self.terminalView sendBytes:command length:strlen(command)];
+    [self launchClaudeLoginForProfile:profile];
 }
 
 - (void)updateWindowTitle {
@@ -5875,6 +5982,30 @@ static int TerminalDBExitStatus = 0;
     BOOL foregroundProcessRunning =
         foregroundProcessGroup > 0 &&
         foregroundProcessGroup != self.shellPid;
+
+    if (self.claudeLoginProfile != nil) {
+        if (foregroundProcessRunning) {
+            if (self.claudeLoginProcessGroup <= 0) {
+                self.claudeLoginProcessGroup = foregroundProcessGroup;
+            }
+        } else {
+            NSTimeInterval loginAge = self.claudeLoginStartedAt != nil
+                ? -self.claudeLoginStartedAt.timeIntervalSinceNow
+                : 60.0;
+            BOOL loginWasObserved = self.claudeLoginProcessGroup > 0;
+            if (loginWasObserved || loginAge >= 1.0) {
+                ClaudeProfile *restartProfile =
+                    self.claudeLoginRestartProfile;
+                [self clearClaudeLoginTracking];
+                if (restartProfile != nil) {
+                    __weak typeof(self) weakSelf = self;
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [weakSelf startClaudeLoginForProfile:restartProfile];
+                    });
+                }
+            }
+        }
+    }
 
     if (!foregroundProcessRunning) {
         self.foregroundProcessBeganAt = nil;
@@ -6248,6 +6379,16 @@ static int TerminalDBExitStatus = 0;
             [terminal consumeTerminalData:
                 [NSData dataWithBytes:bytes length:length]];
         };
+
+    if (!TerminalDBCanRestartTrackedClaudeLogin(420, 100, 420, YES, 30) ||
+        !TerminalDBCanRestartTrackedClaudeLogin(420, 100, -1, YES, 0.2) ||
+        TerminalDBCanRestartTrackedClaudeLogin(421, 100, 420, YES, 30) ||
+        TerminalDBCanRestartTrackedClaudeLogin(420, 100, -1, YES, 8) ||
+        TerminalDBCanRestartTrackedClaudeLogin(420, 100, 420, NO, 1) ||
+        TerminalDBCanRestartTrackedClaudeLogin(100, 100, 100, YES, 1)) {
+        fprintf(stderr, "FAIL Claude login retry process ownership\n");
+        failures++;
+    }
 
     AppDelegate *title = newTerminal();
     const char titleSequence[] = "\033]0;project — editor\007";
