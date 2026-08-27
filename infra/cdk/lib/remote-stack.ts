@@ -440,6 +440,10 @@ export class TerminalDBRemoteStack extends Stack {
         origin: webOrigin,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         responseHeadersPolicy: responseHeaders,
+        // The HTML shell must never outlive the hashed JavaScript it names.
+        // TerminalDB is online-only, so a cached document provides no useful
+        // offline behavior and can strand Safari on a removed bundle.
+        cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
         compress: true,
         functionAssociations: [
           {
@@ -449,6 +453,13 @@ export class TerminalDBRemoteStack extends Stack {
         ],
       },
       additionalBehaviors: {
+        "/assets/*": {
+          origin: webOrigin,
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          responseHeadersPolicy: responseHeaders,
+          cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+          compress: true,
+        },
         "/auth-status.html": {
           origin: webOrigin,
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
@@ -591,13 +602,27 @@ export class TerminalDBRemoteStack extends Stack {
       ],
       true,
     );
+    const webAssetsDeployment = new s3deploy.BucketDeployment(this, "DeployWebAssets", {
+      destinationBucket: webBucket,
+      destinationKeyPrefix: "assets",
+      sources: [s3deploy.Source.asset(path.join(process.cwd(), "../../apps/web/dist/assets"))],
+      // Hashed assets are immutable. Retaining earlier hashes makes a deploy
+      // atomic for browsers that loaded the previous HTML milliseconds before
+      // the new shell reached the edge.
+      prune: false,
+      cacheControl: [s3deploy.CacheControl.fromString("public,max-age=31536000,immutable")],
+    });
     const webDeployment = new s3deploy.BucketDeployment(this, "DeployWeb", {
       destinationBucket: webBucket,
       distribution,
       distributionPaths: ["/*"],
-      sources: [s3deploy.Source.asset(path.join(process.cwd(), "../../apps/web/dist"))],
-      prune: true,
+      sources: [s3deploy.Source.asset(path.join(process.cwd(), "../../apps/web/dist"), {
+        exclude: ["assets/**"],
+      })],
+      prune: false,
+      cacheControl: [s3deploy.CacheControl.fromString("no-store,max-age=0,must-revalidate")],
     });
+    webDeployment.node.addDependency(webAssetsDeployment);
     NagSuppressions.addResourceSuppressions(
       webDeployment,
       [

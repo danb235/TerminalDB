@@ -9,9 +9,33 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/terminaldb-icon.svg" />
     <title>TerminalDB Remote</title>
+    <style>
+      html, body, #root { min-height: 100%; margin: 0; }
+      body { background: #101013; color: #f3f3ef; }
+      .boot-shell {
+        box-sizing: border-box;
+        display: grid;
+        min-height: 100vh;
+        place-items: center;
+        padding: 24px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .boot-shell > div { max-width: 520px; text-align: center; }
+      .boot-shell-mark { color: #54cad5; font: 700 24px/1 ui-monospace, monospace; }
+      .boot-shell h1 { margin: 20px 0 8px; font-size: clamp(28px, 5vw, 44px); letter-spacing: -.04em; }
+      .boot-shell p { margin: 0; color: #a8a8a2; font-size: 17px; line-height: 1.55; }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <main class="boot-shell" aria-live="polite">
+        <div>
+          <div class="boot-shell-mark" aria-hidden="true">&gt;_</div>
+          <h1>Opening TerminalDB</h1>
+          <p>Loading your devices and terminal sessions securely.</p>
+        </div>
+      </main>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

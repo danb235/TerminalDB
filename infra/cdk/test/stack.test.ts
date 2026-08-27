@@ -230,6 +230,34 @@ describe("TerminalDB Remote infrastructure", () => {
     template.resourceCountIs("AWS::CloudFront::Function", 2);
   });
 
+  it("deploys the web shell atomically for returning browsers", () => {
+    const distributions = Object.values(
+      template.findResources("AWS::CloudFront::Distribution"),
+    ) as Array<{ Properties: { DistributionConfig: Record<string, unknown> } }>;
+    const configuration = distributions[0]!.Properties.DistributionConfig as {
+      DefaultCacheBehavior: { CachePolicyId?: unknown };
+      CacheBehaviors: Array<{ PathPattern: string; CachePolicyId?: unknown }>;
+    };
+    expect(JSON.stringify(configuration.DefaultCacheBehavior.CachePolicyId))
+      .toContain("4135ea2d"); // AWS managed CachingDisabled policy.
+    const assets = configuration.CacheBehaviors.find((behavior) =>
+      behavior.PathPattern === "/assets/*");
+    expect(assets).toBeDefined();
+    expect(JSON.stringify(assets?.CachePolicyId)).toContain("658327ea"); // CachingOptimized.
+
+    const deployments = Object.values(template.findResources(
+      "Custom::CDKBucketDeployment",
+    ));
+    expect(deployments).toHaveLength(2);
+    const serialized = deployments.map((deployment) => JSON.stringify(deployment));
+    expect(serialized.some((deployment) =>
+      deployment.includes("public,max-age=31536000,immutable") &&
+      deployment.includes('"Prune":false'))).toBe(true);
+    expect(serialized.some((deployment) =>
+      deployment.includes("no-store,max-age=0,must-revalidate") &&
+      deployment.includes('"Prune":false'))).toBe(true);
+  });
+
   it("frames only the minimal account-status bridge from TerminalDB marketing", () => {
     template.resourceCountIs("AWS::CloudFront::ResponseHeadersPolicy", 2);
     const policies = Object.values(
