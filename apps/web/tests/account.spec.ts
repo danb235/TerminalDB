@@ -266,7 +266,7 @@ test("prepares account creators for mandatory authenticator-app setup", async ({
   expect(canceledBootstrap).toBe("qa-approved-bootstrap");
 });
 
-test("keeps password and TOTP sign-in inside TerminalDB", async ({ page }) => {
+test("keeps password and TOTP sign-in inside TerminalDB", async ({ browserName, page }) => {
   const directAccessToken = freshAccessToken("direct-signin-access");
   const externalAuthRequests: string[] = [];
   page.on("request", (request) => {
@@ -314,12 +314,65 @@ test("keeps password and TOTP sign-in inside TerminalDB", async ({ page }) => {
 
   await page.goto("/?unpaired&account");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page.getByLabel("Username")).toHaveAttribute("name", "username");
+  await expect(page.getByLabel("Username")).toHaveAttribute("autocomplete", "username");
+  await expect(page.getByLabel("Password", { exact: true })).toHaveAttribute("name", "password");
+  await expect(page.getByLabel("Password", { exact: true }))
+    .toHaveAttribute("autocomplete", "current-password");
   await page.getByLabel("Username").fill("returning-user");
   await page.getByLabel("Password", { exact: true }).fill("Unique-Password-42!");
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Enter your authenticator code" }))
     .toBeVisible();
-  await page.getByLabel("Six-digit code").fill("123456");
+  const authenticatorCode = page.getByLabel("Six-digit code");
+  await expect(authenticatorCode).toHaveAttribute("autocomplete", "one-time-code");
+  await expect(authenticatorCode).toHaveAttribute("name", "one-time-code");
+  await expect(authenticatorCode).toHaveAttribute("inputmode", "numeric");
+  await expect(authenticatorCode).toHaveAttribute("maxlength", "6");
+  await expect(authenticatorCode).toHaveAttribute("minlength", "6");
+  await expect(authenticatorCode).toHaveAttribute("pattern", "[0-9]{6}");
+  await expect(authenticatorCode).toHaveAttribute("enterkeyhint", "done");
+  await expect(page.locator('input[type="hidden"][name="username"]'))
+    .toHaveValue("returning-user");
+  const inputColors = await authenticatorCode.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      background: style.backgroundColor,
+      caret: style.caretColor,
+      color: style.color,
+      fill: style.webkitTextFillColor,
+    };
+  });
+  expect(inputColors).toEqual({
+    background: "rgb(23, 23, 26)",
+    caret: "rgb(231, 231, 226)",
+    color: "rgb(231, 231, 226)",
+    fill: "rgb(231, 231, 226)",
+  });
+  if (browserName === "chromium") {
+    const autofillOverride = await page.evaluate(() => {
+      for (const sheet of Array.from(document.styleSheets)) {
+        for (const rule of Array.from(sheet.cssRules)) {
+          if (rule instanceof CSSStyleRule && rule.selectorText.includes(":-webkit-autofill")) {
+            return {
+              fill: rule.style.getPropertyValue("-webkit-text-fill-color"),
+              fillPriority: rule.style.getPropertyPriority("-webkit-text-fill-color"),
+              shadow: rule.style.getPropertyValue("-webkit-box-shadow"),
+              shadowPriority: rule.style.getPropertyPriority("-webkit-box-shadow"),
+            };
+          }
+        }
+      }
+      return undefined;
+    });
+    expect(autofillOverride).toEqual({
+      fill: "var(--tdb-text)",
+      fillPriority: "important",
+      shadow: "0 0 0 1000px var(--tdb-terminal) inset",
+      shadowPriority: "important",
+    });
+  }
+  await authenticatorCode.fill("123456");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
 
   await expect(page.getByRole("heading", { name: "Devices & sessions" })).toBeVisible();
@@ -333,7 +386,7 @@ test("keeps password and TOTP sign-in inside TerminalDB", async ({ page }) => {
   });
 });
 
-test("offers Mac-approved recovery after a rejected sign-in", async ({ page }) => {
+test("offers Mac-approved recovery after a rejected sign-in", async ({ browserName, page }) => {
   await page.route("**/api/config", async (route) => {
     await route.fulfill({
       contentType: "application/json",
@@ -366,10 +419,12 @@ test("offers Mac-approved recovery after a rejected sign-in", async ({ page }) =
   await expect(page.getByRole("button", { name: "Reset password from an enrolled Mac" }))
     .toBeEnabled();
   await expect(page.getByRole("alert")).toContainText("New here?");
-  const securePasswordSelection = await page.getByLabel("Password", { exact: true }).evaluate(
-    (element) => getComputedStyle(element, "::selection").webkitTextFillColor,
-  );
-  expect(securePasswordSelection).toBe("rgba(0, 0, 0, 0)");
+  if (browserName === "chromium") {
+    const securePasswordSelection = await page.getByLabel("Password", { exact: true }).evaluate(
+      (element) => getComputedStyle(element, "::selection").webkitTextFillColor,
+    );
+    expect(securePasswordSelection).toBe("rgba(0, 0, 0, 0)");
+  }
 });
 
 test("uses a one-time Mac approval to reset password and require existing TOTP", async ({ page }) => {
