@@ -1,3 +1,56 @@
+.app-recovery {
+  box-sizing: border-box;
+  display: grid;
+  min-height: 100dvh;
+  place-items: center;
+  padding: 24px;
+  background: var(--tdb-bg);
+  color: var(--tdb-text);
+}
+
+.app-recovery > section {
+  width: min(100%, 520px);
+  padding: 36px;
+  border: 1px solid var(--tdb-border-strong);
+  border-radius: 12px;
+  background: var(--tdb-panel);
+  text-align: center;
+}
+
+.app-recovery-mark,
+.app-recovery > section > span {
+  color: var(--tdb-cyan);
+  font: 700 12px/1.2 var(--tdb-mono);
+  letter-spacing: .13em;
+}
+
+.app-recovery-mark {
+  margin-bottom: 18px;
+  font-size: 24px;
+}
+
+.app-recovery h1 {
+  margin: 14px 0 10px;
+  font: 700 clamp(28px, 5vw, 42px)/1 var(--tdb-sans);
+  letter-spacing: -.04em;
+}
+
+.app-recovery p {
+  margin: 0 0 24px;
+  color: var(--tdb-muted);
+  font: 16px/1.55 var(--tdb-sans);
+}
+
+.app-recovery button {
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid var(--tdb-cyan);
+  border-radius: 6px;
+  background: var(--tdb-cyan);
+  color: #101013;
+  font: 700 15px/1 var(--tdb-sans);
+}
+
 .remote-shell {
   width: min(100%, 1120px);
   min-height: 100dvh;

@@ -53,8 +53,8 @@ jobs:
           npm test
           npm run test:cost
 
-      - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium webkit
 
       - name: Responsive and accessibility tests
         run: npm run test:web:e2e

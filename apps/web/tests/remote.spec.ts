@@ -630,7 +630,8 @@ test("creates, selects, works in, and closes native-backed tabs", async ({ page 
   ))).toContainEqual(expect.stringMatching(/^close:tab_mock_/u));
 });
 
-test("copies plain terminal text without ANSI control sequences", async ({ page, context }) => {
+test("copies plain terminal text without ANSI control sequences", async ({ page, context }, testInfo) => {
+  test.skip(testInfo.project.name === "safari", "Playwright WebKit cannot grant clipboard permissions");
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.getByRole("button", { name: "Copy screen" }).click();
   const copied = await page.evaluate(() => navigator.clipboard.readText());
@@ -941,7 +942,10 @@ test("terminal and overlay surfaces have no detectable accessibility violations"
 });
 
 test("touch controls meet the minimum target size", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name === "desktop", "Desktop hides the mobile key dock");
+  test.skip(
+    testInfo.project.name === "desktop" || testInfo.project.name === "safari",
+    "Desktop browsers hide the mobile key dock",
+  );
   const boxes = await page.locator(".quick-keys button").evaluateAll((buttons) =>
     buttons.map((button) => {
       const rect = button.getBoundingClientRect();
