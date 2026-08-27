@@ -1937,63 +1937,60 @@ body:has(.session-loading-view) #root {
   background: rgb(65 214 202 / 20%);
 }
 
-.account-signup form,
-.account-security-action form {
+.account-access form {
   display: grid;
   gap: 8px;
 }
 
-.account-signup form label,
-.account-security-action form label {
+.account-access form label {
   color: var(--tdb-muted);
   font: 10px/1.3 var(--tdb-mono);
 }
 
-.account-signup form input,
-.account-security-action form input {
+.account-access form input {
+  color-scheme: dark;
   min-height: 42px;
   padding: 0 11px;
   border: 1px solid var(--tdb-border-strong);
   border-radius: 5px;
   outline: none;
-  background: var(--tdb-black);
+  background: var(--tdb-terminal);
   color: var(--tdb-text);
-  font: 13px/1 var(--tdb-mono);
-}
-
-.account-signup input:-webkit-autofill,
-.account-signup input:-webkit-autofill:hover,
-.account-signup input:-webkit-autofill:focus,
-.account-security-action input:-webkit-autofill,
-.account-security-action input:-webkit-autofill:hover,
-.account-security-action input:-webkit-autofill:focus {
-  box-shadow: 0 0 0 1000px var(--tdb-black) inset;
   caret-color: var(--tdb-text);
+  font: 13px/1 var(--tdb-mono);
   -webkit-text-fill-color: var(--tdb-text);
 }
 
-.account-signup input[type="password"]::selection,
-.account-security-action input[type="password"]::selection {
+.account-access input:-webkit-autofill,
+.account-access input:-webkit-autofill:hover,
+.account-access input:-webkit-autofill:focus,
+.account-access input:-webkit-autofill:active {
+  background-color: var(--tdb-terminal) !important;
+  background-image: none !important;
+  box-shadow: 0 0 0 1000px var(--tdb-terminal) inset !important;
+  caret-color: var(--tdb-text) !important;
+  -webkit-box-shadow: 0 0 0 1000px var(--tdb-terminal) inset !important;
+  -webkit-text-fill-color: var(--tdb-text) !important;
+}
+
+.account-access input[type="password"]::selection {
   background: var(--tdb-cyan);
   color: transparent;
   -webkit-text-fill-color: transparent;
   text-shadow: none;
 }
 
-.account-signup form input:focus,
-.account-security-action form input:focus {
+.account-access form input:focus {
   border-color: var(--tdb-cyan);
 }
 
-.account-signup form small,
-.account-security-action form small {
+.account-access form small {
   color: var(--tdb-muted);
   font-size: 9px;
   line-height: 1.4;
 }
 
-.account-signup form button,
-.account-security-action form button {
+.account-access form button {
   min-height: 44px;
   margin-top: 4px;
   border: 1px solid rgb(65 214 202 / 55%);
@@ -2039,7 +2036,7 @@ body:has(.session-loading-view) #root {
 }
 
 .account-totp-qr > span {
-  color: var(--tdb-black);
+  color: var(--tdb-canvas);
   font: 10px/1.4 var(--tdb-mono);
 }
 
@@ -2050,7 +2047,7 @@ body:has(.session-loading-view) #root {
   padding: 13px;
   border: 1px solid var(--tdb-border-strong);
   border-radius: 7px;
-  background: var(--tdb-black);
+  background: var(--tdb-terminal);
   text-align: center;
 }
 
@@ -2325,7 +2322,7 @@ body:has(.session-loading-view) #root {
   padding: 12px;
   border: 1px solid var(--tdb-border);
   border-radius: 5px;
-  background: var(--tdb-black);
+  background: var(--tdb-terminal);
 }
 
 .enrollment-code code {
@@ -2377,7 +2374,7 @@ body:has(.session-loading-view) #root {
   border-radius: 5px;
   outline: none;
   padding: 0 10px;
-  background: var(--tdb-black);
+  background: var(--tdb-terminal);
   color: var(--tdb-text);
   font: 12px/1 var(--tdb-mono);
 }

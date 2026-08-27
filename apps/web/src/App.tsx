@@ -606,16 +606,28 @@ function AccountSignIn({
           event.preventDefault();
           void submitAuthenticator();
         }}>
+          <input
+            autoComplete="username"
+            name="username"
+            readOnly
+            type="hidden"
+            value={signIn.username}
+          />
           <label htmlFor="account-signin-code">Six-digit code</label>
           <input
             id="account-signin-code"
             autoComplete="one-time-code"
             autoFocus
             disabled={busy}
+            enterKeyHint="done"
             inputMode="numeric"
             maxLength={6}
+            minLength={6}
+            name="one-time-code"
             pattern="[0-9]{6}"
             required
+            spellCheck={false}
+            type="text"
             value={authenticatorCode}
             onChange={(event) => setAuthenticatorCode(event.target.value.replace(/\D/gu, ""))}
           />
@@ -658,7 +670,9 @@ function AccountSignIn({
           autoCorrect="off"
           autoFocus
           disabled={busy}
+          name="username"
           required
+          spellCheck={false}
           value={username}
           onChange={(event) => setUsername(event.target.value)}
         />
@@ -667,6 +681,7 @@ function AccountSignIn({
           id="account-signin-password"
           autoComplete="current-password"
           disabled={busy}
+          name="password"
           required
           type="password"
           value={password}
@@ -759,16 +774,28 @@ function AccountPasswordReset({
         : "This one-time approval came from an enrolled TerminalDB Mac. Other browsers will be signed out."}</p>
       {resetSignIn ? (
         <form onSubmit={(event) => { event.preventDefault(); void submitAuthenticator(); }}>
+          <input
+            autoComplete="username"
+            name="username"
+            readOnly
+            type="hidden"
+            value={resetSignIn.username}
+          />
           <label htmlFor="account-reset-code">Six-digit code</label>
           <input
             id="account-reset-code"
             autoComplete="one-time-code"
             autoFocus
             disabled={busy}
+            enterKeyHint="done"
             inputMode="numeric"
             maxLength={6}
+            minLength={6}
+            name="one-time-code"
             pattern="[0-9]{6}"
             required
+            spellCheck={false}
+            type="text"
             value={authenticatorCode}
             onChange={(event) => setAuthenticatorCode(event.target.value.replace(/\D/gu, ""))}
           />
@@ -783,6 +810,7 @@ function AccountPasswordReset({
             autoFocus
             disabled={busy}
             minLength={12}
+            name="new-password"
             required
             type="password"
             value={newPassword}
@@ -795,6 +823,7 @@ function AccountPasswordReset({
             autoComplete="new-password"
             disabled={busy}
             minLength={12}
+            name="new-password-confirmation"
             required
             type="password"
             value={confirmation}
@@ -995,7 +1024,9 @@ function AccountEnrollment({
             autoCorrect="off"
             disabled={busy}
             maxLength={128}
+            name="username"
             required
+            spellCheck={false}
             value={username}
             onChange={(event) => setUsername(event.target.value)}
           />
@@ -1005,6 +1036,7 @@ function AccountEnrollment({
             autoComplete="new-password"
             disabled={busy}
             minLength={12}
+            name="new-password"
             required
             type="password"
             value={password}
@@ -1017,6 +1049,7 @@ function AccountEnrollment({
             autoComplete="new-password"
             disabled={busy}
             minLength={12}
+            name="new-password-confirmation"
             required
             type="password"
             value={passwordConfirmation}
@@ -1058,16 +1091,28 @@ function AccountEnrollment({
         event.preventDefault();
         void verifyAuthenticator();
       }}>
+        <input
+          autoComplete="username"
+          name="username"
+          readOnly
+          type="hidden"
+          value={enrollment?.username ?? username}
+        />
         <label htmlFor="account-authenticator-code">Six-digit code</label>
         <input
           id="account-authenticator-code"
           aria-describedby="account-authenticator-help"
           autoComplete="one-time-code"
           disabled={busy}
+          enterKeyHint="done"
           inputMode="numeric"
           maxLength={6}
+          minLength={6}
+          name="one-time-code"
           pattern="[0-9]{6}"
           required
+          spellCheck={false}
+          type="text"
           value={authenticatorCode}
           onChange={(event) => setAuthenticatorCode(event.target.value.replace(/\D/gu, ""))}
         />
@@ -1525,6 +1570,7 @@ function AccountAccess({
             id="account-current-password"
             type="password"
             autoComplete="current-password"
+            name="current-password"
             value={currentPassword}
             onChange={(event) => setCurrentPassword(event.target.value)}
             disabled={accountActionBusy}
@@ -1535,6 +1581,7 @@ function AccountAccess({
             id="account-new-password"
             type="password"
             autoComplete="new-password"
+            name="new-password"
             value={nextPassword}
             onChange={(event) => setNextPassword(event.target.value)}
             disabled={accountActionBusy}
@@ -1547,6 +1594,7 @@ function AccountAccess({
             id="account-new-password-confirmation"
             type="password"
             autoComplete="new-password"
+            name="new-password-confirmation"
             value={nextPasswordConfirmation}
             onChange={(event) => setNextPasswordConfirmation(event.target.value)}
             disabled={accountActionBusy}
