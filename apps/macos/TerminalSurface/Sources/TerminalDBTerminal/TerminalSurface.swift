@@ -26,6 +26,8 @@ private final class SurfaceView: SwiftTerm.TerminalView {
 
 @objc(TDBTerminalSurface)
 public final class TDBTerminalSurface: NSView, TerminalViewDelegate {
+    private static let contentInsetTop: CGFloat = 12
+    private static let contentInsetLeft: CGFloat = 12
     private let surface: SurfaceView
     private var pendingInput = Data()
     private var inputOffset = 0
@@ -59,11 +61,12 @@ public final class TDBTerminalSurface: NSView, TerminalViewDelegate {
         surface = SurfaceView(frame: frame, font: nil,
                               options: TerminalOptions(scrollback: 10000))
         super.init(frame: frame)
-        surface.frame = bounds
-        surface.autoresizingMask = [.width, .height]
+        wantsLayer = true
+        surface.autoresizingMask = []
         surface.owner = self
         surface.terminalDelegate = self
         addSubview(surface)
+        layoutTerminalSurface()
         surface.terminal.registerOscHandler(code: 633) { [weak self] bytes in
             self?.commandBoundary?(String(decoding: bytes, as: UTF8.self))
         }
@@ -79,6 +82,17 @@ public final class TDBTerminalSurface: NSView, TerminalViewDelegate {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
     }
     public override var acceptsFirstResponder: Bool { true }
+    public override func layout() {
+        super.layout()
+        layoutTerminalSurface()
+    }
+    private func layoutTerminalSurface() {
+        surface.frame = NSRect(
+            x: bounds.minX + Self.contentInsetLeft,
+            y: bounds.minY,
+            width: max(1, bounds.width - Self.contentInsetLeft),
+            height: max(1, bounds.height - Self.contentInsetTop))
+    }
     public override func becomeFirstResponder() -> Bool {
         window?.makeFirstResponder(surface) ?? false
     }
@@ -107,7 +121,10 @@ public final class TDBTerminalSurface: NSView, TerminalViewDelegate {
     }
     @objc public var backgroundColor: NSColor {
         get { surface.nativeBackgroundColor }
-        set { surface.nativeBackgroundColor = newValue }
+        set {
+            surface.nativeBackgroundColor = newValue
+            layer?.backgroundColor = newValue.cgColor
+        }
     }
     @objc public var terminalCursorColor: NSColor {
         get { surface.caretColor }

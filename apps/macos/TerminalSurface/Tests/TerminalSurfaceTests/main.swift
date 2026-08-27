@@ -37,6 +37,17 @@ func cells(_ view: TDBTerminalSurface) -> [Cell] {
 let esc = "\u{1b}"
 
 do {
+    let view = TDBTerminalSurface(frame: NSRect(x: 0, y: 0, width: 800, height: 400))
+    view.layoutSubtreeIfNeeded()
+    check(native(view).frame == NSRect(x: 12, y: 0, width: 788, height: 388),
+          "terminal content has top and left breathing room")
+    view.frame.size = NSSize(width: 1000, height: 500)
+    view.layoutSubtreeIfNeeded()
+    check(native(view).frame == NSRect(x: 12, y: 0, width: 988, height: 488),
+          "terminal content insets survive window resizing")
+}
+
+do {
     let view = makeSurface()
     view.feedText("界x\(esc)[2;5Hbox\(esc)[3;1H┌─┐\r\n│█│\r\n└─┘")
     check(term(view).getCharData(col: 0, row: 0)?.width == 2, "CJK occupies two cells")
