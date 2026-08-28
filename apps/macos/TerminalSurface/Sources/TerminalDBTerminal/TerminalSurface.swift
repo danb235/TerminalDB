@@ -14,6 +14,37 @@ private final class SurfaceView: SwiftTerm.TerminalView {
     override func paste(_ sender: Any) {
         owner?.pasteString(NSPasteboard.general.string(forType: .string) ?? "")
     }
+    override func linefeed(source: Terminal) {
+        // SwiftTerm's macOS view normally clears the selection on every line
+        // feed whenever mouse reporting is allowed. Interactive TUIs such as
+        // Claude redraw often, so the selection disappears before Command-C
+        // can copy it. TerminalDB still supports mouse reporting; it simply
+        // keeps a local text selection alive while output continues.
+    }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        droppedFileURLs(from: sender).isEmpty ? [] : .copy
+    }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        draggingEntered(sender)
+    }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        !droppedFileURLs(from: sender).isEmpty
+    }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = droppedFileURLs(from: sender)
+        guard !urls.isEmpty else { return false }
+        owner?.insertDroppedFileURLs(urls)
+        return true
+    }
+    private func droppedFileURLs(from sender: NSDraggingInfo) -> [URL] {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingFileURLsOnly: true,
+        ]
+        return (sender.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self], options: options) ?? []).compactMap {
+                ($0 as? NSURL).map { $0 as URL }
+            }.filter(\.isFileURL)
+    }
     override func showCursor(source: Terminal) {
         owner?.terminalCursorVisible = true
         super.showCursor(source: source)
@@ -65,6 +96,7 @@ public final class TDBTerminalSurface: NSView, TerminalViewDelegate {
         surface.autoresizingMask = []
         surface.owner = self
         surface.terminalDelegate = self
+        surface.registerForDraggedTypes([.fileURL])
         addSubview(surface)
         layoutTerminalSurface()
         surface.terminal.registerOscHandler(code: 633) { [weak self] bytes in
@@ -168,7 +200,20 @@ public final class TDBTerminalSurface: NSView, TerminalViewDelegate {
     }
     @objc public func feedData(_ data: Data) {
         precondition(Thread.isMainThread)
+        let selectedText = surface.selection.active
+            ? surface.selection.getSelectedText()
+            : nil
         surface.feed(byteArray: Array(data)[...])
+        // SwiftTerm clears selection when its internal scroller is relaid out.
+        // Streaming output can trigger that layout even when the window did
+        // not move. Restore only when the exact selected text is still at the
+        // same translated range; if a TUI genuinely overwrote it, leave the
+        // selection cleared instead of highlighting unrelated content.
+        if let selectedText, !selectedText.isEmpty,
+           !surface.selection.active,
+           surface.selection.getSelectedText() == selectedText {
+            surface.selection.active = true
+        }
     }
     @objc public func feedText(_ text: String) { feedData(Data(text.utf8)) }
     @objc public func resizeGrid(columns: Int, rows: Int) {
@@ -222,6 +267,21 @@ public final class TDBTerminalSurface: NSView, TerminalViewDelegate {
         if sendUserData(bytes) {
             pasteDidSend?(UInt(normalized.utf8.count), UInt(normalized.filter { $0 == "\n" }.count + 1))
         }
+    }
+    public static func droppedFileText(paths: [String]) -> String {
+        guard !paths.isEmpty else { return "" }
+        return paths.map(shellQuote).joined(separator: " ") + " "
+    }
+    private static func shellQuote(_ path: String) -> String {
+        let safe = CharacterSet.alphanumerics.union(
+            CharacterSet(charactersIn: "/_-.~"))
+        if !path.isEmpty && path.unicodeScalars.allSatisfy(safe.contains) {
+            return path
+        }
+        return "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+    public func insertDroppedFileURLs(_ urls: [URL]) {
+        pasteString(Self.droppedFileText(paths: urls.filter(\.isFileURL).map(\.path)))
     }
     @objc public func paste(_ sender: Any?) { pasteString(NSPasteboard.general.string(forType: .string) ?? "") }
     @objc public func copy(_ sender: Any?) { surface.copy(sender as Any) }
