@@ -132,6 +132,50 @@ do {
 }
 
 do {
+    let view = makeSurface(24, 5)
+    view.feedText("selected text\r\nlive prompt")
+    let selection = native(view).selection!
+    selection.setSelection(start: Position(col: 0, row: 0),
+                           end: Position(col: 13, row: 0))
+    check(view.selectionText == "selected text", "selection fixture starts with expected text")
+    view.feedText("\r\nlive redraw 1\r\nlive redraw 2")
+    check(selection.active && view.selectionText == "selected text",
+          "streaming TUI line feeds preserve the active selection for copy")
+}
+
+do {
+    check(TDBTerminalSurface.droppedFileText(paths: ["/tmp/plain.txt"]) ==
+              "/tmp/plain.txt ",
+          "plain dropped path is inserted with a trailing separator")
+    check(native(makeSurface()).registeredDraggedTypes.contains(.fileURL),
+          "terminal registers as a native file-drop destination")
+    check(TDBTerminalSurface.droppedFileText(paths: [
+        "/tmp/project brief.md", "/tmp/Danny's notes.txt",
+    ]) == "'/tmp/project brief.md' '/tmp/Danny'\\''s notes.txt' ",
+          "multiple dropped paths are shell-safe and preserve drag order")
+
+    let view = makeSurface()
+    var fds = [Int32](repeating: -1, count: 2)
+    check(pipe(&fds) == 0, "file-drop input test pipe")
+    _ = fcntl(fds[0], F_SETFL, O_NONBLOCK)
+    view.pty = fds[1]
+    view.feedText("\(esc)[?2004h")
+    view.insertDroppedFileURLs([
+        URL(fileURLWithPath: "/tmp/project brief.md"),
+        URL(fileURLWithPath: "/tmp/plain.txt"),
+    ])
+    var received = [UInt8](repeating: 0, count: 256)
+    let count = read(fds[0], &received, received.count)
+    let expected = Data(("\(esc)[200~'/tmp/project brief.md' " +
+        "/tmp/plain.txt \(esc)[201~").utf8)
+    check(count == expected.count &&
+              Data(received.prefix(max(0, count))) == expected,
+          "dropping files inserts complete bracketed-paste input into the TUI")
+    view.pty = -1
+    close(fds[0]); close(fds[1])
+}
+
+do {
     let view = makeSurface()
     view.feedText("previous secret-like synthetic history\r\n")
     view.beginCommandCapture()
