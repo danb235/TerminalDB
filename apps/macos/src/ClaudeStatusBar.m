@@ -1624,8 +1624,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 
 - (nullable NSDictionary *)usageStatusForProfile:(ClaudeProfile *)profile
                                  sourceModifiedAt:(NSDate **)sourceModifiedAt {
-    NSDictionary *status = nil;
-    NSDate *latestModifiedAt = nil;
+    NSMutableArray<NSDictionary *> *candidates = [NSMutableArray array];
     for (NSString *candidate in
             @[profile.statusCachePath, profile.statusLineCachePath]) {
         NSData *candidateData = [NSData dataWithContentsOfFile:candidate];
@@ -1647,13 +1646,65 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         }
         NSDate *modifiedAt = [NSFileManager.defaultManager
             attributesOfItemAtPath:candidate error:nil][NSFileModificationDate];
-        if (status == nil ||
-            (modifiedAt != nil &&
-             (latestModifiedAt == nil ||
-              [modifiedAt compare:latestModifiedAt] == NSOrderedDescending))) {
-            status = candidateStatus;
-            latestModifiedAt = modifiedAt;
+        [candidates addObject:@{
+            @"status" : candidateStatus,
+            @"modified_at" : modifiedAt ?: NSNull.null,
+        }];
+    }
+
+    [candidates sortUsingComparator:^NSComparisonResult(
+        NSDictionary *left, NSDictionary *right) {
+        NSDate *leftDate = [left[@"modified_at"] isKindOfClass:NSDate.class]
+            ? left[@"modified_at"] : nil;
+        NSDate *rightDate = [right[@"modified_at"] isKindOfClass:NSDate.class]
+            ? right[@"modified_at"] : nil;
+        if (leftDate == nil && rightDate == nil) return NSOrderedSame;
+        if (leftDate == nil) return NSOrderedDescending;
+        if (rightDate == nil) return NSOrderedAscending;
+        return [rightDate compare:leftDate];
+    }];
+
+    NSDictionary *newest = candidates.firstObject;
+    NSDictionary *newestStatus = [newest[@"status"]
+        isKindOfClass:NSDictionary.class] ? newest[@"status"] : nil;
+    NSDate *latestModifiedAt = [newest[@"modified_at"]
+        isKindOfClass:NSDate.class] ? newest[@"modified_at"] : nil;
+    NSMutableDictionary *status = [newestStatus mutableCopy];
+    NSMutableDictionary *mergedLimits = [NSMutableDictionary dictionary];
+    NSDate *now = [NSDate date];
+    for (NSString *key in @[@"five_hour", @"seven_day", @"fable_five"]) {
+        for (NSUInteger index = 0; index < candidates.count; index++) {
+            NSDictionary *candidate = candidates[index];
+            NSDate *modifiedAt = [candidate[@"modified_at"]
+                isKindOfClass:NSDate.class] ? candidate[@"modified_at"] : nil;
+            // A missing window may fall back to the other Claude cache only
+            // while that cache is still fresh. This keeps a partial `/usage`
+            // response from making 5h, 7d, or Fable disappear without reviving
+            // old percentages from a signed-out or dormant profile.
+            if (index > 0 &&
+                (modifiedAt == nil ||
+                 [now timeIntervalSinceDate:modifiedAt] >
+                     ClaudeUsageFreshnessInterval)) {
+                continue;
+            }
+            NSDictionary *candidateStatus = [candidate[@"status"]
+                isKindOfClass:NSDictionary.class] ? candidate[@"status"] : nil;
+            NSDictionary *candidateLimits = [candidateStatus[@"rate_limits"]
+                isKindOfClass:NSDictionary.class]
+                ? candidateStatus[@"rate_limits"] : nil;
+            NSDictionary *window = [candidateLimits[key]
+                isKindOfClass:NSDictionary.class] ? candidateLimits[key] : nil;
+            if (![window[@"used_percentage"] isKindOfClass:NSNumber.class]) {
+                continue;
+            }
+            mergedLimits[key] = window;
+            break;
         }
+    }
+    if (status != nil && mergedLimits.count > 0) {
+        status[@"rate_limits"] = mergedLimits;
+    } else {
+        status = nil;
     }
     if (sourceModifiedAt != NULL) *sourceModifiedAt = latestModifiedAt;
     return status;
@@ -2387,6 +2438,57 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         [compactSummary containsString:@"Fable 56%"] &&
         ![compactSummary containsString:@"⚠"];
 
+    NSData *partialNewestData = [NSJSONSerialization dataWithJSONObject:@{
+        @"rate_limits" : @{
+            @"seven_day" : @{ @"used_percentage" : @52 },
+        },
+    } options:0 error:nil];
+    NSData *completeFallbackData = [NSJSONSerialization dataWithJSONObject:@{
+        @"rate_limits" : @{
+            @"five_hour" : @{ @"used_percentage" : @7 },
+            @"seven_day" : @{ @"used_percentage" : @51 },
+            @"fable_five" : @{ @"used_percentage" : @9 },
+        },
+    } options:0 error:nil];
+    [partialNewestData writeToFile:fixtureProfile.statusCachePath atomically:YES];
+    [completeFallbackData writeToFile:fixtureProfile.statusLineCachePath
+                            atomically:YES];
+    NSDate *partialNow = [NSDate date];
+    [NSFileManager.defaultManager setAttributes:@{
+        NSFileModificationDate : partialNow,
+    } ofItemAtPath:fixtureProfile.statusCachePath error:nil];
+    [NSFileManager.defaultManager setAttributes:@{
+        NSFileModificationDate :
+            [partialNow dateByAddingTimeInterval:-5.0],
+    } ofItemAtPath:fixtureProfile.statusLineCachePath error:nil];
+    NSDictionary *mergedPartialStatus =
+        [fixtureBar usageStatusForProfile:fixtureProfile
+                         sourceModifiedAt:nil];
+    NSDictionary *mergedPartialLimits = mergedPartialStatus[@"rate_limits"];
+    BOOL mergesFreshPartialWindows =
+        [mergedPartialLimits[@"five_hour"][@"used_percentage"] isEqual:@7] &&
+        [mergedPartialLimits[@"seven_day"][@"used_percentage"] isEqual:@52] &&
+        [mergedPartialLimits[@"fable_five"][@"used_percentage"] isEqual:@9];
+
+    [NSFileManager.defaultManager setAttributes:@{
+        NSFileModificationDate : [partialNow dateByAddingTimeInterval:
+            -(ClaudeUsageFreshnessInterval + 60.0)],
+    } ofItemAtPath:fixtureProfile.statusLineCachePath error:nil];
+    NSDictionary *withoutStaleFallback =
+        [fixtureBar usageStatusForProfile:fixtureProfile
+                         sourceModifiedAt:nil];
+    NSDictionary *withoutStaleLimits = withoutStaleFallback[@"rate_limits"];
+    BOOL ignoresStalePartialFallback =
+        withoutStaleLimits[@"five_hour"] == nil &&
+        [withoutStaleLimits[@"seven_day"][@"used_percentage"] isEqual:@52] &&
+        withoutStaleLimits[@"fable_five"] == nil;
+    [fixtureData writeToFile:fixtureProfile.statusCachePath atomically:YES];
+    [NSFileManager.defaultManager removeItemAtPath:fixtureProfile.statusLineCachePath
+                                             error:nil];
+    [NSFileManager.defaultManager setAttributes:@{
+        NSFileModificationDate : [NSDate date],
+    } ofItemAtPath:fixtureProfile.statusCachePath error:nil];
+
     NSTimeInterval forecastNow = NSDate.date.timeIntervalSince1970;
     NSNumber *forecastReset = @(forecastNow + 2.0 * 60.0 * 60.0);
     NSArray *fastHistory = @[
@@ -2615,6 +2717,8 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         [clamped[@"rate_limits"][@"seven_day"][@"used_percentage"]
             isEqual:@0] &&
         showsEveryWindow &&
+        mergesFreshPartialWindows &&
+        ignoresStalePartialFallback &&
         [fastForecast[@"ready"] boolValue] &&
         [fastForecast[@"warning"] boolValue] &&
         [fastForecast[@"rate_per_hour"] doubleValue] > 55.0 &&

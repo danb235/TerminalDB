@@ -253,6 +253,8 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
         containsObject:@"--background-tab-qa"];
     BOOL visualQA = [NSProcessInfo.processInfo.arguments
         containsObject:@"--visual-qa"];
+    BOOL partialUsageQA = [NSProcessInfo.processInfo.arguments
+        containsObject:@"--visual-qa-usage-partial"];
     // Real interactive terminal, disposable storage, no scripted UI fixtures.
     BOOL terminalQA = [NSProcessInfo.processInfo.arguments
         containsObject:@"--terminal-qa"];
@@ -361,6 +363,33 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
                 dataWithJSONObject:fixtureUsage options:0 error:nil];
             [usageData writeToFile:fixtureProfile.statusCachePath
                         atomically:YES];
+            if (partialUsageQA && atRisk) {
+                // Reproduce Claude's valid but partial `/usage` response: the
+                // newest cache has only the weekly allowance while the fresh
+                // status-line cache still has the other two windows.
+                NSData *partialData = [NSJSONSerialization
+                    dataWithJSONObject:@{
+                        @"rate_limits" : @{
+                            @"seven_day" :
+                                fixtureUsage[@"rate_limits"][@"seven_day"],
+                        },
+                        @"terminaldb" : fixtureUsage[@"terminaldb"],
+                    }
+                    options:0
+                    error:nil];
+                [usageData writeToFile:fixtureProfile.statusLineCachePath
+                            atomically:YES];
+                [partialData writeToFile:fixtureProfile.statusCachePath
+                              atomically:YES];
+                NSDate *newest = [NSDate date];
+                [NSFileManager.defaultManager setAttributes:@{
+                    NSFileModificationDate : newest,
+                } ofItemAtPath:fixtureProfile.statusCachePath error:nil];
+                [NSFileManager.defaultManager setAttributes:@{
+                    NSFileModificationDate :
+                        [newest dateByAddingTimeInterval:-5.0],
+                } ofItemAtPath:fixtureProfile.statusLineCachePath error:nil];
+            }
             if ([account[@"id"] isEqualToString:@"demo-personal"]) {
                 [NSFileManager.defaultManager setAttributes:@{
                     NSFileModificationDate :
@@ -447,6 +476,29 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
         if (visualQA) {
             AppDelegate *controller = self.windowControllers.lastObject;
             [controller showAssistantPane];
+            if (partialUsageQA) {
+                dispatch_after(
+                    dispatch_time(DISPATCH_TIME_NOW,
+                        (int64_t)(1.2 * NSEC_PER_SEC)),
+                    dispatch_get_main_queue(), ^{
+                        // Keep this disposable visual fixture signed in long
+                        // enough to verify the cache-merge result in the same
+                        // footer a user sees.
+                        [controller.claudeStatusBar
+                            setValue:@YES forKey:@"accountIsLoggedIn"];
+                        [controller.claudeStatusBar
+                            setValue:@YES forKey:@"accountStatusKnown"];
+                        [controller.claudeStatusBar
+                            setValue:@NO forKey:@"accountRefreshInFlight"];
+                        [controller.claudeStatusBar
+                            setValue:NSDate.date forKey:@"lastAccountRefresh"];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                        [controller.claudeStatusBar
+                            performSelector:NSSelectorFromString(@"refreshUsage")];
+#pragma clang diagnostic pop
+                    });
+            }
             dispatch_after(
                 dispatch_time(DISPATCH_TIME_NOW,
                     (int64_t)(2.5 * NSEC_PER_SEC)),
