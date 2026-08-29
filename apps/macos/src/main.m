@@ -30,6 +30,13 @@
 #include <util.h>
 
 static int TerminalDBExitStatus = 0;
+static NSString *const TerminalDBCommandBarHiddenDefaultsKey =
+    @"TerminalDBCommandBarHidden";
+
+static CGFloat TerminalDBCommandBarHeight(BOOL focusMode,
+                                          BOOL commandBarHidden) {
+    return (focusMode || commandBarHidden) ? 0.0 : 132.0;
+}
 
 static BOOL TerminalDBCanRestartTrackedClaudeLogin(
     pid_t foregroundProcessGroup,
@@ -156,6 +163,7 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
 @property(nonatomic, strong, nullable) NSDate *activeLedgerStartedAt;
 @property(nonatomic) BOOL privateSession;
 @property(nonatomic) BOOL focusMode;
+@property(nonatomic) BOOL commandBarHidden;
 @property(nonatomic, strong) ClaudeAssistantView *assistantView;
 @property(nonatomic, strong) NSView *utilityPanelView;
 @property(nonatomic, strong) NSScrollView *utilityPanelScrollView;
@@ -167,6 +175,7 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
 @property(nonatomic, copy, nullable) void (^utilityPanelDismissHandler)(void);
 @property(nonatomic, strong) NSButton *assistantToggleButton;
 @property(nonatomic, strong) NSButton *remoteWebButton;
+@property(nonatomic, strong) NSButton *commandBarToggleButton;
 @property(nonatomic, strong)
     NSTitlebarAccessoryViewController *assistantAccessoryController;
 @property(nonatomic, strong, nullable) id assistantClient;
@@ -961,6 +970,13 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
                   action:@selector(showCommandHistory:)
            keyEquivalent:@"y"];
     history.target = self;
+    NSMenuItem *commandBar = [self.viewMenu
+        addItemWithTitle:@"Hide Command Bar"
+                  action:@selector(toggleCommandBarFromMenu:)
+           keyEquivalent:@"b"];
+    commandBar.target = self;
+    commandBar.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagShift;
     NSMenuItem *projectTools = [self.viewMenu
         addItemWithTitle:@"Project Tools"
                   action:@selector(showProjectToolsFromMenu:)
@@ -2208,6 +2224,15 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
                        @selector(toggleFocusModeFromMenu:)) {
                 item.state = controller.focusMode
                     ? NSControlStateValueOn : NSControlStateValueOff;
+            } else if (item.action ==
+                       @selector(toggleCommandBarFromMenu:)) {
+                BOOL commandBarHidden = controller.focusMode ||
+                    controller.commandBarHidden;
+                item.title = commandBarHidden
+                    ? @"Show Command Bar" : @"Hide Command Bar";
+                item.state = commandBarHidden
+                    ? NSControlStateValueOff : NSControlStateValueOn;
+                item.enabled = controller != nil;
             } else if (item.action == @selector(toggleTabBarFromMenu:)) {
                 BOOL visible =
                     controller.window.tabGroup.tabBarVisible;
@@ -2802,6 +2827,29 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
     }
     [controller layoutWorkspace];
     [controller.window makeFirstResponder:controller.terminalView];
+}
+
+- (void)toggleCommandBarFromMenu:(id)sender {
+    [self toggleCommandBar:sender];
+}
+
+- (void)toggleCommandBar:(id)sender {
+    (void)sender;
+    AppDelegate *root = [self rootController];
+    AppDelegate *active = [root activeTerminalController];
+    if (active == nil) return;
+    BOOL hidden = !active.focusMode && !active.commandBarHidden;
+    if (!hidden && active.focusMode) active.focusMode = NO;
+    [NSUserDefaults.standardUserDefaults setBool:hidden
+                                          forKey:TerminalDBCommandBarHiddenDefaultsKey];
+    // This is a workspace preference, rather than terminal state. Apply it
+    // immediately to every open tab and split so switching terminals never
+    // makes the command bar unexpectedly reappear.
+    for (AppDelegate *controller in root.windowControllers) {
+        controller.commandBarHidden = hidden;
+        [controller layoutWorkspace];
+    }
+    [active.window makeFirstResponder:active.terminalView];
 }
 
 - (void)openRecentDirectoryFromMenu:(NSMenuItem *)sender {
@@ -3499,6 +3547,8 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
                 NSStringFromSelector(@selector(toggleTabBarFromMenu:)),
                 NSStringFromSelector(@selector(toggleAIChatFromMenu:)),
                 NSStringFromSelector(@selector(showCommandHistory:)),
+                NSStringFromSelector(@selector(
+                    toggleCommandBarFromMenu:)),
                 NSStringFromSelector(@selector(showProjectToolsFromMenu:)),
                 NSStringFromSelector(@selector(showMonitorFromMenu:)),
                 NSStringFromSelector(@selector(
@@ -3700,6 +3750,8 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
     self.assistantMessages = [NSMutableArray array];
     self.privateSession = [NSUserDefaults.standardUserDefaults
         boolForKey:@"TerminalDBPrivateSessionDefault"];
+    self.commandBarHidden = [NSUserDefaults.standardUserDefaults
+        boolForKey:TerminalDBCommandBarHiddenDefaultsKey];
     self.splitControllers = [NSMutableArray array];
     self.terminalInspector = [[TerminalInspector alloc] init];
     self.permissionCenter =
@@ -3966,9 +4018,9 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
     self.assistantToggleButton.action = @selector(toggleAssistantPane:);
     self.assistantToggleButton.toolTip =
         @"Open AI Chat (Command-Shift-L)";
-    self.assistantToggleButton.frame = NSMakeRect(38, 1, 30, 26);
+    self.assistantToggleButton.frame = NSMakeRect(72, 1, 30, 26);
     NSView *assistantAccessoryView =
-        [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 72, 28)];
+        [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 106, 28)];
     self.remoteWebButton =
         [[NSButton alloc] initWithFrame:NSMakeRect(4, 1, 30, 26)];
     self.remoteWebButton.title = @"";
@@ -3987,7 +4039,18 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
     self.remoteWebButton.target = self;
     self.remoteWebButton.action = @selector(openRemoteWebApp:);
     self.remoteWebButton.toolTip = @"Open TerminalDB Remote in Browser";
+
+    self.commandBarToggleButton =
+        [[NSButton alloc] initWithFrame:NSMakeRect(38, 1, 30, 26)];
+    self.commandBarToggleButton.title = @"";
+    self.commandBarToggleButton.bordered = NO;
+    self.commandBarToggleButton.controlSize = NSControlSizeSmall;
+    self.commandBarToggleButton.imagePosition = NSImageOnly;
+    self.commandBarToggleButton.contentTintColor = self.theme.ansiColors[6];
+    self.commandBarToggleButton.target = self;
+    self.commandBarToggleButton.action = @selector(toggleCommandBar:);
     [assistantAccessoryView addSubview:self.remoteWebButton];
+    [assistantAccessoryView addSubview:self.commandBarToggleButton];
     [assistantAccessoryView addSubview:self.assistantToggleButton];
     self.assistantAccessoryController =
         [[NSTitlebarAccessoryViewController alloc] init];
@@ -4028,7 +4091,8 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
     }
     NSRect bounds = self.workspaceView.bounds;
     CGFloat statusBarHeight = self.focusMode ? 0 : 28;
-    CGFloat ledgerBarHeight = self.focusMode ? 0 : 132;
+    CGFloat ledgerBarHeight = TerminalDBCommandBarHeight(
+        self.focusMode, self.commandBarHidden);
     // AppKit's unified tab bar overlaps the content edge slightly. Preserve a
     // compact optical inset so the ledger keyline clears that control.
     CGFloat titlebarInset =
@@ -4094,8 +4158,31 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
                 self.utilityPanelScrollView.contentView];
         }
     }
-    self.ledgerBar.hidden = self.focusMode;
+    self.ledgerBar.hidden = self.focusMode || self.commandBarHidden;
     self.claudeStatusBar.hidden = self.focusMode;
+    BOOL commandBarVisible = !self.focusMode && !self.commandBarHidden;
+    NSString *commandBarSymbolName = commandBarVisible
+        ? @"rectangle.topthird.inset.filled"
+        : @"rectangle.topthird.inset";
+    NSImage *commandBarImage = [NSImage
+        imageWithSystemSymbolName:commandBarSymbolName
+        accessibilityDescription:commandBarVisible
+            ? @"Hide command bar" : @"Show command bar"];
+    if (commandBarImage == nil) {
+        commandBarImage = [NSImage
+            imageWithSystemSymbolName:@"rectangle"
+            accessibilityDescription:commandBarVisible
+                ? @"Hide command bar" : @"Show command bar"];
+    }
+    self.commandBarToggleButton.image = [commandBarImage
+        imageWithSymbolConfiguration:[NSImageSymbolConfiguration
+            configurationWithPointSize:14 weight:NSFontWeightMedium]];
+    self.commandBarToggleButton.state = commandBarVisible
+        ? NSControlStateValueOn : NSControlStateValueOff;
+    self.commandBarToggleButton.toolTip = commandBarVisible
+        ? @"Hide Command Bar" : @"Show Command Bar";
+    [self.commandBarToggleButton setAccessibilityLabel:
+        commandBarVisible ? @"Hide Command Bar" : @"Show Command Bar"];
     self.assistantToggleButton.state =
         chatVisible ? NSControlStateValueOn : NSControlStateValueOff;
     self.assistantToggleButton.toolTip =
@@ -6431,6 +6518,13 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
             [terminal consumeTerminalData:
                 [NSData dataWithBytes:bytes length:length]];
         };
+
+    if (TerminalDBCommandBarHeight(NO, NO) != 132.0 ||
+        TerminalDBCommandBarHeight(NO, YES) != 0.0 ||
+        TerminalDBCommandBarHeight(YES, NO) != 0.0) {
+        fprintf(stderr, "FAIL collapsible command bar geometry\n");
+        failures++;
+    }
 
     if (!TerminalDBCanRestartTrackedClaudeLogin(420, 100, 420, YES, 30) ||
         !TerminalDBCanRestartTrackedClaudeLogin(420, 100, -1, YES, 0.2) ||
