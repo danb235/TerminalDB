@@ -7,6 +7,45 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-31
+
+### Added
+
+- A pinned SwiftTerm terminal engine with mature ANSI/VT rendering,
+  alternate-screen support, native scrollback and selection, and reliable
+  resizing for interactive applications such as Claude Code.
+- A collapsible command bar that returns its full height to the terminal while
+  keeping account and usage status visible. It can be toggled from the title
+  bar, the View menu, or with Command-Shift-B, and stays consistent across
+  tabs and splits.
+
+### Changed
+
+- SwiftTerm now owns the terminal screen completely. Command status, History,
+  Ask AI, rerun, and details remain in TerminalDB's separate command bar and
+  local history instead of being inserted into the terminal buffer.
+- The remote app now recovers cached account sessions and device inventory
+  without flashing stale intermediate screens, and deployment boot failures
+  show a recoverable TerminalDB error state instead of a blank page.
+
+### Fixed
+
+- Copying a live terminal selection remains stable, targets the active
+  terminal, and no longer jumps or disappears during terminal refreshes.
+  Dragging files into Claude Code now inserts their paths into the active
+  prompt.
+- Terminal prompts have comfortable top and left padding without changing PTY
+  geometry or breaking full-screen terminal applications.
+- Claude subscription status keeps independently available 5-hour and 7-day
+  usage windows visible, rather than hiding one allowance when the other is
+  absent or stale.
+- A failed Claude subscription sign-in can be restarted immediately instead
+  of leaving the account stuck behind a stale “command already running” state.
+- Safari login, password, and authenticator-code fields use readable native
+  autofill styling and expose the correct one-time-code semantics.
+- The release workflow classifies normal version tags as stable releases so
+  the built-in updater can follow the newest production release consistently.
+
 ## [0.4.0] - 2026-08-24
 
 ### Added
