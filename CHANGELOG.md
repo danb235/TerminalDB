@@ -7,6 +7,22 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- A CloudWatch alarm on sustained WebSocket client errors for the remote relay,
+  so a client that keeps sending to an expired peer is reported instead of
+  silently generating rejected traffic.
+
+### Fixed
+
+- The Mac remote agent now drops controllers that have stopped sending for
+  three minutes and reconciles against the server's trusted list. Previously
+  it kept relaying terminal output, inventory, and health pongs to browsers
+  whose server records had expired, producing hundreds of thousands of
+  rejected relay messages per day.
+- The marketing site and README download links now resolve to the latest
+  GitHub release instead of the pinned v0.1.0 prerelease.
+
 ## [0.5.0] - 2026-08-31
 
 ### Added

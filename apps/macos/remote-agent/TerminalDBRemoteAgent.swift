@@ -6,6 +6,22 @@ import Security
 
 private let protocolVersion = 1
 private let maximumWireBytes = 30_000
+// Browsers send health.ping every 20 seconds and background tabs can be
+// throttled to once a minute, so three minutes without any envelope means the
+// controller is gone. Sending to it would only produce relay 403 responses that
+// the WebSocket route never reports back.
+private let controllerLivenessTimeout: TimeInterval = 180
+
+/// Controller IDs whose last received envelope is older than `timeout`.
+private func staleControllerIDs(
+    lastSeen: [String: Date],
+    now: Date,
+    timeout: TimeInterval
+) -> [String] {
+    lastSeen.compactMap { controllerID, seenAt in
+        now.timeIntervalSince(seenAt) > timeout ? controllerID : nil
+    }.sorted()
+}
 private let accountBootstrapCapability = "account-bootstrap-v1"
 private let browserCapabilities = [
     "sequenced-input-v1",
@@ -916,6 +932,7 @@ private final class RemoteAgent: @unchecked Sendable {
     private var activePairingURL: String?
     private var activePairingExpiresAt: Int?
     private var trustedControllers: [[String: Any]] = []
+    private var controllerLastSeen: [String: Date] = [:]
     private var accountBootstrapInProgress = false
     private var accountResumeInProgress = false
 
@@ -1804,6 +1821,7 @@ private final class RemoteAgent: @unchecked Sendable {
         geometryOwners.removeAll()
         pairingSecrets.removeAll()
         controllerKeys.removeAll()
+        controllerLastSeen.removeAll()
         pendingCloudEnvelopes.removeAll()
         loadingControllerKeyIDs.removeAll()
         trustedControllers.removeAll()
@@ -1946,6 +1964,7 @@ private final class RemoteAgent: @unchecked Sendable {
         timer.setEventHandler { [weak self] in
             guard let self, self.state.enabled else { return }
             self.cloud?.ping()
+            self.pruneStaleControllers()
             let now = Int(Date().timeIntervalSince1970 * 1_000)
             for controllerID in self.controllerKeys.keys {
                 self.sendEncrypted(
@@ -2040,6 +2059,7 @@ private final class RemoteAgent: @unchecked Sendable {
                 received = Set(received.filter { $0 >= floor })
             }
             self.receivedSequenceWindows[sourceID] = received
+            self.controllerLastSeen[sourceID] = Date()
             if let keys = self.controllerKeys[sourceID] {
                 self.processCloudEnvelope(
                     envelope,
@@ -2411,9 +2431,38 @@ private final class RemoteAgent: @unchecked Sendable {
         )
         queue.sync {
             controllerKeys[controllerID] = keys
+            if controllerLastSeen[controllerID] == nil {
+                controllerLastSeen[controllerID] = Date()
+            }
             refreshControllers()
         }
         return keys
+    }
+
+    /// Drops controllers that have stopped sending envelopes so PTY output,
+    /// inventory, and proactive health pongs are no longer relayed to peers the
+    /// server has already expired or revoked. Outgoing `sequences` are kept on
+    /// purpose: browsers deduplicate on absolute sequence numbers, so a
+    /// returning controller must not see the counter restart.
+    private func pruneStaleControllers() {
+        let stale = staleControllerIDs(
+            lastSeen: controllerLastSeen,
+            now: Date(),
+            timeout: controllerLivenessTimeout
+        )
+        guard !stale.isEmpty else { return }
+        for controllerID in stale { forgetController(controllerID) }
+        refreshControllers()
+    }
+
+    private func forgetController(_ controllerID: String) {
+        if let tabID = viewedTabs.removeValue(forKey: controllerID) {
+            releaseViewportGeometry(tabID: tabID, controllerID: controllerID)
+        }
+        controllerKeys.removeValue(forKey: controllerID)
+        controllerLastSeen.removeValue(forKey: controllerID)
+        pendingCloudEnvelopes.removeValue(forKey: controllerID)
+        loadingControllerKeyIDs.remove(controllerID)
     }
 
     private func refreshControllers() {
@@ -2436,6 +2485,13 @@ private final class RemoteAgent: @unchecked Sendable {
                 queue.async {
                     guard self.state.sessionID == sessionID else { return }
                     self.trustedControllers = controllers
+                    let trustedIDs = Set(
+                        controllers.compactMap { $0["controllerId"] as? String }
+                    )
+                    for controllerID in self.controllerKeys.keys
+                    where !trustedIDs.contains(controllerID) {
+                        self.forgetController(controllerID)
+                    }
                     self.broadcastStatus(self.lastStatus)
                 }
             } catch {
@@ -2828,6 +2884,22 @@ private struct TerminalDBRemoteAgentMain {
                       lane.nextSequence == 3 else {
                     throw AgentError.server(
                         "Sequenced input reorder compatibility failed"
+                    )
+                }
+                let livenessNow = Date(timeIntervalSince1970: 1_000_000)
+                let stale = staleControllerIDs(
+                    lastSeen: [
+                        "fresh": livenessNow.addingTimeInterval(-19),
+                        "boundary": livenessNow.addingTimeInterval(-controllerLivenessTimeout),
+                        "stale": livenessNow.addingTimeInterval(-controllerLivenessTimeout - 1),
+                        "ancient": livenessNow.addingTimeInterval(-86_400),
+                    ],
+                    now: livenessNow,
+                    timeout: controllerLivenessTimeout
+                )
+                guard stale == ["ancient", "stale"] else {
+                    throw AgentError.server(
+                        "Stale controller pruning selected \(stale)"
                     )
                 }
                 print("TerminalDB remote agent self-test: passed")

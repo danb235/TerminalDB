@@ -16,9 +16,9 @@
 </p>
 
 <p align="center">
-  <a href="https://terminaldb.pages.dev/">Website</a> ·
-  <a href="https://github.com/danb235/TerminalDB/releases/download/v0.1.0/TerminalDB-macOS.zip">Download v0.1.0</a> ·
-  <a href="https://github.com/danb235/TerminalDB/releases/tag/v0.1.0">Release notes and checksums</a>
+  <a href="https://terminaldb.app/">Website</a> ·
+  <a href="https://github.com/danb235/TerminalDB/releases/latest/download/TerminalDB-macOS.zip">Download for macOS</a> ·
+  <a href="https://github.com/danb235/TerminalDB/releases/latest">Release notes and checksums</a>
 </p>
 
 TerminalDB combines an independent PTY-backed shell, a collapsible AI chat,

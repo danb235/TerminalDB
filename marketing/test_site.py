@@ -90,7 +90,8 @@ def main() -> None:
         "Crash reporting is opt in",
         "valid on disk · notarized",
         "Key held in the macOS Keychain",
-        "releases/latest",
+        "releases/download/v0.",
+        "releases/tag/v0.",
     ]
     for fragment in forbidden_fragments:
         if fragment.lower() in html.lower():
@@ -105,7 +106,7 @@ def main() -> None:
         "Claude subscription",
         "Anthropic API key",
         "https://github.com/danb235/TerminalDB",
-        "https://github.com/danb235/TerminalDB/releases/download/v0.1.0/TerminalDB-macOS.zip",
+        "https://github.com/danb235/TerminalDB/releases/latest/download/TerminalDB-macOS.zip",
         "TerminalDB-macOS.zip",
         "https://app.terminaldb.app/?account=signin&amp;source=marketing",
         "https://app.terminaldb.app/?account=create&amp;source=marketing",

@@ -741,8 +741,24 @@ export class TerminalDBRemoteStack extends Stack {
       evaluationPeriods: 1,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
+    // A client that keeps relaying to an expired or revoked peer produces a
+    // steady stream of 4xx responses that the WebSocket route never reports
+    // back to the sender. Normal traffic stays near zero here.
+    const relayClientErrors = new cloudwatch.Alarm(this, "RelayClientErrors", {
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/ApiGateway",
+        metricName: "ClientError",
+        dimensionsMap: { ApiId: webSocketApi.apiId, Stage: webSocketStage.stageName },
+        period: Duration.minutes(15),
+        statistic: "Sum",
+      }),
+      threshold: 1000,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
     relayErrors.addAlarmAction(new cloudwatchActions.SnsAction(alerts));
     throttleAlarm.addAlarmAction(new cloudwatchActions.SnsAction(alerts));
+    relayClientErrors.addAlarmAction(new cloudwatchActions.SnsAction(alerts));
 
     new CfnOutput(this, "RemoteUrl", {
       value: props.domainName ? `https://${props.domainName}` : `https://${distribution.distributionDomainName}`,

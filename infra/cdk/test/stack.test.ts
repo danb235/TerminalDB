@@ -305,6 +305,20 @@ describe("TerminalDB Remote infrastructure", () => {
     ).toHaveLength(2);
   });
 
+  it("alarms on sustained WebSocket client errors as well as relay failures", () => {
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 3);
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      Namespace: "AWS/ApiGateway",
+      MetricName: "ClientError",
+      Statistic: "Sum",
+      Period: 900,
+      Threshold: 1000,
+      EvaluationPeriods: 1,
+      TreatMissingData: "notBreaching",
+      AlarmActions: [Match.anyValue()],
+    });
+  });
+
   it("creates both personal spend budgets", () => {
     template.resourceCountIs("AWS::Budgets::Budget", 2);
     template.hasResourceProperties("AWS::SNS::Subscription", {
