@@ -7,6 +7,8 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-06
+
 ### Added
 
 - A CloudWatch alarm on sustained WebSocket client errors for the remote relay,
