@@ -102,6 +102,9 @@ export interface RemoteTab {
   readonly inputMode?: RemoteInputMode;
   readonly busy: boolean;
   readonly claudeState?: "ready" | "working" | "attention" | "rate-limit" | "error";
+  // True for the tab the desktop user has in front. A controller reports what
+  // it is viewing separately, through presence.
+  readonly selected?: boolean;
   readonly updatedAt: string;
 }
 
@@ -110,6 +113,8 @@ export interface RemoteInstance {
   readonly name: string;
   readonly host: string;
   readonly tabs: readonly RemoteTab[];
+  // The tab this desktop has in front, when it is the active application.
+  readonly selectedTabId?: string;
 }
 
 export interface InventoryPayload {

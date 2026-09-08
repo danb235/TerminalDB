@@ -1814,6 +1814,7 @@ function TerminalView({
   onCreateTab,
   onCloseTab,
   tabMutation,
+  tabNotice,
   onInput,
   onQuickKey,
   onBack,
@@ -1835,6 +1836,7 @@ function TerminalView({
   readonly onCreateTab: () => void;
   readonly onCloseTab: (tab: RemoteTab) => void;
   readonly tabMutation?: TabMutationIndicator | undefined;
+  readonly tabNotice?: string | undefined;
   readonly onInput: (data: string) => void;
   readonly onQuickKey: (key: string) => void;
   readonly onBack: () => void;
@@ -1921,6 +1923,8 @@ function TerminalView({
                   role="tab"
                   aria-selected={candidate.id === tab.id}
                   className={`${candidate.id === tab.id ? "active" : ""} ${pendingClose ? "pending-close" : ""}`}
+                  data-desktop-selected={candidate.selected ? "true" : undefined}
+                  title={candidate.selected ? "In front on the Mac" : undefined}
                   onClick={() => onSelectTab(candidate)}
                 >
                   <span className={`tab-state state-${candidate.claudeState ?? "ready"}`} />
@@ -1937,15 +1941,25 @@ function TerminalView({
             {tabs.map((candidate) => {
               const pendingClose =
                 tabMutation?.kind === "close" && tabMutation.tabId === candidate.id;
+              // Closing the only tab of a desktop window quits TerminalDB
+              // there, so the Mac refuses it and this button says why rather
+              // than sending a request that comes back rejected.
+              const soleTabOnItsMac = tabs.filter((sibling) =>
+                sibling.instanceId === candidate.instanceId &&
+                !sibling.parentPaneId).length <= 1;
               const closeUnavailable =
-                !acceptsInput || Boolean(tabMutation) || candidate.busy || Boolean(candidate.parentPaneId);
+                !acceptsInput || Boolean(tabMutation) || candidate.busy ||
+                Boolean(candidate.parentPaneId) ||
+                (soleTabOnItsMac && !candidate.parentPaneId);
               const closeReason = candidate.parentPaneId
                 ? "Split panes are managed inside their desktop tab"
                 : candidate.busy
                   ? "Stop the foreground process before closing this tab"
                   : !acceptsInput
                     ? "Reconnect before closing this tab"
-                    : "Close tab";
+                    : soleTabOnItsMac
+                      ? "The last tab can only be closed on the Mac"
+                      : "Close tab";
               return (
                 <div className={`terminal-tab-close-slot ${pendingClose ? "pending-close" : ""}`} key={candidate.id}>
                 <button
@@ -1977,6 +1991,9 @@ function TerminalView({
           </button>
         </div>
       </div>
+      {tabNotice ? (
+        <p className="terminal-tab-notice" role="status">{tabNotice}</p>
+      ) : null}
 
       <section className="terminal-stage" aria-label="Mirrored TerminalDB session">
         <Suspense fallback={<div className="terminal-loading">Loading terminal viewport…</div>}>
@@ -2463,6 +2480,21 @@ export function App() {
   );
   const [usageRefreshing, setUsageRefreshing] = useState(false);
   const [tabMutation, setTabMutation] = useState<TabMutationIndicator>();
+  const [tabNotice, setTabNotice] = useState<string>();
+  const tabNoticeTimerRef = useRef<number | undefined>(undefined);
+  // A tab command the Mac refused is one failed action. It gets its own
+  // transient line instead of the connection-wide "delivery uncertain"
+  // state, which blocks typing until the next health exchange.
+  const showTabNotice = (message: string) => {
+    if (tabNoticeTimerRef.current) {
+      window.clearTimeout(tabNoticeTimerRef.current);
+    }
+    setTabNotice(message);
+    tabNoticeTimerRef.current = window.setTimeout(() => {
+      tabNoticeTimerRef.current = undefined;
+      setTabNotice(undefined);
+    }, 6_000);
+  };
   const [pairError, setPairError] = useState<string>();
   const [pairing, setPairing] = useState(false);
   const [remoteRegion, setRemoteRegion] = useState("us-west-2");
@@ -2814,14 +2846,17 @@ export function App() {
           setAccountBootstrapToken(bootstrapToken);
           setView("accounts");
         },
-        onAck: (_requestId, accepted, detail) => {
+        onAck: (_requestId, accepted, detail, route) => {
           if (epoch !== connectionEpochRef.current) return;
-          if (!accepted) {
-            dispatch({
-              type: "delivery-uncertain",
-              detail: detail ?? "The Mac did not accept this request.",
-            });
+          if (accepted) return;
+          if (route === "tab.create" || route === "tab.close" || route === "tab.select") {
+            showTabNotice(detail ?? "The Mac did not accept this tab change.");
+            return;
           }
+          dispatch({
+            type: "delivery-uncertain",
+            detail: detail ?? "The Mac did not accept this request.",
+          });
         },
         onProtocolError: (error) => {
           if (epoch === connectionEpochRef.current) {
@@ -3037,6 +3072,18 @@ export function App() {
     }
   };
 
+  // A rejection carries the Mac's reason and leaves the connection healthy.
+  // A timeout leaves the outcome genuinely unknown, which is what the
+  // connection-wide uncertain state exists for.
+  const reportTabFailure = (error: unknown, fallback: string) => {
+    const message = error instanceof Error ? error.message : fallback;
+    if (message.startsWith("Delivery uncertain")) {
+      dispatch({ type: "delivery-uncertain", detail: message });
+      return;
+    }
+    showTabNotice(message);
+  };
+
   const createTab = () => {
     const source = selectedTab;
     if (!source || pendingTabMutationRef.current || !canAcceptTerminalInput(connection)) return;
@@ -3103,10 +3150,7 @@ export function App() {
     }).catch((error: unknown) => {
       if (pendingTabMutationRef.current?.operationId !== operationId) return;
       clearPendingTabMutation(operationId);
-      dispatch({
-        type: "delivery-uncertain",
-        detail: error instanceof Error ? error.message : "The new tab could not be confirmed.",
-      });
+      reportTabFailure(error, "The new tab could not be confirmed.");
     });
   };
 
@@ -3174,10 +3218,7 @@ export function App() {
     }).catch((error: unknown) => {
       if (pendingTabMutationRef.current?.operationId !== operationId) return;
       clearPendingTabMutation(operationId);
-      dispatch({
-        type: "delivery-uncertain",
-        detail: error instanceof Error ? error.message : "The tab closure could not be confirmed.",
-      });
+      reportTabFailure(error, "The tab closure could not be confirmed.");
     });
   };
 
@@ -3570,6 +3611,7 @@ export function App() {
           onCreateTab={createTab}
           onCloseTab={closeTab}
           tabMutation={tabMutation}
+          tabNotice={tabNotice}
           onInput={sendTerminalInput}
           onQuickKey={quickKey}
           onBack={() => setView("dashboard")}

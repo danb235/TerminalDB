@@ -161,6 +161,7 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
 @property(nonatomic, strong) NSMutableData *readBuffer;
 @property(nonatomic) dispatch_queue_t transportQueue;
 @property(nonatomic, strong) NSTimer *inventoryTimer;
+@property(nonatomic, strong, nullable) NSTimer *coalescedInventoryTimer;
 @property(nonatomic, strong) NSTimer *agentDiscoveryTimer;
 @property(nonatomic, strong)
     NSMutableDictionary<NSString *, NSDictionary *> *acceptedRequests;
@@ -702,7 +703,20 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
     [self sendMessage:ack];
 }
 
+- (void)publishInventorySoon {
+    if (self.socketDescriptor < 0) return;
+    [self.coalescedInventoryTimer invalidate];
+    self.coalescedInventoryTimer =
+        [NSTimer scheduledTimerWithTimeInterval:0.15
+                                         target:self
+                                       selector:@selector(publishInventory)
+                                       userInfo:nil
+                                        repeats:NO];
+}
+
 - (void)publishInventory {
+    [self.coalescedInventoryTimer invalidate];
+    self.coalescedInventoryTimer = nil;
     if (self.socketDescriptor < 0) return;
     NSDictionary *instance =
         [self.delegate terminalRemoteInventoryForBridge:self];
@@ -1093,6 +1107,8 @@ static NSString *TerminalRemoteTakeDecodedOutput(NSMutableData *pending) {
     self.stopping = YES;
     [self.inventoryTimer invalidate];
     self.inventoryTimer = nil;
+    [self.coalescedInventoryTimer invalidate];
+    self.coalescedInventoryTimer = nil;
     [self.agentDiscoveryTimer invalidate];
     self.agentDiscoveryTimer = nil;
     dispatch_async(self.transportQueue, ^{

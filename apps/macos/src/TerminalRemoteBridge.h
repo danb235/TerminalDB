@@ -66,6 +66,9 @@ NS_ASSUME_NONNULL_BEGIN
                  inputMode:(NSString *)inputMode;
 - (void)publishViewportForTabIdentifier:(NSString *)tabIdentifier;
 - (void)publishInventory;
+// Publishes on a short trailing delay so a burst of tab state changes
+// becomes one inventory rather than one per change.
+- (void)publishInventorySoon;
 - (void)stop;
 + (BOOL)runUTF8OutputDecodingSelfTests;
 

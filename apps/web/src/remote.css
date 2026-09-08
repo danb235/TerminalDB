@@ -1028,6 +1028,22 @@ body:has(.session-loading-view) #root {
   opacity: 0.28;
 }
 
+/* The tab the desktop user has in front. A controller's own selection is the
+   .active tab, so these are deliberately different marks. */
+.terminal-tab-track > button[role="tab"][data-desktop-selected="true"] {
+  box-shadow: inset 2px 0 0 var(--tdb-cyan);
+}
+
+.terminal-tab-notice {
+  margin: 0;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--tdb-border);
+  background: #151518;
+  color: var(--tdb-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .terminal-tab-strip strong,
 .terminal-tab-strip code {
   overflow: hidden;

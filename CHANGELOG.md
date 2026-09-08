@@ -7,6 +7,43 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- A live end-to-end check that drives the Remote web app against a real
+  desktop TerminalDB on the same Mac, covering pairing, tab creation, terminal
+  input, tab selection and tab closing. Run it with
+  `npm run live:desktop -w @terminaldb/test-harness`.
+- Remote tabs now show which tab the Mac itself has in front, separately from
+  the tab the browser is viewing.
+
+### Changed
+
+- The browser no longer offers to close the last tab of a desktop window,
+  because closing it would quit TerminalDB on that Mac. The Mac refuses the
+  request as well.
+- Busy tabs and Claude state now reach a browser as soon as they change
+  instead of waiting for the next periodic refresh, so a tab running a
+  command reports itself busy in about a second rather than up to five.
+- A tab command the Mac declines now reports that one failure instead of
+  putting the whole connection into a state that blocked typing until the
+  next health exchange.
+
+### Fixed
+
+- Shell processes are now collected when their tab closes. Every closed tab
+  used to leave a defunct process behind for as long as the application kept
+  running.
+- A tab whose shell exits on its own now closes instead of leaving a dead
+  terminal, and stops waking the application on a closed descriptor.
+- TerminalDB launched from a TerminalDB tab no longer layers one window's
+  shell configuration on another's, which had stopped the tab title,
+  directory and command hooks from reporting anything in that case.
+- The Mac agent waits long enough for an idle browser's next health check
+  before dropping it, so a quiet browser tab keeps receiving terminal output.
+- The background tab self-check no longer depends on shell startup timing or
+  on the working directory's name, and reports its two title checks
+  separately.
+
 ## [0.5.1] - 2026-09-06
 
 ### Added

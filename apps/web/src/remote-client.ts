@@ -139,7 +139,12 @@ export interface RemoteClientEvents {
   readonly onRotating: () => void;
   readonly onSessionEnded: (reason?: string | undefined) => void;
   readonly onAccountBootstrap: (bootstrapToken: string, expiresAt: number) => void;
-  readonly onAck: (requestId: string, accepted: boolean, detail?: string | undefined) => void;
+  readonly onAck: (
+    requestId: string,
+    accepted: boolean,
+    detail?: string | undefined,
+    route?: RemoteRoute | undefined,
+  ) => void;
   readonly onProtocolError: (error: Error) => void;
 }
 
@@ -674,9 +679,11 @@ export class RemoteClient {
         }
       } else if (envelope.route === "ack") {
         const ack = payload as { requestId: string; accepted: boolean; detail?: string };
-        this.#events.onAck(ack.requestId, ack.accepted, ack.detail);
-        this.#uncertain.delete(ack.requestId);
         const pending = this.#pending.get(ack.requestId);
+        // The route lets a caller separate a request the Mac deliberately
+        // refused from one whose delivery is genuinely unknown.
+        this.#events.onAck(ack.requestId, ack.accepted, ack.detail, pending?.route);
+        this.#uncertain.delete(ack.requestId);
         if (pending) {
           window.clearTimeout(pending.timer);
           this.#pending.delete(ack.requestId);

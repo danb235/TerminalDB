@@ -9,6 +9,7 @@
     "test:cost": "vitest run src/cost-guard.test.ts",
     "live:mac": "node scripts/live-mac.mjs",
     "live:browser": "node scripts/verify-live-browser.mjs",
+    "live:desktop": "node scripts/verify-desktop-browser.mjs",
     "live:socket": "node scripts/probe-websocket.mjs",
     "live:session": "node scripts/verify-live-session.mjs",
     "live:totp": "node scripts/verify-live-totp.mjs"

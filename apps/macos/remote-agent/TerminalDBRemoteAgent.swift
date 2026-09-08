@@ -6,11 +6,13 @@ import Security
 
 private let protocolVersion = 1
 private let maximumWireBytes = 30_000
-// Browsers send health.ping every 20 seconds and background tabs can be
-// throttled to once a minute, so three minutes without any envelope means the
-// controller is gone. Sending to it would only produce relay 403 responses that
-// the WebSocket route never reports back.
-private let controllerLivenessTimeout: TimeInterval = 180
+// An idle browser only pings every IDLE_HEALTH_INTERVAL_MS (4 minutes, see
+// apps/web/src/remote-client.ts), and a backgrounded tab can be throttled
+// beyond that, so this must stay well above one ping interval or a quiet
+// controller would be pruned while it is still watching. Ten minutes is two
+// and a half intervals. Server-side expiry and revocation are handled
+// promptly by refreshControllers instead of by this timeout.
+private let controllerLivenessTimeout: TimeInterval = 600
 
 /// Controller IDs whose last received envelope is older than `timeout`.
 private func staleControllerIDs(
@@ -1183,7 +1185,13 @@ private final class RemoteAgent: @unchecked Sendable {
             "accounts": Array(accountsByID.values),
             "capabilities": browserCapabilities,
         ]
-        if let selectedTabID = viewedTabs.values.first {
+        // A Mac reports the tab it has in front. Fall back to what a
+        // controller is viewing only when no Mac says, which keeps older
+        // desktop builds working.
+        let desktopSelection = inventories.values
+            .compactMap { $0["selectedTabId"] as? String }
+            .first
+        if let selectedTabID = desktopSelection ?? viewedTabs.values.first {
             payload["selectedTabId"] = selectedTabID
         }
         return payload

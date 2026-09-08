@@ -92,6 +92,41 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
 @end
 
 
+// A shell is reaped by a process source rather than by the tab that owns it.
+// Sending SIGHUP and calling waitpid immediately cannot work: the shell has
+// not exited yet at that point, so the entry stayed in the process table for
+// the lifetime of the application.
+static dispatch_queue_t TerminalDBShellReaperQueue(void) {
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        queue = dispatch_queue_create("com.terminaldb.shell-reaper",
+                                      DISPATCH_QUEUE_SERIAL);
+    });
+    return queue;
+}
+
+// Keyed by shell pid, and touched only on the reaper queue so a shell that
+// exits while its tab is closing cannot race the registry.
+static NSMutableDictionary<NSNumber *, dispatch_source_t> *
+TerminalDBShellReapers(void) {
+    static NSMutableDictionary<NSNumber *, dispatch_source_t> *reapers;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ reapers = [NSMutableDictionary dictionary]; });
+    return reapers;
+}
+
+// YES when this call collected the shell.
+static BOOL TerminalDBReapShell(pid_t pid) {
+    if (pid <= 0) return NO;
+    for (;;) {
+        pid_t reaped = waitpid(pid, NULL, WNOHANG);
+        if (reaped == pid) return YES;
+        if (reaped < 0 && errno == EINTR) continue;
+        return NO;
+    }
+}
+
 @interface AppDelegate : NSObject <
     NSApplicationDelegate,
     NSWindowDelegate,
@@ -1723,6 +1758,10 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
     (void)bridge;
     AppDelegate *root = [self rootController];
     NSMutableArray *tabs = [NSMutableArray array];
+    // keyWindow is nil while another application is active, so fall back to
+    // the main window to keep reporting the tab this Mac has in front.
+    NSWindow *keyWindow = NSApp.keyWindow ?: NSApp.mainWindow;
+    NSString *frontTabIdentifier = nil;
     for (AppDelegate *controller in root.windowControllers) {
         if (controller.remoteTabIdentifier.length == 0 ||
             controller.window == nil) {
@@ -1742,6 +1781,12 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
         while (windowOwner.embeddedSplitOwner != nil) {
             windowOwner = windowOwner.embeddedSplitOwner;
         }
+        // The tab a desktop user is looking at: the visible one in its macOS
+        // tab group. Several windows can each have one, so the instance also
+        // reports which of them is in front, below.
+        NSWindowTabGroup *tabGroup = windowOwner.window.tabGroup;
+        BOOL visibleInItsWindow =
+            tabGroup == nil || tabGroup.selectedWindow == windowOwner.window;
         NSMutableDictionary *tab = [@{
             @"id" : controller.remoteTabIdentifier,
             @"instanceId" : root.remoteInstanceIdentifier,
@@ -1757,8 +1802,13 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
             @"inputMode" : [controller terminalRemoteInputMode],
             @"busy" : @(controller.tabIsBusy),
             @"claudeState" : claudeState,
+            @"selected" : @(visibleInItsWindow),
             @"updatedAt" : NSDate.date.description,
         } mutableCopy];
+        if (visibleInItsWindow && keyWindow != nil &&
+            windowOwner.window == keyWindow) {
+            frontTabIdentifier = controller.remoteTabIdentifier;
+        }
         if (controller.embeddedSplitOwner != nil) {
             tab[@"parentPaneId"] =
                 controller.embeddedSplitOwner.remoteTabIdentifier;
@@ -1780,14 +1830,18 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
         [accounts addObject:[root remoteUsageForProfile:profile]];
     }
     NSString *host = NSProcessInfo.processInfo.hostName ?: @"Mac";
-    return @{
+    NSMutableDictionary *instance = [@{
         @"id" : root.remoteInstanceIdentifier,
         @"name" : [NSString stringWithFormat:@"TerminalDB · %d",
             NSProcessInfo.processInfo.processIdentifier],
         @"host" : host,
         @"tabs" : tabs,
         @"accounts" : accounts,
-    };
+    } mutableCopy];
+    if (frontTabIdentifier.length > 0) {
+        instance[@"selectedTabId"] = frontTabIdentifier;
+    }
+    return instance;
 }
 
 - (AppDelegate *)terminalControllerForRemoteIdentifier:
@@ -2012,6 +2066,21 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
                                      userInfo:@{
                 NSLocalizedDescriptionKey :
                     @"Stop the foreground process before closing this tab."
+            }];
+        }
+        return NO;
+    }
+    // Closing the only tab quits TerminalDB on this Mac, which would also end
+    // Remote Control for every controller. That has to be a decision made at
+    // the Mac itself.
+    AppDelegate *closeRoot = [self rootController];
+    if (closeRoot.windowControllers.count <= 1) {
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:@"com.terminaldb.remote"
+                                         code:409
+                                     userInfo:@{
+                NSLocalizedDescriptionKey :
+                    @"The last tab can only be closed on the Mac."
             }];
         }
         return NO;
@@ -3308,9 +3377,18 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
 - (void)waitForBackgroundTabQAWithFirst:(AppDelegate *)first
                                  second:(AppDelegate *)second
                                 attempt:(NSUInteger)attempt {
-    if (![NSFileManager.defaultManager
-            fileExistsAtPath:second.shellTitlePath] &&
-        attempt < 100) {
+    // The shell publishes its first title from precmd, so a non-empty file
+    // is the signal that an interactive prompt is ready to accept a command.
+    // An existing but empty file is not: typing then would race a shell that
+    // is still sourcing the user's configuration. Allow 30 seconds, since a
+    // real login shell can load a large framework before its first prompt.
+    NSString *readyTitle = [NSString
+        stringWithContentsOfFile:second.shellTitlePath
+                        encoding:NSUTF8StringEncoding
+                           error:nil];
+    if ([readyTitle stringByTrimmingCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet].length == 0 &&
+        attempt < 300) {
         dispatch_after(
             dispatch_time(DISPATCH_TIME_NOW,
                           (int64_t)(0.1 * NSEC_PER_SEC)),
@@ -3326,11 +3404,34 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
         "/bin/sh -c 'while :; do printf .; sleep 0.2; done'\r";
     [second.terminalView sendBytes:longRunningCommand
                            length:strlen(longRunningCommand)];
-    dispatch_after(
-        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)),
-        dispatch_get_main_queue(), ^{
-        [self finishBackgroundTabQAWithFirst:first second:second];
-    });
+    [self waitForBackgroundTabQAWorkloadWithFirst:first
+                                           second:second
+                                          attempt:0];
+}
+
+- (void)waitForBackgroundTabQAWorkloadWithFirst:(AppDelegate *)first
+                                         second:(AppDelegate *)second
+                                        attempt:(NSUInteger)attempt {
+    // preexec publishes the running command's title, and the activity
+    // indicator needs two timer passes at least 0.4 seconds apart before it
+    // reports a busy tab. Poll for both instead of assuming a settle time.
+    [second tabActivityTimerFired:second.tabActivityTimer];
+    BOOL ready =
+        [second.shellReportedTitle hasPrefix:@"sh · "] &&
+        second.tabIsBusy &&
+        second.tabActivityAnimating;
+    if (!ready && attempt < 100) {
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW,
+                          (int64_t)(0.1 * NSEC_PER_SEC)),
+            dispatch_get_main_queue(), ^{
+            [self waitForBackgroundTabQAWorkloadWithFirst:first
+                                                   second:second
+                                                  attempt:attempt + 1];
+        });
+        return;
+    }
+    [self finishBackgroundTabQAWithFirst:first second:second];
 }
 
 - (void)finishBackgroundTabQAWithFirst:(AppDelegate *)first
@@ -3383,15 +3484,18 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
                          encoding:NSUTF8StringEncoding
                             error:nil];
         [second refreshClaudeTabState];
-        NSString *qaDirectory = [second currentAssistantDirectory];
-        NSString *qaDirectoryLabel = [qaDirectory isEqualToString:@"/"]
-            ? @"/"
-            : ([qaDirectory isEqualToString:NSHomeDirectory()]
-                ? @"~"
-                : qaDirectory.lastPathComponent);
-        NSString *expectedClaudeIdentity = [NSString stringWithFormat:
-            @"Private · %@ · Claude · TerminalDB · Working",
-            qaDirectoryLabel];
+        // The window title came through the real pipeline: state file, then
+        // refreshClaudeTabState, then updateWindowTitle. The expectation is
+        // the composer's output for those same known inputs, so this checks
+        // the pipeline without restating the title format.
+        NSString *expectedClaudeIdentity = [second
+            composedTabTitleWithBase:@"Claude · TerminalDB"
+                      directoryLabel:[second directoryLabelForPath:
+                          [second currentAssistantDirectory]]
+                           modelName:second.claudeModelName ?: @""
+                  claudeIsForeground:YES
+                         claudeState:@"working"
+                      privateSession:YES];
         BOOL claudeStateTitle =
             [second.window.tab.title
                 isEqualToString:expectedClaudeIdentity];
@@ -3634,13 +3738,14 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
             fprintf(TerminalDBExitStatus == 0 ? stdout : stderr,
                     "TerminalDB background tab QA: grouped=%s "
                     "selected=%s independent-shells=%s activity=%s "
-                    "titles=%s menu=%s assistant=%s close=%s "
-                    "foreground-group=%d shell=%d\n",
+                    "titles=workload:%s/state:%s menu=%s assistant=%s "
+                    "close=%s foreground-group=%d shell=%d\n",
                     grouped ? "yes" : "no",
                     selectionWorks ? "yes" : "no",
                     independentShells ? "yes" : "no",
                     activityPolicy ? "yes" : "no",
-                    descriptiveTitles ? "yes" : "no",
+                    workloadTitle ? "yes" : "no",
+                    claudeStateTitle ? "yes" : "no",
                     claudeMenuWorks ? "yes" : "no",
                     assistantPaneWorks ? "yes" : "no",
                     closeWorks ? "yes" : "no",
@@ -4439,9 +4544,16 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
                    error:nil];
 
     const char *existingZdotdir = getenv("ZDOTDIR");
-    NSString *originalZdotdir = existingZdotdir != NULL
+    NSString *inheritedZdotdir = existingZdotdir != NULL
         ? [NSString stringWithUTF8String:existingZdotdir]
-        : NSHomeDirectory();
+        : nil;
+    // A TerminalDB launched from a TerminalDB tab inherits that tab's
+    // generated ZDOTDIR. Sourcing it would layer this window's wrapper on
+    // another window's wrapper, which stopped the title and directory hooks
+    // from publishing at all. A nested window has to start from the user's
+    // own configuration, exactly like the first one.
+    if ([inheritedZdotdir hasPrefix:windowsRoot]) inheritedZdotdir = nil;
+    NSString *originalZdotdir = inheritedZdotdir ?: NSHomeDirectory();
     NSArray<NSString *> *startupFiles =
         @[@".zshenv", @".zprofile", @".zshrc", @".zlogin"];
     for (NSString *name in startupFiles) {
@@ -4652,6 +4764,7 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
     free(windowBinDirectoryPath);
     self.pty = master;
     self.shellPid = pid;
+    [self observeShellExitForPid:pid];
     self.terminalView.pty = master;
     fcntl(master, F_SETFL, fcntl(master, F_GETFL) | O_NONBLOCK);
     [self updatePTYWindowSize];
@@ -4664,7 +4777,17 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
     dispatch_source_set_event_handler(self.readSource, ^{
         char buffer[8192];
         ssize_t count = read(master, buffer, sizeof(buffer));
-        if (count <= 0) return;
+        if (count <= 0) {
+            // EOF, or EIO once the shell is gone. Either way the descriptor
+            // will never produce anything again, so stop the source instead
+            // of waking on it forever. EAGAIN is the ordinary non-blocking
+            // case and must not cancel anything.
+            if (count == 0 || (errno != EAGAIN && errno != EINTR)) {
+                dispatch_source_t source = weakSelf.readSource;
+                if (source != nil) dispatch_source_cancel(source);
+            }
+            return;
+        }
 
         NSData *data = [NSData dataWithBytes:buffer length:(NSUInteger)count];
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -4683,6 +4806,77 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
 
 - (void)consumeTerminalData:(NSData *)data {
     [self.terminalView feedData:data];
+}
+
+- (void)observeShellExitForPid:(pid_t)pid {
+    __weak typeof(self) weakSelf = self;
+    dispatch_queue_t queue = TerminalDBShellReaperQueue();
+    dispatch_async(queue, ^{
+        dispatch_source_t exitSource = dispatch_source_create(
+            DISPATCH_SOURCE_TYPE_PROC, (uintptr_t)pid, DISPATCH_PROC_EXIT,
+            queue);
+        if (exitSource == nil) {
+            TerminalDBReapShell(pid);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf shellDidExitWithPid:pid];
+            });
+            return;
+        }
+        dispatch_source_set_event_handler(exitSource, ^{
+            TerminalDBReapShell(pid);
+            dispatch_source_t registered = TerminalDBShellReapers()[@(pid)];
+            if (registered != nil) {
+                dispatch_source_cancel(registered);
+                [TerminalDBShellReapers() removeObjectForKey:@(pid)];
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf shellDidExitWithPid:pid];
+            });
+        });
+        TerminalDBShellReapers()[@(pid)] = exitSource;
+        dispatch_resume(exitSource);
+        // A shell that died before the source was armed never delivers an
+        // exit event, so collect that case here. shellDidExitWithPid is
+        // idempotent, so an overlap with the handler above is harmless.
+        if (TerminalDBReapShell(pid)) {
+            dispatch_source_cancel(exitSource);
+            [TerminalDBShellReapers() removeObjectForKey:@(pid)];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf shellDidExitWithPid:pid];
+            });
+        }
+    });
+}
+
+- (void)shellDidExitWithPid:(pid_t)pid {
+    if (self.shellPid != pid) return;
+    self.shellPid = 0;
+    // windowWillClose already tore the tab down and only needed the shell
+    // reaped. Nothing else to do.
+    if (self.pty < 0) return;
+
+    // The shell can write its last line and exit before the read source runs
+    // again, so drain the descriptor before closing it.
+    char buffer[8192];
+    for (;;) {
+        ssize_t count = read(self.pty, buffer, sizeof(buffer));
+        if (count <= 0) break;
+        [self consumeTerminalData:[NSData dataWithBytes:buffer
+                                                length:(NSUInteger)count]];
+    }
+    if (self.readSource != nil) {
+        dispatch_source_cancel(self.readSource);
+        self.readSource = nil;
+    }
+    self.terminalView.pty = -1;
+    close(self.pty);
+    self.pty = -1;
+    [self setTabBusy:NO];
+    [self appendText:@"\r\n[Process completed]\r\n"];
+    // A tab whose shell has exited is finished, the same as the tab that ran
+    // the exit command. windowShouldClose sees no foreground process now that
+    // the descriptor is closed, so this cannot raise the busy-process alert.
+    [self.window performClose:nil];
 }
 
 - (NSString *)ledgerFileContentsAtPath:(NSString *)path {
@@ -5983,29 +6177,26 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
     [self launchClaudeLoginForProfile:profile];
 }
 
-- (void)updateWindowTitle {
-    NSString *tabTitle = self.reportedWindowTitle.length > 0
-        ? self.reportedWindowTitle
-        : (self.shellReportedTitle.length > 0
-            ? self.shellReportedTitle
-            : (self.selectedProfile != nil
-                ? self.selectedProfile.label
-                : @"Shell"));
-    tabTitle = [self sanitizedTabTitle:tabTitle maximumLength:48];
+- (NSString *)directoryLabelForPath:(NSString *)directory {
+    if ([directory isEqualToString:@"/"]) return @"/";
+    if ([directory isEqualToString:NSHomeDirectory()]) return @"~";
+    return directory.lastPathComponent.length > 0
+        ? directory.lastPathComponent
+        : directory;
+}
 
-    BOOL claudeIsForeground = [self claudeIsForeground];
-    NSString *directory = [self currentAssistantDirectory];
-    NSString *directoryLabel = @"/";
-    if (![directory isEqualToString:@"/"]) {
-        directoryLabel = [directory isEqualToString:NSHomeDirectory()]
-            ? @"~"
-            : (directory.lastPathComponent.length > 0
-                ? directory.lastPathComponent
-                : directory);
-    }
-
-    if (claudeIsForeground && self.claudeModelName.length > 0) {
-        tabTitle = self.claudeModelName;
+// The single definition of a tab title. Tests predict a title by calling this
+// with known inputs rather than by repeating the format, which is how the
+// expected string in the background-tab QA drifted from the real one.
+- (NSString *)composedTabTitleWithBase:(NSString *)base
+                        directoryLabel:(NSString *)directoryLabel
+                             modelName:(NSString *)modelName
+                    claudeIsForeground:(BOOL)claudeIsForeground
+                           claudeState:(NSString *)claudeState
+                        privateSession:(BOOL)privateSession {
+    NSString *tabTitle = [self sanitizedTabTitle:base maximumLength:48];
+    if (claudeIsForeground && modelName.length > 0) {
+        tabTitle = modelName;
     } else {
         NSString *directorySuffix =
             [@" · " stringByAppendingString:directoryLabel];
@@ -6014,13 +6205,13 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
                 tabTitle.length - directorySuffix.length];
         }
     }
-    if (claudeIsForeground && self.claudeTabState.length > 0) {
+    if (claudeIsForeground && claudeState.length > 0) {
         NSDictionary<NSString *, NSString *> *labels = @{
             @"ready" : @"Ready",
             @"working" : @"Working",
             @"attention" : @"Needs input",
         };
-        NSString *stateLabel = labels[self.claudeTabState];
+        NSString *stateLabel = labels[claudeState];
         if (stateLabel.length > 0) {
             tabTitle = [NSString stringWithFormat:@"%@ · %@",
                         [self sanitizedTabTitle:tabTitle maximumLength:34],
@@ -6032,10 +6223,29 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
             directoryLabel,
             [self sanitizedTabTitle:tabTitle maximumLength:38]];
     }
-    if (self.privateSession) {
+    if (privateSession) {
         tabTitle = [NSString stringWithFormat:@"Private · %@",
             [self sanitizedTabTitle:tabTitle maximumLength:38]];
     }
+    return tabTitle;
+}
+
+- (void)updateWindowTitle {
+    NSString *base = self.reportedWindowTitle.length > 0
+        ? self.reportedWindowTitle
+        : (self.shellReportedTitle.length > 0
+            ? self.shellReportedTitle
+            : (self.selectedProfile != nil
+                ? self.selectedProfile.label
+                : @"Shell"));
+    NSString *tabTitle = [self
+        composedTabTitleWithBase:base
+                  directoryLabel:[self directoryLabelForPath:
+                      [self currentAssistantDirectory]]
+                       modelName:self.claudeModelName ?: @""
+              claudeIsForeground:[self claudeIsForeground]
+                     claudeState:self.claudeTabState ?: @""
+                  privateSession:self.privateSession];
 
     self.window.title =
         [NSString stringWithFormat:@"TerminalDB — %@", tabTitle];
@@ -6270,6 +6480,7 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
     if ([self.claudeTabState isEqualToString:state]) return;
     self.claudeTabState = state;
     [self updateWindowTitle];
+    [[self rootController].remoteBridge publishInventorySoon];
 }
 
 - (void)setTabBusy:(BOOL)busy {
@@ -6279,6 +6490,9 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
         [self setTabActivityAnimating:NO];
     }
     [self refreshTabToolTip];
+    // A controller decides whether a tab can be closed from this flag, so it
+    // must not wait for the next periodic inventory.
+    [[self rootController].remoteBridge publishInventorySoon];
 }
 
 - (void)setTabActivityAnimating:(BOOL)animating {
@@ -6328,6 +6542,7 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
 
 - (void)windowDidBecomeKey:(NSNotification *)notification {
     (void)notification;
+    [[self rootController].remoteBridge publishInventorySoon];
     if (!self.assistantView.hidden) {
         [self.assistantView focusComposer];
     } else {
@@ -6450,8 +6665,9 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
         self.pty = -1;
     }
     if (self.shellPid > 0) {
+        // The shell will not have exited by the time this returns, so the
+        // process source armed in startShell collects it.
         kill(self.shellPid, SIGHUP);
-        waitpid(self.shellPid, NULL, WNOHANG);
     }
     if (self.windowRuntimeDirectory.length > 0) {
         [NSFileManager.defaultManager
