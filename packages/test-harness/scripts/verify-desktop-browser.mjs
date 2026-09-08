@@ -300,16 +300,23 @@ async function run() {
   record("pairing secret removed from the URL", true, new URL(page.url()).pathname);
 
   // The tab strip appears as soon as inventory arrives, before the first
-  // synchronisation finishes.
-  await waitFor("the tab strip", async () => (await readTabs(page)).length > 0, 45_000);
+  // synchronisation finishes. The QA process may still be registering with
+  // the agent at that point, so wait for its own tab rather than for any.
+  let mine = await waitFor(
+    "this run's tab in the browser",
+    async () => {
+      const tabs = await qaTabs(page, qaNeedle);
+      return tabs.length === 1 ? tabs : undefined;
+    },
+    60_000,
+  );
   const allTabs = await readTabs(page);
   const desktopShells = shellsOf(qaApp.pid).length;
-  let mine = await qaTabs(page, qaNeedle);
-  check(
-    "QA process tab visible in the browser",
-    mine.length === 1,
-    { visible: mine.length, allTabs: allTabs.length, desktopShells },
-  );
+  record("QA process tab visible in the browser", true, {
+    visible: mine.length,
+    allTabs: allTabs.length,
+    desktopShells,
+  });
 
   // View this run's own tab before waiting to go live. A controller becomes
   // ready once it holds a screen for the tab it is viewing, and the first
@@ -413,6 +420,37 @@ async function run() {
     30_000,
   );
   record("output rendered in the browser", true, marker);
+
+  // The desktop terminal has to adopt the controller's grid, or a full-screen
+  // program would keep redrawing at the wrong size and the controller would
+  // never settle. Ask the tty itself rather than reading the screen.
+  const geometryFile = join(qaDirectory, "geometry");
+  await page.locator(".terminal-pane.active .xterm-helper-textarea").focus();
+  await page.keyboard.type(`stty size > ${geometryFile}`);
+  await page.keyboard.press("Enter");
+  const ptyGeometry = await waitFor(
+    "the desktop tty to report its size",
+    () => {
+      if (!existsSync(geometryFile)) return undefined;
+      const raw = readFileSync(geometryFile, "utf8").trim();
+      const match = /^(\d+)\s+(\d+)$/u.exec(raw);
+      return match ? { rows: Number(match[1]), columns: Number(match[2]) } : undefined;
+    },
+    20_000,
+  );
+  const browserGrid = await page.$eval(
+    ".terminal-pane.active .xterm-host",
+    (node) => ({
+      rows: Number(node.dataset.rows),
+      columns: Number(node.dataset.columns),
+    }),
+  );
+  check(
+    "desktop tty adopted the browser's grid",
+    ptyGeometry.rows === browserGrid.rows &&
+      ptyGeometry.columns === browserGrid.columns,
+    { tty: ptyGeometry, browser: browserGrid },
+  );
 
   // Selection round trip across two tabs of the same desktop process.
   const pair = await qaTabs(page, qaNeedle);
