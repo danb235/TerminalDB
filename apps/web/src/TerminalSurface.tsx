@@ -13,6 +13,7 @@ import {
   optimisticRenderForInput,
   reconcileOptimisticEcho,
 } from "./optimistic-input";
+import { pastePayload } from "./terminal-input";
 import type { SequencedInputBatch } from "./ordered-input";
 
 export interface TerminalUpdate {
@@ -31,6 +32,7 @@ export interface TerminalSurfaceHandle {
   readonly getSelection: () => string;
   readonly getViewportText: () => string;
   readonly scrollToBottom: () => void;
+  readonly paste: (text: string) => void;
   readonly markOptimisticInputSent: (batch: SequencedInputBatch) => void;
   readonly confirmOptimisticInput: (committed?: boolean) => void;
   readonly rollbackOptimisticInput: () => void;
@@ -145,6 +147,8 @@ export const TerminalSurface = forwardRef<
   const applyingUpdate = useRef(false);
   const suppressNativeControlC = useRef(false);
   const inputEnabledRef = useRef(inputEnabled);
+  const pasteRef = useRef<(text: string) => void>(() => undefined);
+  const geometryMismatches = useRef(0);
   const inputModeRef = useRef(update.inputMode);
   const refreshHandler = useRef(onAuthoritativeRefreshNeeded);
   const optimistic = useRef<OptimisticState | undefined>(undefined);
@@ -275,6 +279,7 @@ export const TerminalSurface = forwardRef<
       return lines.join("\n");
     },
     scrollToBottom: () => terminal.current?.scrollToBottom(),
+    paste: (text: string) => pasteRef.current(text),
     markOptimisticInputSent: (batch) => {
       if (optimistic.current?.mode !== "application") return;
       if (applicationUnsequencedInput.current.startsWith(batch.input)) {
@@ -372,6 +377,28 @@ export const TerminalSurface = forwardRef<
         }, 0);
       }
     };
+    // Pasting had no handler at all, and a hidden textarea does not receive
+    // the gesture on every browser, so take the event here and deliver the
+    // text through the same path as typing. A terminal program that asked
+    // for bracketed paste gets the markers it expects, so multi-line text
+    // arrives as text instead of as a run of commands.
+    const deliverPaste = (text: string) => {
+      if (!text || !inputEnabledRef.current) return;
+      const payload = pastePayload(text, instance.modes.bracketedPasteMode);
+      if (!payload) return;
+      instance.scrollToBottom();
+      followHandler.current(true);
+      inputHandler.current(payload);
+    };
+    pasteRef.current = deliverPaste;
+    const interceptPaste = (event: ClipboardEvent) => {
+      const text = event.clipboardData?.getData("text/plain") ?? "";
+      if (!text) return;
+      event.preventDefault();
+      event.stopPropagation();
+      deliverPaste(text);
+    };
+    hostElement.addEventListener("paste", interceptPaste, true);
     hostElement.addEventListener("keydown", interceptControlC, true);
     const focusFromEmptySpace = (event: PointerEvent) => {
       if (event.target === hostElement && inputEnabledRef.current) {
@@ -479,7 +506,8 @@ export const TerminalSurface = forwardRef<
       inputSubscription.dispose();
       scrollSubscription.dispose();
       selectionSubscription.dispose();
-      hostElement.removeEventListener("keydown", interceptControlC, true);
+      hostElement.removeEventListener("paste", interceptPaste, true);
+    hostElement.removeEventListener("keydown", interceptControlC, true);
       hostElement.removeEventListener("pointerdown", focusFromEmptySpace);
       hostElement.removeEventListener("wheel", scrollFromEmptySpace);
       instance.dispose();
@@ -580,10 +608,27 @@ export const TerminalSurface = forwardRef<
       update.inputMode === "application" &&
       (update.rows !== instance.rows || update.columns !== instance.cols);
     if (applicationGeometryMismatch) {
-      if (element) element.dataset.geometrySync = "pending";
-      renderedUpdate.current = update.id;
-      refreshHandler.current();
-      return;
+      geometryMismatches.current += 1;
+      if (geometryMismatches.current <= 2) {
+        if (element) element.dataset.geometrySync = "pending";
+        renderedUpdate.current = update.id;
+        refreshHandler.current();
+        return;
+      }
+      // The Mac is keeping its own width, which it does while someone is
+      // working there. Adopt its grid so the screen renders instead of
+      // waiting for a redraw that is never coming.
+      applyingUpdate.current = true;
+      instance.resize(update.columns, update.rows);
+      applyingUpdate.current = false;
+      if (element) {
+        element.dataset.geometryAdopted = "true";
+        element.dataset.columns = String(instance.cols);
+        element.dataset.rows = String(instance.rows);
+      }
+    } else {
+      geometryMismatches.current = 0;
+      if (element) delete element.dataset.geometryAdopted;
     }
     if (
       element &&

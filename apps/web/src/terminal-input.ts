@@ -7,6 +7,22 @@ export function commandInputForPTY(draft: string): string {
   return normalized.endsWith("\r") ? normalized : `${normalized}\r`;
 }
 
+export const BRACKETED_PASTE_START = "\u001b[200~";
+export const BRACKETED_PASTE_END = "\u001b[201~";
+
+/**
+ * Text on its way to a PTY. Line endings become carriage returns, the same as
+ * typing Return, and a program that asked for bracketed paste receives the
+ * markers that tell it this is pasted text rather than a run of commands.
+ */
+export function pastePayload(text: string, bracketedPaste: boolean): string {
+  const normalized = text.replaceAll("\r\n", "\r").replaceAll("\n", "\r");
+  if (!normalized) return "";
+  return bracketedPaste
+    ? `${BRACKETED_PASTE_START}${normalized}${BRACKETED_PASTE_END}`
+    : normalized;
+}
+
 function utf8Length(character: string): number {
   const codePoint = character.codePointAt(0) ?? 0;
   if (codePoint <= 0x7f) return 1;

@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  BRACKETED_PASTE_END,
+  BRACKETED_PASTE_START,
   commandInputForPTY,
+  pastePayload,
   terminalInputChunks,
 } from "./terminal-input";
 
@@ -30,5 +33,22 @@ describe("terminal command input", () => {
 
   it("never splits a multi-byte Unicode scalar", () => {
     expect(terminalInputChunks("aa🙂bb", 4)).toEqual(["aa", "🙂", "bb"]);
+  });
+});
+
+describe("pasted text", () => {
+  it("sends line endings as carriage returns", () => {
+    expect(pastePayload("one\r\ntwo\nthree", false)).toBe("one\rtwo\rthree");
+  });
+
+  it("marks bracketed paste so a program inserts text instead of running it", () => {
+    expect(pastePayload("one\ntwo", true)).toBe(
+      `${BRACKETED_PASTE_START}one\rtwo${BRACKETED_PASTE_END}`,
+    );
+  });
+
+  it("keeps an empty clipboard out of the terminal", () => {
+    expect(pastePayload("", true)).toBe("");
+    expect(pastePayload("", false)).toBe("");
   });
 });

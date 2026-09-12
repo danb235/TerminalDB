@@ -7,6 +7,24 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- A Paste control in the remote terminal, and support for the browser's own
+  paste shortcut and gesture. Pasting had no handler at all, so nothing
+  reached the terminal. Multi-line text is delivered as text to a program
+  that asked for bracketed paste, rather than as a run of commands.
+
+### Fixed
+
+- Viewing a session from the web app no longer shrinks the terminal on the
+  Mac. A controller's screen size now applies only while that desktop window
+  is hidden, minimised, covered or the screen is locked. Returning to the
+  window restores its own size even if the controller never disconnected
+  cleanly.
+- A controller no longer stays unusable waiting for the Mac to redraw at its
+  screen size. It shows the terminal at the size the Mac is using and keeps
+  accepting input.
+
 ## [0.5.2] - 2026-09-08
 
 ### Added

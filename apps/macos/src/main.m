@@ -291,6 +291,43 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     return YES;
 }
 
+- (void)applicationDidBecomeActive:(NSNotification *)notification {
+    (void)notification;
+    [self restoreDesktopTerminalGeometry];
+}
+
+// Returning to a terminal hands it back to its own window, even if the
+// controller that resized it never said goodbye.
+- (void)restoreDesktopTerminalGeometry {
+    AppDelegate *root = [self rootController];
+    BOOL restored = NO;
+    for (AppDelegate *controller in root.windowControllers) {
+        if (![controller terminalWindowIsOnScreen]) continue;
+        if (controller.remoteGeometryActive) {
+            controller.remoteGeometryActive = NO;
+            [controller updatePTYWindowSize];
+            restored = YES;
+        }
+        for (AppDelegate *split in controller.splitControllers) {
+            if (!split.remoteGeometryActive) continue;
+            split.remoteGeometryActive = NO;
+            [split updatePTYWindowSize];
+            restored = YES;
+        }
+    }
+    if (restored) [root.remoteBridge publishInventorySoon];
+}
+
+- (BOOL)terminalWindowIsOnScreen {
+    AppDelegate *windowOwner = self;
+    while (windowOwner.embeddedSplitOwner != nil) {
+        windowOwner = windowOwner.embeddedSplitOwner;
+    }
+    NSWindow *window = windowOwner.window;
+    if (window == nil || !window.isVisible || window.isMiniaturized) return NO;
+    return (window.occlusionState & NSWindowOcclusionStateVisible) != 0;
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     (void)notification;
     BOOL backgroundTabQA = [NSProcessInfo.processInfo.arguments
@@ -1945,6 +1982,16 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         return NO;
     }
     if (!active) {
+        controller.remoteGeometryActive = NO;
+        [controller updatePTYWindowSize];
+        return YES;
+    }
+    // While this terminal is on screen, its own window decides how wide it
+    // is. Accepting a controller's grid here shrank the desktop terminal and
+    // left it shrunk. The controller renders whatever the Mac sends instead.
+    // Once the window is hidden, minimised, covered or the screen is locked,
+    // nobody here can see it, so the controller's grid is free to apply.
+    if ([controller terminalWindowIsOnScreen]) {
         controller.remoteGeometryActive = NO;
         [controller updatePTYWindowSize];
         return YES;
@@ -6540,8 +6587,14 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     }
 }
 
+- (void)windowDidChangeOcclusionState:(NSNotification *)notification {
+    (void)notification;
+    [self restoreDesktopTerminalGeometry];
+}
+
 - (void)windowDidBecomeKey:(NSNotification *)notification {
     (void)notification;
+    [self restoreDesktopTerminalGeometry];
     [[self rootController].remoteBridge publishInventorySoon];
     if (!self.assistantView.hidden) {
         [self.assistantView focusComposer];

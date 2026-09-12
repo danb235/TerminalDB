@@ -650,11 +650,17 @@ export class RemoteClient {
           output.tabId === this.#viewedTabId
         ) {
           const geometry = this.#viewportGeometry.get(output.tabId);
-          this.#receivedViewport =
-            output.inputMode !== "application" ||
+          const geometryMatches =
             geometry === undefined ||
             (geometry.columns === output.columns && geometry.rows === output.rows);
-          if (!this.#receivedViewport) this.#scheduleViewportResize(output.tabId);
+          // A screen has arrived, so this controller is usable. Keep asking
+          // the Mac for this grid while they differ, but never stay
+          // unsynchronised waiting for it: a Mac in use keeps its own size,
+          // and holding out left the controller unable to type at all.
+          this.#receivedViewport = true;
+          if (output.inputMode === "application" && !geometryMatches) {
+            this.#scheduleViewportResize(output.tabId);
+          }
           this.#finishSynchronizationIfReady();
         }
       } else if (envelope.route === "health.pong") {

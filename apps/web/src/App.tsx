@@ -1822,6 +1822,7 @@ function TerminalView({
   onControls,
   onDiagnostics,
   onCopy,
+  onPaste,
   onFollowOutputChange,
   onGeometryChange,
   onAuthoritativeRefreshNeeded,
@@ -1844,6 +1845,7 @@ function TerminalView({
   readonly onControls: () => void;
   readonly onDiagnostics: () => void;
   readonly onCopy: (tabId: string) => void;
+  readonly onPaste: (tabId: string) => void;
   readonly onFollowOutputChange: (tabId: string, following: boolean) => void;
   readonly onGeometryChange: (tabId: string, columns: number, rows: number) => void;
   readonly onAuthoritativeRefreshNeeded: () => void;
@@ -1988,6 +1990,9 @@ function TerminalView({
           </button>
           <button onClick={() => onCopy(tab.id)}>
             {selectionByTab[tab.id] ? "Copy selection" : "Copy screen"}
+          </button>
+          <button onClick={() => onPaste(tab.id)} disabled={!acceptsInput}>
+            Paste
           </button>
         </div>
       </div>
@@ -3390,6 +3395,19 @@ export function App() {
     if (text) await navigator.clipboard.writeText(text);
   };
 
+  const pasteTerminal = async (tabId: string) => {
+    const surface = terminalSurfacesRef.current.get(tabId);
+    if (!surface) return;
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) surface.paste(text);
+    } catch {
+      showTabNotice(
+        "This browser would not share the clipboard. Use the keyboard paste shortcut instead.",
+      );
+    }
+  };
+
   const quickKey = (key: string) => {
     const values: Record<string, string> = {
       Esc: "\u001b",
@@ -3619,6 +3637,7 @@ export function App() {
           onControls={() => setView("controls")}
           onDiagnostics={() => setView("diagnostics")}
           onCopy={(tabId) => void copyTerminal(tabId)}
+          onPaste={(tabId) => void pasteTerminal(tabId)}
           onFollowOutputChange={setTabFollowOutput}
           onGeometryChange={setTabGeometry}
           onAuthoritativeRefreshNeeded={() => {
