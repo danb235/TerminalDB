@@ -788,14 +788,6 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                 [self showProductSection:
                     TerminalProductSectionWorkspaces];
             });
-        } else if (!terminalQA && ![NSUserDefaults.standardUserDefaults
-                       boolForKey:@"TerminalDBDidCompleteOnboarding"] &&
-                   !self.apiConfiguration.hasAPIKey &&
-                   self.profileManager.profiles.count == 0 &&
-                   [TerminalLedgerStore sharedStore].records.count == 0) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [self showProductSection:TerminalProductSectionOnboarding];
-            });
         }
         if (!visualQA && !terminalQA) [self.updater checkOnLaunchIfDue];
     }
@@ -2569,7 +2561,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 
     [accountMenu addItem:NSMenuItem.separatorItem];
     NSMenuItem *addAccount = [[NSMenuItem alloc]
-        initWithTitle:@"Add Claude Code Account…"
+        initWithTitle:@"Add Claude Code Profile…"
                action:@selector(addClaudeProfileFromMenu:)
         keyEquivalent:@""];
     addAccount.target = root;
@@ -2586,7 +2578,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
             [accountMenu addItem:checking];
         } else if (!controller.claudeStatusBar.accountIsLoggedIn) {
             NSMenuItem *signIn = [[NSMenuItem alloc]
-                initWithTitle:[NSString stringWithFormat:@"Sign In to %@…",
+                initWithTitle:[NSString stringWithFormat:@"Open Claude Code for %@…",
                     selected.label]
                        action:@selector(loginClaudeProfileFromMenu:)
                 keyEquivalent:@""];
@@ -6032,11 +6024,11 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 - (void)claudeStatusBarDidRequestAddProfile:(ClaudeStatusBar *)statusBar {
     (void)statusBar;
     NSAlert *alert = [[NSAlert alloc] init];
-    alert.messageText = @"Add Claude account";
+    alert.messageText = @"Add Claude profile";
     alert.informativeText =
-        @"Name this TerminalDB-only account profile. You will sign in through "
-         "Claude’s browser flow next.";
-    [alert addButtonWithTitle:@"Create and Sign In"];
+        @"Claude is optional. Name this separate profile now, then open "
+         "Claude Code from Accounts & Usage whenever you want to sign in.";
+    [alert addButtonWithTitle:@"Create Profile"];
     [alert addButtonWithTitle:@"Cancel"];
 
     NSTextField *labelField =
@@ -6064,11 +6056,6 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     [self writeWindowProfileFile];
     [self.claudeStatusBar selectProfile:profile];
     [self updateWindowTitle];
-    // Let the modal alert finish dismissing before sending input to the PTY.
-    // Sending immediately can lose the first character of the command.
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self startClaudeLoginForProfile:profile];
-    });
 }
 
 - (void)claudeStatusBar:(ClaudeStatusBar *)statusBar
@@ -6106,8 +6093,13 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 
 - (void)claudeStatusBar:(ClaudeStatusBar *)statusBar
  didRequestLoginProfile:(ClaudeProfile *)profile {
-    (void)statusBar;
-    [self startClaudeLoginForProfile:profile];
+    // Let the panel finish returning focus to the terminal before sending
+    // Claude Code's command. Sending in the button callback loses its first
+    // character on some systems.
+    [statusBar dismissUsagePanel:nil];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self startClaudeLoginForProfile:profile];
+    });
 }
 
 - (void)clearClaudeLoginTracking {
@@ -6223,8 +6215,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         NSAlert *alert = [[NSAlert alloc] init];
         alert.messageText = @"A command is already running";
         alert.informativeText =
-            @"Finish the current command, then choose "
-             "Sign in / Reauthenticate again.";
+            @"Finish the current command, then choose Open Claude Code again.";
         [alert runModal];
         return;
     }

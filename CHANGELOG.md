@@ -7,6 +7,15 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- TerminalDB now opens directly to a usable terminal on first launch. Claude
+  profiles are optional and can be added later from the Claude menu.
+- Creating a Claude profile no longer starts sign-in automatically. The account
+  panel now says “Open Claude Code” so its interactive setup and sign-in prompts
+  are visible in the terminal instead of appearing to do nothing behind the
+  panel.
+
 ## [0.5.4] - 2026-09-25
 
 ### Fixed

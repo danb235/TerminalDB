@@ -156,7 +156,7 @@ one native window:
   protection states
 - Private Session keeps the active tab's new command blocks and workspace chat
   context out of persistent storage
-- Eight-step first-run onboarding and twelve settings categories
+- Immediate terminal startup, optional setup guide, and twelve settings categories
 
 ![Claude Code account and usage states from the TerminalDB design reference](design/desktop/terminaldb-status-usage-design.png)
 
@@ -335,10 +335,11 @@ input, not exposed as command-line arguments.
 
 ## Use Claude Code accounts
 
-Open **AI → Claude Code Account for This Tab** to:
+Claude Code is optional. TerminalDB opens to a working terminal without an
+account or setup wizard. Open **AI → Claude Code Account for This Tab** to:
 
 - select an existing account for the active tab;
-- add and authenticate another account;
+- add a profile, then open Claude Code in the terminal when you want to sign in;
 - sign back in when a profile expires; or
 - remove the selected profile from TerminalDB.
 
@@ -346,7 +347,7 @@ Each profile receives a TerminalDB-owned `CLAUDE_CONFIG_DIR`. This isolates its
 settings and credential from other TerminalDB profiles and from Claude Code
 running in Terminal, iTerm, or another application.
 
-The bottom status strip always shows the active account and subscription.
+The bottom status strip shows the active account and subscription when one is selected.
 Selecting the strip opens a compact account switcher and usage summary.
 Reported 5-hour and 7-day reset timestamps are shown only as future resets;
 stale past timestamps are labeled as ended until refreshed.
