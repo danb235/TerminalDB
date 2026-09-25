@@ -7,6 +7,16 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-09-25
+
+### Fixed
+
+- Adding a Claude subscription account now starts the sign-in flow with older
+  Claude Code installations, including versions that reject the former login
+  command before opening a browser. TerminalDB also waits for the account
+  dialog to close before sending the command, so its first character is not
+  lost.
+
 ## [0.5.3] - 2026-09-12
 
 ### Added
