@@ -6064,7 +6064,11 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     [self writeWindowProfileFile];
     [self.claudeStatusBar selectProfile:profile];
     [self updateWindowTitle];
-    [self startClaudeLoginForProfile:profile];
+    // Let the modal alert finish dismissing before sending input to the PTY.
+    // Sending immediately can lose the first character of the command.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self startClaudeLoginForProfile:profile];
+    });
 }
 
 - (void)claudeStatusBar:(ClaudeStatusBar *)statusBar
@@ -6130,7 +6134,10 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     self.claudeLoginRestartProfile = nil;
     self.claudeLoginRestartGeneration++;
 
-    const char *command = "claude auth login --claudeai\r";
+    // The interactive entry point handles subscription sign-in in both old
+    // and current Claude Code versions. Older installations reject `auth
+    // login --claudeai` before they ever open a browser.
+    const char *command = "claude\r";
     [self.terminalView sendBytes:command length:strlen(command)];
 }
 
