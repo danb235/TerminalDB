@@ -339,13 +339,18 @@ Claude Code is optional. TerminalDB opens to a working terminal without an
 account or setup wizard. Open **AI → Claude Code Account for This Tab** to:
 
 - select an existing account for the active tab;
-- add a profile, then open Claude Code in the terminal when you want to sign in;
+- add a separate subscription profile and sign in through your browser;
 - sign back in when a profile expires; or
 - remove the selected profile from TerminalDB.
 
 Each profile receives a TerminalDB-owned `CLAUDE_CONFIG_DIR`. This isolates its
 settings and credential from other TerminalDB profiles and from Claude Code
 running in Terminal, iTerm, or another application.
+
+The account panel shows each profile's sign-in state and usage separately.
+Adding or signing in to another subscription while a command is running opens
+a new tab, keeping the current command on its original account. Selecting a
+different profile for an existing tab takes effect when that tab is idle.
 
 The bottom status strip shows the active account and subscription when one is selected.
 Selecting the strip opens a compact account switcher and usage summary.
