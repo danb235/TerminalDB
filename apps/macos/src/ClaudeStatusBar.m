@@ -654,6 +654,8 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     for (NSDictionary *entry in entries) {
         ClaudeProfile *profile = entry[@"profile"];
         NSArray<NSDictionary *> *forecasts = entry[@"forecasts"];
+        BOOL signedIn = [entry[@"account_state"]
+            isEqualToString:@"signed_in"];
         BOOL signedOut = [entry[@"account_state"]
             isEqualToString:@"signed_out"];
         BOOL sourceStale = [entry[@"source_stale"] boolValue];
@@ -691,15 +693,20 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
                         frame:NSMakeRect(20, 164, columnWidth - 206, 24)];
         accountTitle.selectable = NO;
         [card addSubview:accountTitle];
-        NSString *identity = profile.email.length > 0
-            ? [NSString stringWithFormat:@"%@ · %@%@", profile.email, plan,
-                signedOut ? @" · Sign-in required" : @""]
-            : @"Not signed in";
+        NSString *identity = signedIn
+            ? (profile.email.length > 0
+                ? [NSString stringWithFormat:@"Signed in · %@ · %@",
+                    profile.email, plan]
+                : @"Signed in")
+            : (signedOut ? @"Sign-in required"
+                : ((waitingForRefresh || refreshing)
+                    ? @"Checking sign-in…"
+                    : @"Sign-in status unavailable"));
         NSTextField *accountDetail = [self
             usageWindowLabel:identity
                          size:11.5
                        weight:NSFontWeightRegular
-                        color:profile.email.length > 0 && !signedOut
+                        color:signedIn
                             ? self.theme.statusBarActiveForeground
                             : self.theme.ansiColors[3]
                         frame:NSMakeRect(20, 142, columnWidth - 206, 20)];
@@ -755,9 +762,10 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         freshnessLabel.selectable = NO;
         [card addSubview:freshnessLabel];
 
-        BOOL requiresSignIn = signedOut || profile.email.length == 0;
+        BOOL requiresSignIn = !signedIn &&
+            (signedOut || profile.email.length == 0);
         NSButton *use = [NSButton
-            buttonWithTitle:requiresSignIn ? @"Open Claude Code…"
+            buttonWithTitle:requiresSignIn ? @"Sign In…"
                 : (active ? @"Active on This Tab" : @"Use on This Tab")
                      target:self
                      action:requiresSignIn
@@ -767,7 +775,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         use.identifier = profile.identifier;
         use.enabled = requiresSignIn || !active;
         if (requiresSignIn) {
-            use.toolTip = @"Opens Claude Code in the terminal to complete its setup and sign-in prompts.";
+            use.toolTip = @"Opens your browser for this profile when Claude Code supports direct sign-in. A busy tab opens sign-in in a new tab.";
         }
         [card addSubview:use];
         NSButton *remove = [NSButton buttonWithTitle:@"Remove…"
@@ -922,10 +930,10 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         profiles.count > 0 && self.claudeExecutable.length > 0;
     refresh.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
     [document addSubview:refresh];
-    NSButton *add = [NSButton buttonWithTitle:@"Add Profile…"
+    NSButton *add = [NSButton buttonWithTitle:@"Add Subscription…"
                                        target:self
                                        action:@selector(addProfileFromStatusMenu:)];
-    add.frame = NSMakeRect(columnX + 160, y, 132, 32);
+    add.frame = NSMakeRect(columnX + 160, y, 160, 32);
     add.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
     [document addSubview:add];
     NSButton *done = [NSButton buttonWithTitle:@"Done"
@@ -2612,6 +2620,8 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         ClaudeUsageViewContainsText(dashboard, @"2 profiles configured") &&
         ClaudeUsageViewContainsText(dashboard, @"Usage Summary") &&
         ClaudeUsageViewContainsText(dashboard, @"Second Subscription") &&
+        ClaudeUsageViewContainsText(dashboard, @"Signed in · first@example.com") &&
+        ClaudeUsageViewContainsText(dashboard, @"Add Subscription…") &&
         ClaudeUsageViewContainsText(dashboard, @"BURN") &&
         ClaudeUsageViewContainsText(dashboard, @"AVAILABLE PACE") &&
         ClaudeUsageViewContainsText(dashboard, @"RESET") &&
@@ -2687,7 +2697,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         ClaudeUsageViewContainsText(signedOutDashboard,
             @"Signed out") &&
         ClaudeUsageViewContainsText(signedOutDashboard,
-            @"Open Claude Code…");
+            @"Sign In…");
     NSNumber *historyPermissions = [NSFileManager.defaultManager
         attributesOfItemAtPath:fixtureProfile.usageHistoryPath error:nil]
         [NSFilePosixPermissions];

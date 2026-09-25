@@ -7,6 +7,16 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- TerminalDB now uses Claude Code's direct subscription login when available,
+  opening the browser from Sign In without starting an interactive chat.
+  Older Claude Code versions still use their visible setup prompts. When
+  multiple Claude Code copies are installed, TerminalDB chooses the newest.
+- Adding a subscription during a running command opens it in a new tab, so
+  the current Claude session keeps its original account. Account cards now
+  clearly show signed-in status and offer Add Subscription and Sign In actions.
+
 ### Changed
 
 - TerminalDB now opens directly to a usable terminal on first launch. Claude
