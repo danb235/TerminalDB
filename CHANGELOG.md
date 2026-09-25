@@ -7,24 +7,22 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Fixed
-
-- TerminalDB now uses Claude Code's direct subscription login when available,
-  opening the browser from Sign In without starting an interactive chat.
-  Older Claude Code versions still use their visible setup prompts. When
-  multiple Claude Code copies are installed, TerminalDB chooses the newest.
-- Adding a subscription during a running command opens it in a new tab, so
-  the current Claude session keeps its original account. Account cards now
-  clearly show signed-in status and offer Add Subscription and Sign In actions.
+## [0.5.5] - 2026-09-25
 
 ### Changed
 
-- TerminalDB now opens directly to a usable terminal on first launch. Claude
-  profiles are optional and can be added later from the Claude menu.
-- Creating a Claude profile no longer starts sign-in automatically. The account
-  panel now says “Open Claude Code” so its interactive setup and sign-in prompts
-  are visible in the terminal instead of appearing to do nothing behind the
-  panel.
+- TerminalDB opens directly to a usable terminal. Claude subscriptions are
+  optional and can be added later from the Claude menu. Adding a subscription
+  leaves sign-in as an explicit action.
+
+### Fixed
+
+- Sign In now opens Claude Code's subscription browser flow when supported by
+  the installed CLI. Older CLI versions use visible terminal setup prompts.
+  TerminalDB picks the newest CLI when multiple copies are installed.
+- Adding or signing in to a subscription while a command is running opens a
+  separate tab, preserving the current session and its account. Account cards
+  show each subscription's sign-in and usage status.
 
 ## [0.5.4] - 2026-09-25
 
