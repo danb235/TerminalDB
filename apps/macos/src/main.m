@@ -414,6 +414,9 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     self.updater.statusDidChange = ^{
         [weakRoot updateUpdaterMenuItem];
     };
+    self.updater.busyTerminalCount = ^NSUInteger {
+        return [weakRoot busyTerminalCount];
+    };
     self.claudeExecutable = [self discoverClaudeExecutable];
     self.windowControllers = [NSMutableArray array];
     self.remoteInstanceIdentifier = NSUUID.UUID.UUIDString.lowercaseString;
@@ -7861,14 +7864,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 - (NSApplicationTerminateReply)applicationShouldTerminate:
     (NSApplication *)sender {
     (void)sender;
-    AppDelegate *root = [self rootController];
-    NSUInteger running = 0;
-    for (AppDelegate *controller in root.windowControllers) {
-        if (controller.embeddedSplitOwner == nil &&
-            [controller hasBusyProcessInPaneTree]) {
-            running++;
-        }
-    }
+    NSUInteger running = [self busyTerminalCount];
     if (running == 0) return NSTerminateNow;
     NSAlert *alert = [[NSAlert alloc] init];
     alert.alertStyle = NSAlertStyleWarning;
@@ -7885,6 +7881,18 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     alert.buttons.lastObject.hasDestructiveAction = YES;
     return [alert runModal] == NSAlertSecondButtonReturn
         ? NSTerminateNow : NSTerminateCancel;
+}
+
+- (NSUInteger)busyTerminalCount {
+    AppDelegate *root = [self rootController];
+    NSUInteger running = 0;
+    for (AppDelegate *controller in root.windowControllers) {
+        if (controller.embeddedSplitOwner == nil &&
+            [controller hasBusyProcessInPaneTree]) {
+            running++;
+        }
+    }
+    return running;
 }
 
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)sender

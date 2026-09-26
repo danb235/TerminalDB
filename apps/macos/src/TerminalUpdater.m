@@ -16,6 +16,7 @@ static NSTimeInterval const TerminalUpdaterCheckInterval = 24.0 * 60.0 * 60.0;
 @property(nonatomic, readwrite, getter=isChecking) BOOL checking;
 @property(nonatomic, readwrite, getter=isDownloading) BOOL downloading;
 @property(nonatomic, strong, nullable) NSURL *activeUpdateDirectory;
++ (BOOL)hasRequiredArchitectures:(NSString *)output;
 @end
 
 @implementation TerminalUpdater
@@ -181,6 +182,7 @@ static NSTimeInterval const TerminalUpdaterCheckInterval = 24.0 * 60.0 * 60.0;
 - (void)installRelease:(TerminalUpdateRelease *)release
             fromWindow:(NSWindow *)window {
     if (self.downloading) return;
+    if ([self deferInstallIfTerminalsBusyFromWindow:window]) return;
     self.downloading = YES;
     [self notifyStatusChanged];
 
@@ -270,6 +272,9 @@ static NSTimeInterval const TerminalUpdaterCheckInterval = 24.0 * 60.0 * 60.0;
                                                      window:window];
                         return;
                     }
+                    if ([strongSelf deferInstallIfTerminalsBusyFromWindow:window]) {
+                        return;
+                    }
                     NSError *installError = nil;
                     if (![strongSelf swapAndRelaunchWithApp:newApp
                                           workingDirectory:
@@ -284,6 +289,30 @@ static NSTimeInterval const TerminalUpdaterCheckInterval = 24.0 * 60.0 * 60.0;
         [checksumTask resume];
     }];
     [zipTask resume];
+}
+
+- (BOOL)deferInstallIfTerminalsBusyFromWindow:(NSWindow *)window {
+    NSUInteger count = self.busyTerminalCount != nil
+        ? self.busyTerminalCount() : 0;
+    if (count == 0) return NO;
+    if (self.activeUpdateDirectory != nil) {
+        [NSFileManager.defaultManager
+            removeItemAtURL:self.activeUpdateDirectory error:nil];
+        self.activeUpdateDirectory = nil;
+    }
+    self.downloading = NO;
+    [self notifyStatusChanged];
+    NSString *message = count == 1
+        ? @"A terminal still has a running command. Finish that command, "
+           "then choose Check for Updates again. TerminalDB will keep "
+           "running until you are ready."
+        : [NSString stringWithFormat:
+            @"%lu terminals still have running commands. Finish them, "
+             "then choose Check for Updates again. TerminalDB will keep "
+             "running until you are ready.", (unsigned long)count];
+    [self showAlertWithTitle:@"Update ready when your terminals are idle"
+                    message:message window:window];
+    return YES;
 }
 
 - (NSURL *)verifyAndExtractArchiveAtURL:(NSURL *)zipURL
@@ -362,13 +391,19 @@ static NSTimeInterval const TerminalUpdaterCheckInterval = 24.0 * 60.0 * 60.0;
         }
         return nil;
     }
-    if ([self runTool:@"/usr/bin/lipo"
-            arguments:@[
-                [newApp.path
-                    stringByAppendingPathComponent:
-                        @"Contents/MacOS/TerminalDB"],
-                @"-verify_arch", @"arm64", @"x86_64"]
-                error:error] == nil) {
+    NSString *architectures = [self runTool:@"/usr/bin/lipo"
+        arguments:@[
+            [newApp.path stringByAppendingPathComponent:
+                @"Contents/MacOS/TerminalDB"],
+            @"-archs"] error:error];
+    if (architectures == nil) {
+        return nil;
+    }
+    if (![TerminalUpdater hasRequiredArchitectures:architectures]) {
+        if (error != NULL) {
+            *error = [self errorWithCode:25
+                message:@"The update must include both Apple Silicon and Intel binaries."];
+        }
         return nil;
     }
     NSBundle *bundle = [NSBundle bundleWithURL:newApp];
@@ -688,7 +723,21 @@ static NSTimeInterval const TerminalUpdaterCheckInterval = 24.0 * 60.0 * 60.0;
     return nil;
 }
 
++ (BOOL)hasRequiredArchitectures:(NSString *)output {
+    NSArray<NSString *> *parts = [output
+        componentsSeparatedByCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSSet<NSString *> *architectures = [NSSet setWithArray:parts];
+    return [architectures containsObject:@"arm64"] &&
+           [architectures containsObject:@"x86_64"];
+}
+
 + (BOOL)runSelfTests {
+    if (![self hasRequiredArchitectures:@"x86_64 arm64\n"] ||
+        [self hasRequiredArchitectures:@"arm64\n"] ||
+        [self hasRequiredArchitectures:@"x86_64\n"]) {
+        return NO;
+    }
     if (![self isVersion:@"0.1.1" newerThan:@"0.1.0"] ||
         ![self isVersion:@"1.0.0" newerThan:@"0.99.99"] ||
         [self isVersion:@"0.1.0" newerThan:@"0.1.0"] ||

@@ -7,6 +7,12 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- In-app updates now validate both supported Mac architectures without a
+  failing `lipo` verification command. When a terminal command is running,
+  the update waits for the user to finish it instead of attempting to quit.
+
 ## [0.5.5] - 2026-09-25
 
 ### Changed

@@ -19,6 +19,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, readonly, getter=isChecking) BOOL checking;
 @property(nonatomic, readonly, getter=isDownloading) BOOL downloading;
 @property(nonatomic, copy, nullable) void (^statusDidChange)(void);
+@property(nonatomic, copy, nullable) NSUInteger (^busyTerminalCount)(void);
 
 - (instancetype)initWithRepository:(NSString *)repository
     NS_DESIGNATED_INITIALIZER;
