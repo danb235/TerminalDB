@@ -7,6 +7,8 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-09-25
+
 ### Fixed
 
 - In-app updates now validate both supported Mac architectures without a
