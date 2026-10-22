@@ -4678,6 +4678,12 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         NSMutableString *contents = [NSMutableString stringWithFormat:
             @"_terminaldb_zdotdir=$ZDOTDIR\n"
              "ZDOTDIR=%@\n"
+             // /etc/zshrc sets HISTFILE before this wrapper runs. Point its
+             // default back at the user's dot directory, while still letting
+             // the user's startup files choose a different history file.
+             "if [[ \"$HISTFILE\" == \"$_terminaldb_zdotdir/.zsh_history\" ]]; then\n"
+             "  HISTFILE=\"$ZDOTDIR/.zsh_history\"\n"
+             "fi\n"
              "[[ -r %@ ]] && source %@\n"
              "ZDOTDIR=$_terminaldb_zdotdir\n"
              "unset _terminaldb_zdotdir\n"
@@ -7699,6 +7705,19 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     }
     [NSFileManager.defaultManager removeItemAtPath:removalRoot error:nil];
 
+    NSString *historyTestDirectory = [NSTemporaryDirectory()
+        stringByAppendingPathComponent:[NSString stringWithFormat:
+            @"terminaldb-history-%@", NSUUID.UUID.UUIDString]];
+    [NSFileManager.defaultManager
+        createDirectoryAtPath:historyTestDirectory
+        withIntermediateDirectories:YES
+        attributes:@{NSFilePosixPermissions : @0700}
+        error:nil];
+    const char *savedZdotdirValue = getenv("ZDOTDIR");
+    NSString *savedZdotdir = savedZdotdirValue != NULL
+        ? [NSString stringWithUTF8String:savedZdotdirValue]
+        : nil;
+    setenv("ZDOTDIR", historyTestDirectory.fileSystemRepresentation, 1);
     AppDelegate *claudeLaunch = newTerminal();
     [claudeLaunch configureClaudeIntegration];
     NSString *generatedClaudeShim = [NSString stringWithContentsOfFile:
@@ -7716,9 +7735,37 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         fprintf(stderr, "FAIL Claude native scrollback launch environment\n");
         failures++;
     }
+    setenv("ZDOTDIR", claudeLaunch.zshDotDirectory.fileSystemRepresentation, 1);
+    NSString *defaultHistory = TerminalDBClaudeCommandOutput(
+        @"/bin/zsh", @[@"-l", @"-i", @"-c", @"print -r -- \"$HISTFILE\""], 3.0);
+    NSString *expectedHistory =
+        [historyTestDirectory stringByAppendingPathComponent:@".zsh_history"];
+    NSString *customHistory =
+        [historyTestDirectory stringByAppendingPathComponent:@"custom_history"];
+    [@"HISTFILE=\"$ZDOTDIR/custom_history\"\n"
+        writeToFile:[historyTestDirectory stringByAppendingPathComponent:@".zshrc"]
+         atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    NSString *overriddenHistory = TerminalDBClaudeCommandOutput(
+        @"/bin/zsh", @[@"-l", @"-i", @"-c", @"print -r -- \"$HISTFILE\""], 3.0);
+    if (![[defaultHistory stringByTrimmingCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet]
+            isEqualToString:expectedHistory] ||
+        ![[overriddenHistory stringByTrimmingCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet]
+            isEqualToString:customHistory]) {
+        fprintf(stderr, "FAIL zsh history location and user override\n");
+        failures++;
+    }
+    if (savedZdotdir != nil) {
+        setenv("ZDOTDIR", savedZdotdir.fileSystemRepresentation, 1);
+    } else {
+        unsetenv("ZDOTDIR");
+    }
     [NSFileManager.defaultManager
         removeItemAtPath:claudeLaunch.windowRuntimeDirectory
         error:nil];
+    [NSFileManager.defaultManager
+        removeItemAtPath:historyTestDirectory error:nil];
 
     AppDelegate *activityState = newTerminal();
     [activityState setTabBusy:YES];
