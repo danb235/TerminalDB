@@ -195,7 +195,14 @@ public final class TDBPeerSelfTests: NSObject {
                         link.send(["recovery": index])
                     }
                 }
-                if spin({ echoed }) { recovered += 1 } else { break }
+                // Wait for closure through all forwarding hops before starting
+                // the next recovery. Echo receipt alone precedes asynchronous
+                // close propagation and can overlap the admission limit on CI.
+                if spin({ echoed && na.activeConnectionCount == 0 && nb.activeConnectionCount == 0 && nc.activeConnectionCount == 0 }) {
+                    recovered += 1
+                } else {
+                    throw PeerFailure("Forwarded recovery \(index + 1) did not finish: origin \(na.activeConnectionCount), gateway \(nb.activeConnectionCount), destination \(nc.activeConnectionCount) connections remain.")
+                }
             }
             try check(recovered == 35)
             try tb.update { $0.peers.removeValue(forKey: a.fingerprint) }

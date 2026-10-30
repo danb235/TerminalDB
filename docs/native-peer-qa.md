@@ -40,7 +40,7 @@ Current native pass: 92 terminal-surface checks, 32 peer checks and 18
 persistent-session integration checks passed. An additional 12 checks exercise
 real peer agents, Bonjour discovery, fingerprint mismatch, bilateral approval,
 unpaired denial, remote PTYs, takeover, product services, reconnect and revocation.
-The optional production-Keychain TLS pass completed 31 checks with a stable
+The optional production-Keychain TLS pass completed 34 checks with a stable
 hardware-backed identity and a non-exportable software fallback signing check. These pass along with native product self-tests,
 background-tab QA, signature/icon/secret checks and Claude shell-hook checks. Native protocol tests cover framing,
 Unicode, large-message assembly, malformed fragments, queue budgets, control
@@ -75,13 +75,15 @@ TCP/TLS provides ordered delivery; malformed native fragments fail closed.
   Ctrl-C interrupts a running command and the same shell accepts the next one.
 - History, Project Tools and Settings panels open through normal menus. Their
   full action workflows and remote execution checks remain pending.
-- The original installed QA apps started with persistent Secure Enclave identities.
-  The updated bundles require macOS approval to access those identities; this
-  prompt is pending. No device key is replaced to bypass that approval.
+- Updated QA apps load persistent Secure Enclave identities after Keychain approval.
+  SSH Accessibility permission and the mini’s native incoming-connections firewall
+  prompt were exercised. Both physical Macs discover each other through Bonjour.
+- Two physical Macs paired through the native controls: compared both complete
+  displayed fingerprints, cancelled a confirmation, then approved on both Macs.
 - Marketing: normal navigation, FAQ toggles, current download links and three
   viewport sizes passed in a visible browser, with no script errors or requests to the retired
   app/auth domains. No cloud account bridge remains.
-- Two/three physical Mac pairing, host tools, offline LAN, actual internet path,
+- Three-Mac pairing/forwarding, remote host tools, offline LAN, actual internet path,
   gateway failover, latency and final installed About checks remain pending.
 - The mini is reachable for staging. The supplied MBP address is not reachable
   from this Mac or the mini; current address/Remote Login confirmation requested.

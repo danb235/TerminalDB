@@ -140,7 +140,7 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
                 network.connect(endpoint: endpoint, expected: nil, pairing: true) { [weak self] result in
                     guard let self else { return }
                     switch result {
-                    case .failure: reply(["error": "The nearby Mac could not pair. Open pairing on both Macs and check Local Network permission."])
+                    case .failure: reply(["error": "The nearby Mac could not pair. Open pairing on both Macs, allow Local Network access, and allow TerminalDB incoming connections in macOS Firewall settings."])
                     case .success(let link):
                         self.track(link)
                         let pending = PendingPeerPair(link, endpoint: endpoint)

@@ -111,6 +111,9 @@ final class PeerTLSNetwork {
     private var admitted = 0
     var accepted: ((PeerTLSLink) -> Void)?
     var listeningPort: Int { listener?.localAddress?.port ?? 0 }
+    var activeConnectionCount: Int {
+        admissionLock.lock(); defer { admissionLock.unlock() }; return admitted
+    }
 
     init(identity: PeerDeviceIdentity, trust: PeerTrustStore, gate: PeerPairingGate) {
         self.identity = identity; self.trust = trust; self.gate = gate
