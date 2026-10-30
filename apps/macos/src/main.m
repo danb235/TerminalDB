@@ -1505,6 +1505,16 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                     completion(result[@"preview"] ?: result[@"error"] ?: @"");
                 }];
             };
+            root.productWindowController.peerRevealFile = ^(NSString *path) {
+                [weakProductOwner.sessionClient request:@"project.reveal" payload:@{@"path": path} completion:^(NSDictionary *result) {
+                    if (result[@"error"]) {
+                        NSAlert *alert = [[NSAlert alloc] init];
+                        alert.messageText = @"Could not reveal the workstation file";
+                        alert.informativeText = result[@"error"];
+                        [alert runModal];
+                    }
+                }];
+            };
             [controller.sessionClient request:@"project.files" payload:@{} completion:^(NSDictionary *result) {
                 weakProductOwner.peerProjectCache = result[@"items"] ?: @[];
                 [weakRoot.productWindowController refresh];

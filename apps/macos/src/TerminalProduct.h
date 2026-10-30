@@ -71,6 +71,7 @@ typedef NS_ENUM(NSInteger, TerminalProductSection) {
     NSDictionary *context, NSString *prompt);
 @property(nonatomic, copy, nullable) NSArray<NSDictionary *> *(^peerProjectItems)(void);
 @property(nonatomic, copy, nullable) void (^peerFilePreview)(NSString *path, void (^completion)(NSString *text));
+@property(nonatomic, copy, nullable) void (^peerRevealFile)(NSString *path);
 @property(nonatomic, copy, nullable) NSDictionary *
     (^workspaceSnapshotProvider)(void);
 

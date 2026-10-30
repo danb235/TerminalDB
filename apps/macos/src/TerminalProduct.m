@@ -645,6 +645,34 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         (void)index; (void)stop;
         return [item[@"name"] isEqual:@"README.md"];
     }] != NSNotFound;
+    NSString *remotePath = [physical stringByAppendingPathComponent:@"README.md"];
+    controller.peerProjectItems = ^NSArray *{
+        return @[@{@"id": @"remote-file", @"name": @"README.md",
+            @"kind": @"file", @"path": remotePath}];
+    };
+    __block NSDictionary *inspected = nil;
+    __block NSString *revealed = nil;
+    controller.peerFilePreview = ^(NSString *path, void (^completion)(NSString *)) {
+        completion([path isEqual:remotePath] ? @"Contents from the execution workstation" : @"");
+    };
+    controller.peerRevealFile = ^(NSString *path) { revealed = path; };
+    controller.askAIHandler = ^(NSDictionary *context, NSString *prompt) {
+        (void)prompt; inspected = context;
+    };
+    [controller refresh];
+    [controller.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+    [controller tableViewSelectionDidChange:nil];
+    [controller primarySelected:nil];
+    [controller tertiarySelected:nil];
+    projectWorks = projectWorks &&
+        [inspected[@"output"] isEqual:@"Contents from the execution workstation"] &&
+        [inspected[@"environment"] isEqual:@"WORKSTATION"] &&
+        [revealed isEqual:remotePath] &&
+        [controller.tertiaryButton.title isEqual:@"Reveal on workstation"];
+    controller.peerProjectItems = nil;
+    controller.peerFilePreview = nil;
+    controller.peerRevealFile = nil;
+    controller.askAIHandler = nil;
     [NSFileManager.defaultManager removeItemAtPath:fixture error:nil];
     controller.directory = @"/tmp";
     controller.section = TerminalProductSectionEnvironments;
@@ -1254,7 +1282,9 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         BOOL file = [item[@"kind"] isEqualToString:@"file"];
         self.primaryButton.title = file ? @"Ask AI" : @"Run…";
         self.secondaryButton.title = file ? @"Copy path" : @"Paste";
-        self.tertiaryButton.title = file ? @"Reveal" : @"Ask AI";
+        self.tertiaryButton.title = file
+            ? (self.peerRevealFile ? @"Reveal on workstation" : @"Reveal")
+            : @"Ask AI";
     } else if (self.section == TerminalProductSectionEnvironments) {
         NSString *identifier = item[@"id"];
         if ([identifier isEqualToString:@"ssh"]) {
@@ -1501,25 +1531,27 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         self.section == TerminalProductSectionRunbooks) {
         if (self.section == TerminalProductSectionProject &&
             [item[@"kind"] isEqualToString:@"file"]) {
-            NSString *contents =
-                [NSString stringWithContentsOfFile:item[@"path"]
-                                          encoding:NSUTF8StringEncoding
-                                             error:nil] ?: @"";
-            if (contents.length > 16000) {
-                contents = [contents substringToIndex:16000];
-            }
-            if (self.askAIHandler) {
+            void (^inspect)(NSString *) = ^(NSString *contents) {
+                if (!self.askAIHandler) return;
                 NSMutableDictionary *context = [item mutableCopy];
                 context[@"command"] =
                     [NSString stringWithFormat:@"Inspect file: %@",
                         item[@"name"] ?: @""];
-                context[@"environment"] = @"LOCAL";
+                context[@"environment"] = self.peerFilePreview
+                    ? @"WORKSTATION" : @"LOCAL";
                 context[@"state"] = @"FILE";
                 context[@"output"] = contents;
                 self.askAIHandler(context,
                     @"Review this file in the current project. Summarize its "
                      "purpose, flag likely issues, and propose a minimal diff "
                      "only if a change is warranted.");
+            };
+            if (self.peerFilePreview) {
+                self.peerFilePreview(item[@"path"], inspect);
+            } else {
+                NSString *contents = [NSString stringWithContentsOfFile:item[@"path"]
+                    encoding:NSUTF8StringEncoding error:nil] ?: @"";
+                inspect(contents.length > 16000 ? [contents substringToIndex:16000] : contents);
             }
             return;
         }
@@ -1841,9 +1873,9 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         if ([item[@"kind"] isEqualToString:@"file"]) {
             NSString *path = item[@"path"];
             if (path.length > 0) {
-                [NSWorkspace.sharedWorkspace
-                    activateFileViewerSelectingURLs:
-                        @[[NSURL fileURLWithPath:path]]];
+                if (self.peerRevealFile) self.peerRevealFile(path);
+                else [NSWorkspace.sharedWorkspace
+                    activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:path]]];
             }
         } else if (self.askAIHandler) {
             self.askAIHandler(item,

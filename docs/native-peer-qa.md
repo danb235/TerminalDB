@@ -84,6 +84,14 @@ TCP/TLS provides ordered delivery; malformed native fragments fail closed.
   and networking-helper restart recovered the same shell; End Session stopped it.
 - The MBP is now reachable. It paired independently with this Mac. Before its
   separate pairing with the mini, inherited access through this Mac was denied.
+- All three Macs have now approved their separate bilateral pairings. The MBP
+  connects directly to the mini, attaches to its project session, takes control,
+  and displays the mini's synthetic README preview through the normal tools panel.
+- New Split Right inherits the mini and its project directory. A private session
+  created on the MBP executes on the mini without recording its command in history.
+  New Window opens on This Mac while the mini tabs remain available.
+- The MBP's pending macOS Local Network permission produced an Unreachable state;
+  approving the native permission restored Direct LAN using its existing identity.
 - Sampled peer/helper TCP connections used only the two configured LAN Macs.
   Full offline/WAN contact audit and latency measurement remain pending.
 - Updated QA apps load persistent Secure Enclave identities after Keychain approval.
@@ -94,7 +102,7 @@ TCP/TLS provides ordered delivery; malformed native fragments fail closed.
 - Marketing: normal navigation, FAQ toggles, current download links and three
   viewport sizes passed in a visible browser, with no script errors or requests to the retired
   app/auth domains. No cloud account bridge remains.
-- Three-Mac pairing/forwarding, remote host tools, offline LAN, actual internet path,
+- Three-Mac forwarding, remaining remote host tools, offline LAN, actual internet path,
   gateway failover, latency and final installed About checks remain pending.
 - All three Macs have side-by-side test bundles; original installed apps and
   their work remain untouched. The MBP’s former cable was on the upstream router;

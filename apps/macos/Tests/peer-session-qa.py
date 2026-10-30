@@ -153,6 +153,7 @@ def main():
             b = Client(root); clients.append(b)
             assert not b.attach(a.session)["controlling"]
             assert b.request("project.inspect", command="printf forbidden > must-not-exist").get("code") == "control-required"
+            assert b.request("project.reveal", path=str(root / "README.md")).get("code") == "control-required"
             assert b.input("printf forbidden > must-not-exist\r").get("code") == "control-required"
             assert not (root / "must-not-exist").exists()
             checks += 1

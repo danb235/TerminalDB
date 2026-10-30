@@ -224,13 +224,18 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
         }
         reply(@{@"items": page, @"total": @(items.count)}); return;
     }
-    if ([operation isEqualToString:@"project.preview"]) {
+    if ([operation isEqualToString:@"project.preview"] || [operation isEqualToString:@"project.reveal"]) {
         NSString *path = [request[@"path"] stringByResolvingSymlinksInPath];
         NSString *directory = [[controller currentAssistantDirectory] stringByResolvingSymlinksInPath];
         NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:path error:nil];
         if (![path hasPrefix:[directory stringByAppendingString:@"/"]] ||
-            ![attributes[NSFileType] isEqual:NSFileTypeRegular] || [attributes[NSFileSize] unsignedLongLongValue] > 256 * 1024) {
-            reply(@{@"error": @"This file is outside the project or too large to preview."}); return;
+            ![attributes[NSFileType] isEqual:NSFileTypeRegular] ||
+            ([operation isEqualToString:@"project.preview"] && [attributes[NSFileSize] unsignedLongLongValue] > 256 * 1024)) {
+            reply(@{@"error": @"This file is outside the project or unavailable for this action."}); return;
+        }
+        if ([operation isEqualToString:@"project.reveal"]) {
+            [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:path]]];
+            reply(@{@"accepted": @YES}); return;
         }
         NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
         reply(@{@"preview": PeerBoundedText(text ?: @"Binary or non-UTF-8 file", 16000)}); return;
