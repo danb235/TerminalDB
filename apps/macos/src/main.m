@@ -7,6 +7,7 @@
 #import "ClaudeProfile.h"
 #import "ClaudeStatusBar.h"
 #import "TerminalInspector.h"
+#import <ServiceManagement/ServiceManagement.h>
 #import "TerminalLedger.h"
 #import "TerminalPermissions.h"
 #import "TerminalProduct.h"
@@ -7585,6 +7586,18 @@ static AppDelegate *TerminalDBApplicationDelegate;
 
 int main(void) {
     @autoreleasepool {
+        if ([NSProcessInfo.processInfo.arguments containsObject:@"--peer-service-status"]) {
+            NSMutableDictionary *services = [NSMutableDictionary dictionary];
+            NSArray *names = @[@"not registered", @"enabled", @"requires approval", @"not found"];
+            for (NSString *plist in @[@"com.terminaldb.session-host.plist", @"com.terminaldb.peer-agent.plist"]) {
+                SMAppService *service = [SMAppService agentServiceWithPlistName:plist];
+                NSUInteger status = service.status;
+                services[plist] = status < names.count ? names[status] : @"unknown";
+            }
+            NSData *data = [NSJSONSerialization dataWithJSONObject:services options:NSJSONWritingSortedKeys error:nil];
+            fwrite(data.bytes, 1, data.length, stdout); fputc('\n', stdout);
+            return 0;
+        }
         NSApplication *app = NSApplication.sharedApplication;
         if ([NSProcessInfo.processInfo.arguments containsObject:@"--peer-self-test"]) {
             return [TDBPeerSelfTests run] ? 0 : 1;

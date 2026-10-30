@@ -49,6 +49,12 @@ a new connection; it does not restart a shell elsewhere. If input delivery is
 uncertain, inspect the terminal and acknowledge the warning before continuing.
 It will not be repeated automatically.
 
+For a background-service diagnostic, run
+`/Applications/TerminalDB.app/Contents/MacOS/TerminalDB --peer-service-status`.
+It reports each helper's macOS registration status without accessing device keys,
+terminal contents or credentials. An installed helper can initially report
+"not found"; opening the app registers it through Service Management.
+
 Unavailable saved sessions remain reconnectable. An ended session must be
 replaced explicitly with New Terminal. A session-host failure, reboot or logout
 ends sessions. Restarting only the peer agent preserves sessions. Preserve active

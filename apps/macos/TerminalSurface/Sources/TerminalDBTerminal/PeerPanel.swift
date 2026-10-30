@@ -8,9 +8,14 @@ public final class TDBPeerServices: NSObject {
         if Bundle.main.bundlePath == "/Applications/TerminalDB.app" {
             for plist in ["com.terminaldb.session-host.plist", "com.terminaldb.peer-agent.plist"] {
                 let service = SMAppService.agent(plistName: plist)
-                if service.status == .notRegistered { try service.register() }
+                if service.status == .notRegistered || service.status == .notFound {
+                    try service.register()
+                }
                 if service.status == .requiresApproval {
                     throw PeerFailure("Enable TerminalDB in System Settings → General → Login Items & Extensions, then reconnect.")
+                }
+                guard service.status == .enabled else {
+                    throw PeerFailure("TerminalDB could not register its background services. Reinstall it in Applications, then reopen it.")
                 }
             }
         } else {

@@ -105,8 +105,13 @@ TCP/TLS provides ordered delivery; malformed native fragments fail closed.
 - Three-Mac forwarding, remaining remote host tools, offline LAN, actual internet path,
   gateway failover, latency and final installed About checks remain pending.
 - All three Macs have side-by-side test bundles; original installed apps and
-  their work remain untouched. The MBP’s former cable was on the upstream router;
-  it is now connected through UniFi.
+  active legacy work on this Mac and the mini remains untouched. The MBP's
+  original app had exited; its app and local data were backed up before a native
+  candidate was installed in /Applications/TerminalDB.app. Both bundled helpers
+  are enabled and running under macOS Service Management. This exposed and fixed
+  initial registration when macOS reports the new services as "not found".
+  The new peer helper still needs its separate Keychain approval. Final merged
+  installation and About verification remain pending.
 
 No visible physical/WAN pass or security certification is claimed by automated
 counts. Cloud retirement and repository merge/install remain pending these gates.
