@@ -73,8 +73,19 @@ TCP/TLS provides ordered delivery; malformed native fragments fail closed.
 - A full-screen synthetic Unicode program accepts a physical key and returns
   to its original shell. An 84,000-byte synthetic Unicode paste arrives exactly.
   Ctrl-C interrupts a running command and the same shell accepts the next one.
-- History, Project Tools and Settings panels open through normal menus. Their
-  full action workflows and remote execution checks remain pending.
+- Remote history bookmarking, playbook save and reviewed execution, monitor
+  display and workspace save run through normal controls and persist on the mini.
+  Linked project roots exposed a file-listing bug; the regression now passes.
+- Direct LAN: a tab selected the mini, created a session and ran a command there.
+  The mini’s selected tab stayed unchanged. A new tab inherited the mini.
+- Existing-session attach, shared viewing, takeover, stale-view input rejection,
+  passive resize fencing and controller resizing passed on two physical Macs.
+- Closing a tab and quitting the mini’s interface preserved running work. Reattach
+  and networking-helper restart recovered the same shell; End Session stopped it.
+- The MBP is now reachable. It paired independently with this Mac. Before its
+  separate pairing with the mini, inherited access through this Mac was denied.
+- Sampled peer/helper TCP connections used only the two configured LAN Macs.
+  Full offline/WAN contact audit and latency measurement remain pending.
 - Updated QA apps load persistent Secure Enclave identities after Keychain approval.
   SSH Accessibility permission and the mini’s native incoming-connections firewall
   prompt were exercised. Both physical Macs discover each other through Bonjour.
@@ -85,8 +96,9 @@ TCP/TLS provides ordered delivery; malformed native fragments fail closed.
   app/auth domains. No cloud account bridge remains.
 - Three-Mac pairing/forwarding, remote host tools, offline LAN, actual internet path,
   gateway failover, latency and final installed About checks remain pending.
-- The mini is reachable for staging. The supplied MBP address is not reachable
-  from this Mac or the mini; current address/Remote Login confirmation requested.
+- All three Macs have side-by-side test bundles; original installed apps and
+  their work remain untouched. The MBP’s former cable was on the upstream router;
+  it is now connected through UniFi.
 
 No visible physical/WAN pass or security certification is claimed by automated
 counts. Cloud retirement and repository merge/install remain pending these gates.

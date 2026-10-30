@@ -4668,6 +4668,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                           error:nil];
     directory = [directory stringByTrimmingCharactersInSet:
         NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (directory.length == 0) directory = self.peerStartDirectory;
     if (directory.length == 0) directory = self.assistantDirectory;
     if (directory.length == 0) directory = NSHomeDirectory();
     return directory;

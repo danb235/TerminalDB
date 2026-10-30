@@ -114,6 +114,7 @@ def main():
             create_id = str(uuid.uuid4())
             created = a.request("session.create", request_id=create_id, directory=str(root))
             assert "error" not in created
+            assert created["directory"] == str(root)
             a.session = created["sessionId"]; a.generation = created["generation"]
             assert created["controlling"]
             checks += 1
