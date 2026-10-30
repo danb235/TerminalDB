@@ -633,6 +633,20 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     controller.section = TerminalProductSectionProject;
     [controller refresh];
     BOOL projectWorks = controller.items.count >= 4;
+    NSString *fixture = [@"/tmp" stringByAppendingPathComponent:
+        [@"terminaldb-project-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+    NSString *physical = [fixture stringByAppendingPathComponent:@"physical"];
+    NSString *logical = [fixture stringByAppendingPathComponent:@"logical"];
+    [NSFileManager.defaultManager createDirectoryAtPath:physical withIntermediateDirectories:YES attributes:nil error:nil];
+    [@"Synthetic project preview\n" writeToFile:[physical stringByAppendingPathComponent:@"README.md"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    [NSFileManager.defaultManager createSymbolicLinkAtPath:logical withDestinationPath:physical error:nil];
+    NSArray *linkedItems = [controller projectItemsForPeerDirectory:logical];
+    projectWorks = projectWorks && [linkedItems indexOfObjectPassingTest:^BOOL(NSDictionary *item, NSUInteger index, BOOL *stop) {
+        (void)index; (void)stop;
+        return [item[@"name"] isEqual:@"README.md"];
+    }] != NSNotFound;
+    [NSFileManager.defaultManager removeItemAtPath:fixture error:nil];
+    controller.directory = @"/tmp";
     controller.section = TerminalProductSectionEnvironments;
     [controller refresh];
     BOOL environmentWorks = controller.items.count == 4;
@@ -907,7 +921,10 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
           @"detail" : @"List tracked and local files without changing them",
           @"command" : @"find . -maxdepth 3 -type f | sort | head -300"},
     ]];
-    NSURL *root = [NSURL fileURLWithPath:self.directory isDirectory:YES];
+    // File enumeration can canonicalize symlinks such as /tmp or a linked
+    // project folder. Compute relative paths against that same canonical root.
+    NSString *rootPath = self.directory.stringByResolvingSymlinksInPath;
+    NSURL *root = [NSURL fileURLWithPath:rootPath isDirectory:YES];
     NSArray *keys = @[NSURLIsRegularFileKey, NSURLFileSizeKey];
     NSDirectoryEnumerator<NSURL *> *enumerator =
         [NSFileManager.defaultManager
@@ -923,9 +940,9 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     NSUInteger count = 0;
     for (NSURL *url in enumerator) {
         if (count >= 120) break;
-        NSString *relative = url.path;
-        if ([relative hasPrefix:self.directory]) {
-            relative = [relative substringFromIndex:self.directory.length];
+        NSString *relative = url.path.stringByResolvingSymlinksInPath;
+        if ([relative hasPrefix:rootPath]) {
+            relative = [relative substringFromIndex:rootPath.length];
             if ([relative hasPrefix:@"/"]) {
                 relative = [relative substringFromIndex:1];
             }

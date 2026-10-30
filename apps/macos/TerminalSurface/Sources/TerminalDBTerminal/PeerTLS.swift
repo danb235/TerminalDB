@@ -248,6 +248,7 @@ final class PeerTLSNetwork {
 
     func forward(_ source: PeerTLSLink, endpoints: [PeerEndpoint]) {
         guard let channel = source.channel else { return }
+        guard let acknowledgement = try? PeerProtocol.encode(["type": "tunnel.ready"]) else { source.close(); return }
         guard let release = reserveConnection() else { source.close(); return }
         channel.closeFuture.whenComplete { _ in release() }
         func attempt(_ remaining: ArraySlice<PeerEndpoint>) {
@@ -266,17 +267,19 @@ final class PeerTLSNetwork {
                         let outbound = PeerTunnelPipe(other: channel)
                         let inbound = PeerTunnelPipe(other: destination)
                         destination.pipeline.addHandler(outbound).flatMap {
-                            channel.eventLoop.submit {
-                                // Queue the framed acknowledgement before replacing
-                                // the framing handler; the client waits for it.
-                                var buffer = channel.allocator.buffer(capacity: 64)
-                                buffer.writeBytes(try PeerProtocol.encode(["type": "tunnel.ready"]))
-                                channel.writeAndFlush(buffer, promise: nil)
-                            }
-                        }.flatMap {
                             channel.pipeline.removeHandler(source)
                         }.flatMap {
                             channel.pipeline.addHandler(inbound)
+                        }.flatMap {
+                            // Install the opaque pipe before inviting the origin
+                            // to send its inner TLS ClientHello. Otherwise a fast
+                            // response can reach the old JSON decoder mid-swap.
+                            // Outbound writes still pass through the hop's TLS.
+                            var buffer = channel.allocator.buffer(capacity: 64)
+                            buffer.writeBytes(acknowledgement)
+                            return channel.writeAndFlush(buffer)
+                        }.flatMap {
+                            channel.setOption(ChannelOptions.autoRead, value: true)
                         }.flatMap {
                             destination.setOption(ChannelOptions.autoRead, value: true)
                         }.whenFailure { _ in
@@ -285,7 +288,12 @@ final class PeerTLSNetwork {
                     }
                 }
         }
-        attempt(endpoints[...])
+        channel.setOption(ChannelOptions.autoRead, value: false).whenComplete { result in
+            switch result {
+            case .success: attempt(endpoints[...])
+            case .failure: source.close()
+            }
+        }
     }
 }
 
