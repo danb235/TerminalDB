@@ -97,8 +97,13 @@ checks. Automated counts do not substitute for the physical scenarios above.
   macOS Service Management. Its Keychain approval is complete. The previous app
   and local data are backed up locally. Fresh-service registration was corrected
   for the initial macOS "not found" state.
+- Replacing the installed candidate exposed a stale enabled service registration.
+  Recovery checks the lease and running processes before re-registering a stopped
+  helper; a live session host is left running.
 - Marketing navigation, FAQ and downloads passed in a visible browser at three
-  viewport sizes. Its updated LAN/VPN copy is being rechecked.
+  viewport sizes. Updated LAN/VPN copy, navigation, FAQ toggles and download links
+  passed at 1440, 768 and 390 pixels without horizontal overflow, script errors or
+  contact with retired app/auth domains.
 
 These outcomes include the earlier direct-LAN implementation. The final reduced
 transport still needs a fresh installed pass for private bindings, settings,

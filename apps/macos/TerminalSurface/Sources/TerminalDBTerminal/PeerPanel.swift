@@ -1,13 +1,21 @@
 import AppKit
 import ServiceManagement
+import Darwin
 
 @objc(TDBPeerServices)
 public final class TDBPeerServices: NSObject {
     private static var children: [Process] = []
     @objc public static func start() throws {
         if Bundle.main.bundlePath == "/Applications/TerminalDB.app" {
-            for plist in ["com.terminaldb.session-host.plist", "com.terminaldb.peer-agent.plist"] {
+            try PeerPaths.prepare()
+            for (socket, executable, plist) in [
+                ("host", "TerminalDBSessionHost", "com.terminaldb.session-host.plist"),
+                ("peer", "TerminalDBPeerAgent", "com.terminaldb.peer-agent.plist")
+            ] {
                 let service = SMAppService.agent(plistName: plist)
+                if service.status == .enabled {
+                    try repairStoppedService(service, socket: socket, executable: executable)
+                }
                 if service.status == .notRegistered || service.status == .notFound {
                     try service.register()
                 }
@@ -34,6 +42,32 @@ public final class TDBPeerServices: NSObject {
                 children.append(process)
             }
         }
+    }
+    private static func repairStoppedService(_ service: SMAppService, socket: String, executable: String) throws {
+        let fd = Darwin.open(PeerPaths.file(socket + ".lock").path, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
+        guard fd >= 0 else { throw PeerFailure("TerminalDB could not check its background service. Check this user’s Application Support permissions.") }
+        defer { Darwin.close(fd) }
+        // A live host's lease protects its shells, even when its UI/IPC is slow.
+        // Hold an unowned lease until unregister finishes so no new work can
+        // start in the old registration during repair.
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { return }
+        defer { flock(fd, LOCK_UN) }
+        let path = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/" + executable).path
+        let capacity = max(1024, Int(proc_listallpids(nil, 0)) + 256)
+        var pids = [pid_t](repeating: 0, count: capacity)
+        let count = pids.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, Int32($0.count)) }
+        guard count >= 0 else { return }
+        for pid in pids.prefix(min(Int(count), capacity)) where pid > 0 {
+            var name = [CChar](repeating: 0, count: 4096)
+            if proc_pidpath(pid, &name, UInt32(name.count)) > 0 && String(cString: name) == path {
+                return // Includes a helper waiting on its macOS Keychain prompt.
+            }
+        }
+        // macOS can retain an enabled registration pointing at a replaced
+        // bundle. Refresh only a stopped service; never stop a running host.
+        try service.unregister()
+        flock(fd, LOCK_UN)
+        try service.register()
     }
     @objc public static func openBackgroundSettings() { SMAppService.openSystemSettingsLoginItems() }
 }
