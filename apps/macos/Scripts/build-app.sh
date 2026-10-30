@@ -23,15 +23,17 @@ if [[ -d "${APP_DIR}" ]]; then
 fi
 
 mkdir -p \
+  "${CONTENTS_DIR}/Library/LaunchAgents" \
   "${CONTENTS_DIR}/MacOS" \
   "${CONTENTS_DIR}/Resources/Fonts" \
   "${CONTENTS_DIR}/Resources/Licenses" \
   "${CONTENTS_DIR}/Resources/Scripts"
 
 cp Info.plist "${CONTENTS_DIR}/Info.plist"
+cp Resources/LaunchAgents/*.plist "${CONTENTS_DIR}/Library/LaunchAgents/"
 cp Resources/AppIcon.icns "${CONTENTS_DIR}/Resources/AppIcon.icns"
 cp Resources/Fonts/*.ttf "${CONTENTS_DIR}/Resources/Fonts/"
-cp Resources/Licenses/JetBrainsMono-OFL.txt "${CONTENTS_DIR}/Resources/Licenses/"
+cp Resources/Licenses/*.txt "${CONTENTS_DIR}/Resources/Licenses/"
 cp Resources/Scripts/claude-status-bridge.sh "${CONTENTS_DIR}/Resources/Scripts/"
 cp Resources/Scripts/claude-tab-state.sh "${CONTENTS_DIR}/Resources/Scripts/"
 chmod 755 "${CONTENTS_DIR}/Resources/Scripts/"*.sh
@@ -46,23 +48,17 @@ chmod 755 "${CONTENTS_DIR}/Resources/Scripts/"*.sh
 architectures=(arm64 x86_64)
 if [[ "${TERMINALDB_NATIVE_ONLY:-0}" == "1" ]]; then architectures=("$(uname -m)"); fi
 app_slices=()
-agent_slices=()
 for arch in "${architectures[@]}"; do
   slice="${BIN_PATH}.${arch}"
   ./Scripts/build-terminal-surface.sh "${arch}" "${slice}" "${CONFIGURATION}"
   app_slices+=("${slice}")
-  agent_slice="${CONTENTS_DIR}/MacOS/TerminalDBRemoteAgent.${arch}"
-  xcrun swiftc -parse-as-library -strict-concurrency=minimal \
-    -target "${arch}-apple-macosx13.0" "${SWIFT_OPTIMIZATION_FLAGS[@]}" \
-    -framework Foundation -framework Security \
-    remote-agent/TerminalDBRemoteAgent.swift -o "${agent_slice}"
-  agent_slices+=("${agent_slice}")
+
 done
-AGENT_PATH="${CONTENTS_DIR}/MacOS/TerminalDBRemoteAgent"
 lipo -create "${app_slices[@]}" -output "${BIN_PATH}"
-lipo -create "${agent_slices[@]}" -output "${AGENT_PATH}"
-rm "${app_slices[@]}" "${agent_slices[@]}"
-chmod 755 "${BIN_PATH}" "${AGENT_PATH}"
+cp "${BIN_PATH}" "${CONTENTS_DIR}/MacOS/TerminalDBSessionHost"
+cp "${BIN_PATH}" "${CONTENTS_DIR}/MacOS/TerminalDBPeerAgent"
+rm "${app_slices[@]}"
+chmod 755 "${BIN_PATH}" "${CONTENTS_DIR}/MacOS/TerminalDBSessionHost" "${CONTENTS_DIR}/MacOS/TerminalDBPeerAgent"
 
 IDENTITY_CN="TerminalDB Self-Signed"
 if security find-identity -p codesigning 2>/dev/null | grep -q "${IDENTITY_CN}"; then
@@ -86,7 +82,8 @@ fi
 
 codesign --verify --deep --strict --verbose=2 "${APP_DIR}"
 lipo "${BIN_PATH}" -verify_arch "${architectures[@]}"
-lipo "${AGENT_PATH}" -verify_arch "${architectures[@]}"
+lipo "${CONTENTS_DIR}/MacOS/TerminalDBSessionHost" -verify_arch "${architectures[@]}"
+lipo "${CONTENTS_DIR}/MacOS/TerminalDBPeerAgent" -verify_arch "${architectures[@]}"
 
 echo "Built ${APP_DIR}"
 echo "Version: ${VERSION}"

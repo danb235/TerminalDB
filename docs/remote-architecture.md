@@ -1,151 +1,80 @@
-# TerminalDB Remote v1 architecture
+# Native peer architecture
 
-TerminalDB Remote is a ciphertext relay. Terminal content, Claude transcripts,
-account credentials, usage responses, scrollback, and command history remain on
-the Mac. AWS stores only short-lived routing and trust metadata.
+TerminalDB has one macOS application bundle and two per-user background helpers.
+`TerminalDBSessionHost` owns persistent PTYs, shells, shell hooks, SwiftTerm state,
+bounded scrollback, Claude credentials and execution-related product services.
+`TerminalDBPeerAgent` owns discovery, TLS connections and optional forwarding.
+The interface uses the same typed session protocol for This Mac and paired Macs.
+Restarting networking does not restart shells.
 
-## Request path
+The host uses SwiftTerm's UI-independent terminal engine. Native viewer renderers
+suppress terminal-generated query replies; only the host answers the shell.
+The existing product adapter supplies ledger, Claude, permission, patch, project,
+playbook, monitor and workspace operations over the service interface. AppKit
+presentation remains in the interface; some legacy product adapters still share
+AppDelegate code with the host and are candidates for further separation.
 
-```text
-Phone browser ── HTTPS/WSS ── CloudFront + WAF ──┬── private S3 web origin
-                                                 ├── HTTP API → control Lambda
-                                                 └── WebSocket API
-                                                      ├── connection Lambda
-                                                      └── relay Lambda
-                                                              │
-                                               PostToConnection ciphertext
-                                                              │
-                                              TerminalDBRemoteAgent on the Mac
-```
+## Connections and authority
 
-One DynamoDB on-demand table stores tenant-scoped device/session indexes,
-controller public keys, single-use pairings and tickets, connection mappings,
-and replay nonces. A Cognito user pool provides optional self-service accounts.
-TTL
-removes ephemeral records and point-in-time recovery protects the trust graph.
-There is no VPC, NAT gateway, queue, IoT Core resource, KMS customer key,
-Secrets Manager secret, transcript bucket, or always-on compute.
+Bonjour advertises an opaque device hint and protocol version. It does not grant
+trust. An explicit three-minute LAN pairing window allows an untrusted device
+only into the pairing protocol. Both users compare full fingerprints and approve
+before either application grants session access. Trust is independent per Mac.
 
-CloudFront rewrites `/socket` to the selected WebSocket API stage, so browsers
-use one public origin. API access logs contain request ID, route, status, and
-response length only. Query strings, request bodies, response bodies, IP
-addresses, user agents, terminal data, and identifiers are omitted. Viewer and
-S3 access logs are intentionally disabled because pairing IDs are path
-components.
+TLS 1.3 authenticates both device keys. The device identity uses Keychain signing,
+Secure Enclave when available, Swift Certificates and SwiftNIO SSL/BoringSSL.
+The pin is SHA-256 of the certificate public key. Certificates are renewed with
+the same key. Changing keys requires pairing again. No early application data
+or custom encryption handshake is used.
 
-## Protocol and encryption
+Connection attempts prefer saved LAN endpoints, then configured internet
+endpoints, then known paired gateways. A gateway connects only to saved paired
+destinations. A second TLS session runs end to end inside the gateway stream;
+the gateway cannot read terminal traffic or impersonate either endpoint.
+There is no STUN, TURN, Nostr, DHT, public rendezvous, vendor relay or coordinator.
+TetrisGO informed bounded queues, monotonic deadlines and generation fencing;
+its public signaling and game-specific authority migration are not reused.
 
-Remote supports two independent access grants:
+## Session protocol
 
-- **One-time link:** the existing possession-based pairing flow works without
-  an account and grants access only to the session named by the opaque link.
-- **Account:** first-time signup and authenticator enrollment use Cognito's
-  public user-pool API directly from the TerminalDB web app; returning
-  password-plus-TOTP sign-in uses the same direct Cognito API from the same app
-  origin. API Gateway
-  validates either Cognito access-token scope, and the control Lambda derives
-  the tenant exclusively from Cognito's immutable `sub` claim. A signed-in
-  browser can discover and register a controller only for sessions indexed
-  under that subject.
+Session identifiers survive interface connections. Each viewing pane has an
+independent client identifier. One principal holds the control lease. Takeover
+increments a generation and fences old input, sizing and session mutations.
+Attaching never changes the execution Mac's selected interface tab.
 
-Account creation begins with a random, short-lived bootstrap capability signed
-by a Mac's non-exportable identity. The browser sends username and password
-directly to Cognito with that capability as client metadata. A pre-signup
-trigger atomically consumes it and auto-confirms the no-email user. The web app
-shows Cognito's TOTP QR and manual setup key together, then exchanges the
-completed challenge for Cognito tokens. The control Lambda binds the immutable
-Cognito `sub` to the exact Mac public keys captured by the grant. The Mac polls
-only for completion, never for the password, authenticator secret, or tokens.
+Messages use a four-byte big-endian length and JSON. Physical frames are at most
+1 MiB; logical messages are at most 8 MiB and require ordered bounded fragments.
+Transport queues and queued deliveries are bounded at 16 MiB. Slow readers are
+disconnected. There are at most 32 incoming connections, including handshakes.
+Local sockets require the same user and a private launch secret, with directory
+mode 0700 and socket/state modes 0600. A compromised macOS user is outside this
+boundary and can already run commands as that user.
 
-Cognito is a control-plane identity, not a terminal encryption key. An account
-browser still creates non-extractable P-256 signing and ECDH keys. The Mac and
-browser derive their directional content keys from ECDH plus a random
-per-controller account salt. AWS sees the public keys and salt but cannot
-derive the shared secret. Account controllers require both a current Cognito
-access token and the registered browser signing key when minting a connection
-ticket. Guest controllers continue to use the original signed ticket path.
+Input has a contiguous sequence, a control generation and a short deadline in
+the host's monotonic clock. The client derives a conservative clock estimate
+from authenticated readiness; long initial transit can reject input early,
+which is surfaced for review. Mutation receipts are bounded and namespaced by
+principal. Unacknowledged commands are never automatically retried. Uncertain
+input requires explicit review before more typing. Snapshot resynchronization
+restores bounded terminal state after reconnect. Heartbeats and wake recovery
+use new connection generations; execution remains on the original workstation.
 
-Tenant equality is checked again when a ticket is created, when its WebSocket
-connects, and before either relay direction is routed. Session IDs supplied by
-clients are never treated as tenant authority. Guest pairings remain a
-deliberate, separately authorized exception: possession of the single-use link
-can register a guest controller for exactly one session.
+Snapshots go only to the requesting view, while ordered PTY deltas continue to
+all subscribed viewers. They preserve cells, attributes, bounded scrollback,
+cursor and saved cursor, margins, character sets, application input modes and
+an unfinished UTF-8/control prefix. The pinned SwiftTerm additions export this
+state without changing its parser decisions. An unfinished control sequence
+larger than 64 KiB defers resynchronization for at most two seconds and then
+reports a failure; it never exports a truncated parser state. When reconnecting
+inside the alternate screen, the view requests normal-buffer history again on
+alternate-screen exit. Input stays disabled until snapshot delivery completes.
 
-Pairing links have the form `/pair/{opaqueId}#{secret}`. The fragment is removed
-with `history.replaceState` after use and never reaches AWS. Pairing secrets are
-random, single-use, valid for ten minutes, and stored only as salted hashes.
-Connection tickets are random, single-use, valid for sixty seconds, and stored
-only as SHA-256 hashes.
+Rapid typing is coalesced for four milliseconds and sent in ordered 64 KiB
+chunks. Client and PTY queues each retain at most 4 MiB. If a batch expires or is
+rejected, the host blocks later input on that stream until the user reviews and
+reconnects. This prevents a later Enter from executing a command with missing
+text. Recovery markers store only workstation/session identifiers, never input.
 
-The browser holds non-extractable P-256 signing and key-agreement keys in
-IndexedDB. OAuth tokens are stored separately and never written to DynamoDB or
-application logs. The Mac holds its P-256 identity in Keychain. Pairing authenticates a
-P-256 ECDH exchange; HKDF-SHA256 creates separate AES-256-GCM keys for each
-direction. Text is optionally level-1 DEFLATE-compressed before encryption.
-Every authenticated metadata field is AES-GCM additional data.
-
-Each wire envelope is below 30,000 bytes and includes:
-
-- protocol version, opaque route, session generation, and optional destination;
-- sequence and request IDs;
-- sent and expiry timestamps;
-- compression marker, unique 96-bit nonce, and ciphertext.
-
-The relay validates only metadata and forwards the original bytes. It never
-decrypts or logs the payload.
-
-## Delivery and reconnection
-
-PTY output is at-most-once. Sequence gaps request a fresh current viewport
-instead of replaying a transcript. Terminal input carries a per-tab stream
-sequence, so the browser may pipeline small batches while the Mac reorders them
-before PTY writes. Output frames report the highest input sequence they reflect,
-allowing local prediction to reconcile without freezing the authoritative
-terminal. The agent advertises this capability in inventory; during a rolling
-upgrade, browsers retain the acknowledgement barrier until the Mac reports
-sequence-reordering support. Side effects use short-lived request IDs and are successful only after
-an application acknowledgement from the Mac. A lost acknowledgement becomes
-`DELIVERY UNCERTAIN`; terminal input and account changes are never automatically
-sent again.
-
-The browser reconnects with full jitter around 0.5, 1, 2, 4, 8, 15, and 30
-seconds and retries immediately on focus, visibility return, `pageshow`, and the
-browser online hint. The last safe viewport stays visible. Routine resync,
-relay reordering recovery, and socket rotation remain in the background and do
-not blur the terminal. Input disables only when the transport or Mac is no
-longer usable; drafts remain in page memory. Initial `LIVE` still requires
-current Mac health and a fresh inventory/viewport.
-
-API Gateway closes WebSocket connections after two hours. At 110 minutes the
-client opens a fresh ticket and socket, promotes it before closing the old
-socket, keeps the old socket for a 30-second grace period, and resynchronizes.
-
-## CDK layout
-
-`infra/cdk` synthesizes two stacks:
-
-- `TerminalDBRemote-{stage}-Edge` in `us-east-1` for the CloudFront-scoped WAF;
-- `TerminalDBRemote-{stage}` in the configured application region.
-
-Useful context:
-
-```text
-stage=dev|prod
-region=us-west-2
-cloudfrontPlan=FREE|PAYG
-disableNewPairings=true|false
-websocketMessagesPerSecond=50
-websocketBurst=100
-lambdaReservedConcurrency=8
-budgetEmail=you@example.com
-domainName=remote.example.com
-certificateArn=arn:aws:acm:us-east-1:...
-authDomainName=auth.example.com
-authCertificateArn=arn:aws:acm:us-east-1:...
-```
-
-The CloudFront Free flat-rate plan is selected operationally after deployment
-when the account is eligible. AWS does not currently expose a supported
-CloudFormation/CDK or public CLI operation for pricing-plan association, so CDK
-prints the required association status instead of calling an undocumented API.
-Set `cloudfrontPlan=PAYG` when the account is not eligible.
+Closing a view releases its lease and subscriptions. End Session explicitly
+stops the shell. Quitting the interface leaves helpers alive. Sessions do not
+survive host failure, logout or reboot. There is no file synchronization.

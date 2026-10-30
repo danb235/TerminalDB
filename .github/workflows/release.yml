@@ -20,7 +20,9 @@ env:
 jobs:
   release:
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
     steps:
       - uses: actions/checkout@v5
         with:
@@ -89,10 +91,12 @@ jobs:
 
           APP="apps/macos/build/TerminalDB.app"
           BIN="${APP}/Contents/MacOS/TerminalDB"
-          AGENT="${APP}/Contents/MacOS/TerminalDBRemoteAgent"
+          AGENT="${APP}/Contents/MacOS/TerminalDBPeerAgent"
+          HOST="${APP}/Contents/MacOS/TerminalDBSessionHost"
           codesign --verify --deep --strict --verbose=2 "${APP}"
           lipo "${BIN}" -verify_arch arm64 x86_64
           lipo "${AGENT}" -verify_arch arm64 x86_64
+          lipo "${HOST}" -verify_arch arm64 x86_64
 
           VERSIONED_ZIP="TerminalDB-${RELEASE_TAG}-macOS-universal.zip"
           STABLE_ZIP="TerminalDB-macOS.zip"

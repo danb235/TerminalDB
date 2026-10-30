@@ -29,15 +29,13 @@ requested and approved.
 ## QA evidence
 
 Report user-visible scenarios and outcomes separately from automated test
-counts. For remote-account work, cover at minimum:
+counts. For native peer work, cover pairing approval on both Macs, fingerprint
+mismatch, unpaired denial, revocation, new and existing sessions, multiple
+viewers and takeover, app exits, network recovery, offline LAN, configured
+internet endpoints, and forwarding through a third paired Mac. Exercise the
+normal native controls. Report unavailable physical or network scenarios as
+pending; automated fixtures do not substitute for them.
 
-- creating an account from the Mac Remote Control window;
-- creating an account from an active one-time-link web terminal;
-- signing out and signing back in without a link;
-- finding and opening the enrolled Mac's session after sign-in;
-- preserving one-time-link access without an account; and
-- visible failure and recovery behavior when the Mac or agent is unavailable.
-
-Use disposable accounts and remove them after QA. Never include passwords,
-TOTP secrets, pairing links, tokens, terminal contents, or enrollment codes in
-logs, screenshots, commits, pull requests, or status updates.
+Never include passwords, TOTP secrets, pairing material, tokens, terminal
+contents, or enrollment codes in logs, screenshots, commits, pull requests,
+or status updates. Preserve active legacy sessions during upgrades.

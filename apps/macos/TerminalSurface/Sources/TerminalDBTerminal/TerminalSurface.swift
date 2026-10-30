@@ -1,10 +1,51 @@
 import AppKit
 import SwiftTerm
 
+private func terminalColor(_ color: NSColor) -> Color {
+    let rgb = color.usingColorSpace(.deviceRGB) ?? .white
+    return Color(red: UInt16(rgb.redComponent * 65535), green: UInt16(rgb.greenComponent * 65535), blue: UInt16(rgb.blueComponent * 65535))
+}
+
+// The service uses the UI-independent SwiftTerm engine. The shared product
+// adapter can still expose its existing APIs without rendering a hidden view.
+private final class HostedTerminalEngine: TerminalDelegate {
+    weak var owner: TDBTerminalSurface?
+    var terminal: Terminal!
+    init(owner: TDBTerminalSurface) {
+        self.owner = owner
+        terminal = Terminal(delegate: self, options: TerminalOptions(scrollback: 10000))
+        terminal.foregroundColor = terminalColor(owner.textColor)
+        terminal.backgroundColor = terminalColor(owner.backgroundColor)
+        if let palette = owner.installedPalette { terminal.installPalette(colors: palette) }
+        terminal.registerOscHandler(code: 633) { [weak owner] bytes in
+            owner?.commandBoundary?(String(decoding: bytes, as: UTF8.self))
+        }
+    }
+    func showCursor(source: Terminal) { owner?.terminalCursorVisible = true }
+    func hideCursor(source: Terminal) { owner?.terminalCursorVisible = false }
+    func setTerminalTitle(source: Terminal, title: String) { owner?.titleChanged?(title) }
+    func send(source: Terminal, data: ArraySlice<UInt8>) {
+        _ = owner?.enqueueInputData(Data(data))
+    }
+    func sizeChanged(source: Terminal) { owner?.gridSizeChanged?() }
+}
+
 // The emulator, renderer, selection and scrollback belong to SwiftTerm. This
 // adapter owns only TerminalDB's PTY transport and product integration.
 private final class SurfaceView: SwiftTerm.TerminalView {
     weak var owner: TDBTerminalSurface?
+    override func send(source: Terminal, data: ArraySlice<UInt8>) {
+        // The session host alone answers device/status queries. A second
+        // renderer must never inject duplicate replies into the shell. Mouse,
+        // keyboard and focus events outside output parsing still reach the host.
+        guard owner?.viewer != true || owner?.feedingTerminalOutput != true else { return }
+        if owner?.viewer == true, let handler = owner?.focusHandler,
+           data.elementsEqual([0x1b, 0x5b, 0x49]) || data.elementsEqual([0x1b, 0x5b, 0x4f]) {
+            if owner?.inputEnabled == true { handler(data.last == 0x49) }
+            return
+        }
+        super.send(source: source, data: data)
+    }
     override func insertText(_ string: Any, replacementRange: NSRange) {
         // Cocoa input methods may commit attributed text; SwiftTerm's public
         // insertion path expects a string. Keep composition in the native view.
@@ -60,6 +101,9 @@ public final class TDBTerminalSurface: NSView, TerminalViewDelegate {
     private static let contentInsetTop: CGFloat = 12
     private static let contentInsetLeft: CGFloat = 12
     private let surface: SurfaceView
+    private var hostedEngine: HostedTerminalEngine?
+    private var pinnedGrid: (Int, Int)?
+    private var engine: Terminal { hostedEngine?.terminal ?? surface.terminal }
     private var pendingInput = Data()
     private var inputOffset = 0
     private var writeSource: DispatchSourceWrite?
@@ -78,7 +122,20 @@ public final class TDBTerminalSurface: NSView, TerminalViewDelegate {
             inputOffset = 0
         }
     }
-    @objc public var inputEnabled = true
+    fileprivate var feedingTerminalOutput = false
+    fileprivate var installedPalette: [Color]?
+    @objc public var inputEnabled = true { didSet { surface.allowMouseReporting = inputEnabled } }
+    @objc public var headless = false {
+        didSet {
+            guard oldValue != headless else { return }
+            let cols = engine.cols, rows = engine.rows
+            hostedEngine = headless ? HostedTerminalEngine(owner: self) : nil
+            engine.resize(cols: cols, rows: rows)
+        }
+    }
+    @objc public var viewer = false
+    @objc public var inputHandler: ((Data) -> Bool)?
+    @objc public var focusHandler: ((Bool) -> Void)?
     @objc public fileprivate(set) var terminalCursorVisible = true
     @objc public var userDidSendInput: (() -> Void)?
     @objc public var pasteDidSend: ((UInt, UInt) -> Void)?
@@ -99,7 +156,7 @@ public final class TDBTerminalSurface: NSView, TerminalViewDelegate {
         surface.registerForDraggedTypes([.fileURL])
         addSubview(surface)
         layoutTerminalSurface()
-        surface.terminal.registerOscHandler(code: 633) { [weak self] bytes in
+        engine.registerOscHandler(code: 633) { [weak self] bytes in
             self?.commandBoundary?(String(decoding: bytes, as: UTF8.self))
         }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -124,6 +181,10 @@ public final class TDBTerminalSurface: NSView, TerminalViewDelegate {
             y: bounds.minY,
             width: max(1, bounds.width - Self.contentInsetLeft),
             height: max(1, bounds.height - Self.contentInsetTop))
+        if let (cols, rows) = pinnedGrid, !headless, (engine.cols != cols || engine.rows != rows) {
+            engine.resize(cols: cols, rows: rows)
+            surface.sizeChanged(source: engine)
+        }
     }
     public override func becomeFirstResponder() -> Bool {
         window?.makeFirstResponder(surface) ?? false
@@ -149,12 +210,13 @@ public final class TDBTerminalSurface: NSView, TerminalViewDelegate {
     }
     @objc public var textColor: NSColor {
         get { surface.nativeForegroundColor }
-        set { surface.nativeForegroundColor = newValue }
+        set { surface.nativeForegroundColor = newValue; hostedEngine?.terminal.foregroundColor = terminalColor(newValue) }
     }
     @objc public var backgroundColor: NSColor {
         get { surface.nativeBackgroundColor }
         set {
             surface.nativeBackgroundColor = newValue
+            hostedEngine?.terminal.backgroundColor = terminalColor(newValue)
             layer?.backgroundColor = newValue.cgColor
         }
     }
@@ -168,38 +230,40 @@ public final class TDBTerminalSurface: NSView, TerminalViewDelegate {
     }
     @objc public func installANSIColors(_ colors: [NSColor]) {
         guard colors.count == 16 else { return }
-        surface.installColors(colors.map { color in
-            let rgb = color.usingColorSpace(.deviceRGB) ?? .white
-            return Color(red: UInt16(rgb.redComponent * 65535),
-                         green: UInt16(rgb.greenComponent * 65535),
-                         blue: UInt16(rgb.blueComponent * 65535))
-        })
+        let palette = colors.map(terminalColor)
+        installedPalette = palette; surface.installColors(palette)
+        hostedEngine?.terminal.installPalette(colors: palette)
     }
-    @objc public var terminalRows: Int { surface.terminal.rows }
-    @objc public var terminalColumns: Int { surface.terminal.cols }
-    @objc public var bracketedPaste: Bool { surface.terminal.bracketedPasteMode }
-    @objc public var applicationCursorKeys: Bool { surface.terminal.applicationCursor }
-    @objc public var alternateScreenActive: Bool { surface.terminal.isCurrentBufferAlternate }
+    @objc public var terminalRows: Int { engine.rows }
+    @objc public var terminalColumns: Int { engine.cols }
+    @objc public var bracketedPaste: Bool { engine.bracketedPasteMode }
+    @objc public var applicationCursorKeys: Bool { engine.applicationCursor }
+    @objc public var alternateScreenActive: Bool { engine.isCurrentBufferAlternate }
     @objc public var selectionText: String { surface.getSelection() ?? "" }
     @objc public var hasKeyboardFocus: Bool { window?.firstResponder === surface }
     @objc public var string: String {
-        surface.terminal.getText(start: Position(col: 0, row: 0),
+        engine.getText(start: Position(col: 0, row: 0),
             end: Position(col: terminalColumns, row: lineCount - 1))
     }
     private var lineCount: Int {
         // BufferLine identities expose the complete bounded buffer without
         // depending on SwiftTerm's internal yBase or circular-array storage.
         var low = 0, high = 10000 + terminalRows + 1
-        let trimmed = surface.terminal.buffer.totalLinesTrimmed
+        let trimmed = engine.buffer.totalLinesTrimmed
         while low < high {
             let mid = (low + high) / 2
-            if surface.terminal.getScrollInvariantLine(row: trimmed + mid) != nil { low = mid + 1 }
+            if engine.getScrollInvariantLine(row: trimmed + mid) != nil { low = mid + 1 }
             else { high = mid }
         }
         return max(1, low)
     }
     @objc public func feedData(_ data: Data) {
         precondition(Thread.isMainThread)
+        feedingTerminalOutput = true; defer { feedingTerminalOutput = false }
+        if let hostedEngine {
+            hostedEngine.terminal.feed(buffer: Array(data)[...])
+            return
+        }
         let selectedText = surface.selection.active
             ? surface.selection.getSelectedText()
             : nil
@@ -219,22 +283,37 @@ public final class TDBTerminalSurface: NSView, TerminalViewDelegate {
     @objc public func resizeGrid(columns: Int, rows: Int) {
         // TerminalView.resize performs a soft reset: that would lose bracketed
         // paste and application cursor modes on every remote resize.
-        surface.terminal.resize(cols: max(2, columns), rows: max(2, rows))
-        surface.sizeChanged(source: surface.terminal)
+        if viewer { pinnedGrid = (max(2, columns), max(2, rows)) }
+        engine.resize(cols: max(2, columns), rows: max(2, rows))
+        if headless { gridSizeChanged?(); return }
+        surface.sizeChanged(source: engine)
         surface.needsDisplay = true
     }
+    @objc public func useLocalGrid() {
+        // Recompute from this view's font and bounds when it takes control.
+        // SwiftTerm's frame-size path preserves terminal modes.
+        pinnedGrid = nil
+        surface.setFrameSize(surface.frame.size)
+    }
+    @objc public func setTerminalFocus(_ focused: Bool) { engine.setTerminalFocus(focused) }
     @objc public func scrollToBottom() { surface.scroll(toPosition: 1) }
     @objc public var isAtBottom: Bool { !surface.canScroll || surface.scrollPosition >= 0.999 }
     @objc public func visibleText() -> String {
-        let top = surface.terminal.getTopVisibleRow()
-        return surface.terminal.getText(start: Position(col: 0, row: top),
+        let top = engine.getTopVisibleRow()
+        return engine.getText(start: Position(col: 0, row: top),
             end: Position(col: terminalColumns, row: top + terminalRows - 1))
     }
+    @objc public var snapshotReady: Bool { engine.terminalDBSnapshotReady }
+    @objc public func ansiSnapshotData() -> Data {
+        var data = Data(ansiSnapshot().utf8)
+        data.append(contentsOf: engine.terminalDBPendingInput)
+        return data
+    }
     @objc public func ansiSnapshot() -> String {
-        TerminalSnapshot.encode(surface.terminal, cursorVisible: terminalCursorVisible, lineCount: lineCount)
+        TerminalSnapshot.encode(engine, cursorVisible: terminalCursorVisible, lineCount: lineCount)
     }
     @objc public func beginCommandCapture() {
-        let term = surface.terminal!
+        let term = engine
         let row = max(0, lineCount - term.rows) + term.buffer.y
         commandStartLine = term.bufferLine(atRow: row)
         commandStartRow = row
@@ -242,7 +321,7 @@ public final class TDBTerminalSurface: NSView, TerminalViewDelegate {
         commandStartColumn = term.buffer.x
     }
     @objc public func endCommandCapture() -> String {
-        let term = surface.terminal!
+        let term = engine
         let trimmed = term.buffer.totalLinesTrimmed - commandStartTrimmed
         guard let line = commandStartLine else { return "" }
         // A recycled BufferLine can have the same identity as an evicted row.
@@ -300,7 +379,9 @@ public final class TDBTerminalSurface: NSView, TerminalViewDelegate {
     }
     @objc @discardableResult public func enqueueInputData(_ data: Data) -> Bool {
         precondition(Thread.isMainThread)
-        guard pty >= 0 else { return false }
+        if let inputHandler { return inputHandler(data) }
+        guard pty >= 0, pendingInput.count - inputOffset + data.count <= 4 * 1_048_576 else { return false }
+        if inputOffset > 0 { pendingInput.removeFirst(inputOffset); inputOffset = 0 }
         pendingInput.append(data)
         drainInput()
         return true

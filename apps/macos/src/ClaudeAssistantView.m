@@ -849,7 +849,26 @@
         initWithString:footer attributes:detail]];
 }
 
+- (NSDictionary *)peerPresentation {
+    return @{ @"model": self.modelName ?: @"Claude", @"messages": self.conversationMessages ?: @[],
+        @"response": self.response ?: @"", @"working": @(self.working),
+        @"status": self.statusLabel.stringValue ?: @"" };
+}
+
+- (void)applyPeerPresentation:(NSDictionary *)state {
+    self.modelName = state[@"model"] ?: @"Claude";
+    self.conversationMessages = state[@"messages"] ?: @[];
+    self.response = state[@"response"] ?: @"";
+    self.working = [state[@"working"] boolValue];
+    self.statusLabel.stringValue = state[@"status"] ?: @"";
+    self.followUpField.editable = !self.working;
+    self.sendButton.enabled = !self.working;
+    if (self.working) [self.progress startAnimation:nil]; else [self.progress stopAnimation:nil];
+    [self renderResponse];
+}
+
 - (void)renderResponse {
+    if (self.peerPresentationDidChange) self.peerPresentationDidChange([self peerPresentation]);
     [self removeCommandButtons];
     [self.inlineCommandMarkers removeAllObjects];
     NSMutableAttributedString *rendered =

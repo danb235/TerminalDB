@@ -9,19 +9,27 @@ package="TerminalSurface"
 scratch="${package}/.build/terminaldb-${arch}"
 objects="build/terminal-surface/${arch}"
 mkdir -p "${objects}"
+./Scripts/prepare-terminal-package.sh "${scratch}"
 xcrun swift build --package-path "${package}" --scratch-path "${scratch}" --arch "${arch}" \
   --configuration release --product TerminalDBTerminal
 package_bin="$(xcrun swift build --package-path "${package}" --scratch-path "${scratch}" --arch "${arch}" \
   --configuration release --show-bin-path)"
 generated_header="$(find "${scratch}" -path '*/TerminalDBTerminal.build/include/TerminalDBTerminal-Swift.h' -print -quit)"
-if [[ -z "${generated_header}" ]]; then
+if [[ -z "${generated_header}" || "${TERMINALDB_FORCE_SWIFT_HEADER:-0}" == "1" ]]; then
   # Swift 6.2's CI toolchain does not always emit the Objective-C compatibility
   # header for a static SwiftPM library. Generate it deterministically from the
   # same sources and already-built SwiftTerm module instead of relying on cache.
   generated_header="${objects}/TerminalDBTerminal-Swift.h"
+  c_module_flags=()
+  while IFS= read -r module_map; do
+    c_module_flags+=(-Xcc "-fmodule-map-file=${module_map}")
+  done < <(find "${package_bin}" -maxdepth 2 -name module.modulemap -print)
+  while IFS= read -r include_dir; do
+    c_module_flags+=(-Xcc "-I${include_dir}")
+  done < <(find "${scratch}/checkouts" -maxdepth 4 -type d -name include -print)
   xcrun swiftc -target "${arch}-apple-macosx13.0" -swift-version 5 \
     -parse-as-library -module-name TerminalDBTerminal \
-    -I "${package_bin}/Modules" -emit-module \
+    -I "${package_bin}/Modules" "${c_module_flags[@]}" -emit-module \
     -emit-module-path "${objects}/TerminalDBTerminal.swiftmodule" \
     -emit-objc-header -emit-objc-header-path "${generated_header}" \
     "${package}"/Sources/TerminalDBTerminal/*.swift
@@ -50,3 +58,15 @@ if [[ ! -d build/TerminalDB.app/Contents/Resources/SwiftTerm_SwiftTerm.bundle ]]
   cp "${scratch}/checkouts/SwiftTerm/LICENSE" \
     build/TerminalDB.app/Contents/Resources/Licenses/SwiftTerm-MIT.txt
 fi
+
+# Include notices for every pinned dependency and its bundled crypto sources.
+for dependency in "${scratch}"/checkouts/*; do
+  name="$(basename "${dependency}")"
+  for notice in LICENSE LICENSE.txt NOTICE.txt Sources/CNIOBoringSSL/LICENSE Sources/CCryptoBoringSSL/LICENSE; do
+    if [[ -f "${dependency}/${notice}" ]]; then
+      suffix="${notice//\//-}"
+      notice_target="build/TerminalDB.app/Contents/Resources/Licenses/${name}-${suffix}"
+      if [[ ! -f "${notice_target}" ]]; then cp "${dependency}/${notice}" "${notice_target}"; fi
+    fi
+  done
+done

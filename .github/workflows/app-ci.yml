@@ -25,7 +25,9 @@ concurrency:
 jobs:
   test:
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 35
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
     steps:
       - uses: actions/checkout@v5
 
@@ -43,9 +45,11 @@ jobs:
           set -euo pipefail
           APP="apps/macos/build/TerminalDB.app"
           BIN="${APP}/Contents/MacOS/TerminalDB"
-          AGENT="${APP}/Contents/MacOS/TerminalDBRemoteAgent"
+          AGENT="${APP}/Contents/MacOS/TerminalDBPeerAgent"
+          HOST="${APP}/Contents/MacOS/TerminalDBSessionHost"
           codesign --verify --deep --strict --verbose=2 "${APP}"
           lipo "${BIN}" -verify_arch arm64 x86_64
           lipo "${AGENT}" -verify_arch arm64 x86_64
+          lipo "${HOST}" -verify_arch arm64 x86_64
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${APP}/Contents/Info.plist")" = "0.1.0"
           test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "${APP}/Contents/Info.plist")" = "13.0"

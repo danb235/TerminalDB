@@ -48,7 +48,7 @@ git diff --check
 
 Automated checks are necessary but are not the user-acceptance pass. Before a
 feature PR is merged, write down its main user journeys and exercise them
-through the visible macOS and web interfaces. Record what a user did and saw,
+through the visible native macOS interfaces and the marketing site when changed. Record what a user did and saw,
 including recovery states; do not treat test-only commands or mocked fixtures
 as proof that the shipped workflow works.
 

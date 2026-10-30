@@ -1,3 +1,4 @@
+#import "TerminalPreferences.h"
 #import "ClaudeAPI.h"
 
 NSNotificationName const ClaudeAPIConfigurationDidChangeNotification =
@@ -435,13 +436,13 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
     if (self == nil) return nil;
 
     NSArray *saved =
-        [NSUserDefaults.standardUserDefaults
+        [TerminalDBPreferences()
             arrayForKey:ClaudeAPIModelsDefaultsKey];
     _models = ClaudeAPIValidModels(saved);
     _selectedModelID =
-        [NSUserDefaults.standardUserDefaults
+        [TerminalDBPreferences()
             stringForKey:ClaudeAPISelectedModelDefaultsKey];
-    NSString *savedProvider = [NSUserDefaults.standardUserDefaults
+    NSString *savedProvider = [TerminalDBPreferences()
         stringForKey:ClaudeAIProviderDefaultsKey];
     if (![savedProvider isEqualToString:ClaudeAIProviderSubscription] &&
         ![savedProvider isEqualToString:ClaudeAIProviderAPI]) {
@@ -449,7 +450,7 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
             ? ClaudeAIProviderAPI : ClaudeAIProviderSubscription;
     }
     _chatProvider = [savedProvider copy];
-    NSString *subscriptionModel = [NSUserDefaults.standardUserDefaults
+    NSString *subscriptionModel = [TerminalDBPreferences()
         stringForKey:ClaudeSubscriptionModelDefaultsKey] ?: @"";
     BOOL validSubscriptionModel = NO;
     for (NSDictionary *model in self.class.subscriptionModels) {
@@ -496,7 +497,7 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
 }
 
 - (nullable NSString *)apiKey {
-    return [NSUserDefaults.standardUserDefaults
+    return [TerminalDBPreferences()
         stringForKey:ClaudeAPIKeyDefaultsKey];
 }
 
@@ -515,19 +516,26 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
         return NO;
     }
 
-    [NSUserDefaults.standardUserDefaults
+    [TerminalDBPreferences()
         setObject:trimmed forKey:ClaudeAPIKeyDefaultsKey];
     [self notifyChanged];
     return YES;
 }
 
+- (void)storeAPIKey:(NSString *)key completion:(void (^)(NSError *))completion {
+    NSError *error = nil; [self saveAPIKey:key error:&error]; completion(error);
+}
+- (void)deleteAPIKeyWithCompletion:(void (^)(NSError *))completion {
+    NSError *error = nil; [self removeAPIKeyWithError:&error]; completion(error);
+}
+
 - (BOOL)removeAPIKeyWithError:(NSError **)error {
     (void)error;
-    [NSUserDefaults.standardUserDefaults
+    [TerminalDBPreferences()
         removeObjectForKey:ClaudeAPIKeyDefaultsKey];
-    [NSUserDefaults.standardUserDefaults
+    [TerminalDBPreferences()
         removeObjectForKey:ClaudeAPIModelsDefaultsKey];
-    [NSUserDefaults.standardUserDefaults
+    [TerminalDBPreferences()
         removeObjectForKey:ClaudeAPISelectedModelDefaultsKey];
     self.models = @[];
     self.selectedModelID = nil;
@@ -542,7 +550,7 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
     }
     if ([self.chatProvider isEqualToString:provider]) return;
     self.chatProvider = provider;
-    [NSUserDefaults.standardUserDefaults
+    [TerminalDBPreferences()
         setObject:provider forKey:ClaudeAIProviderDefaultsKey];
     [self notifyChanged];
 }
@@ -553,7 +561,7 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
         return;
     }
     self.selectedModelID = modelID;
-    [NSUserDefaults.standardUserDefaults
+    [TerminalDBPreferences()
         setObject:modelID forKey:ClaudeAPISelectedModelDefaultsKey];
     [self notifyChanged];
 }
@@ -571,7 +579,7 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
         return;
     }
     self.subscriptionModelID = modelID ?: @"";
-    [NSUserDefaults.standardUserDefaults
+    [TerminalDBPreferences()
         setObject:self.subscriptionModelID
            forKey:ClaudeSubscriptionModelDefaultsKey];
     [self notifyChanged];
@@ -678,7 +686,7 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
             ClaudeAPIConfiguration *strongSelf = weakSelf;
             if (strongSelf != nil && error == nil) {
                 strongSelf.models = models;
-                [NSUserDefaults.standardUserDefaults
+                [TerminalDBPreferences()
                     setObject:models forKey:ClaudeAPIModelsDefaultsKey];
                 BOOL selectedStillExists = NO;
                 for (NSDictionary *model in models) {
@@ -690,7 +698,7 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
                 }
                 if (!selectedStillExists) {
                     strongSelf.selectedModelID = models.firstObject[@"id"];
-                    [NSUserDefaults.standardUserDefaults
+                    [TerminalDBPreferences()
                         setObject:strongSelf.selectedModelID
                            forKey:ClaudeAPISelectedModelDefaultsKey];
                 }
@@ -1058,12 +1066,15 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
     (void)sender;
     NSString *candidate = self.keyField.stringValue;
     if (candidate.length > 0) {
-        NSError *error = nil;
-        if (![self.configuration saveAPIKey:candidate error:&error]) {
-            self.statusLabel.stringValue = error.localizedDescription;
-            self.statusLabel.textColor = NSColor.systemRedColor;
-            return;
-        }
+        self.saveButton.enabled = NO;
+        self.statusLabel.stringValue = @"Saving the key on the selected workstation…";
+        [self.configuration storeAPIKey:candidate completion:^(NSError *error) {
+            self.saveButton.enabled = YES;
+            if (error) { self.statusLabel.stringValue = error.localizedDescription; self.statusLabel.textColor = NSColor.systemRedColor; return; }
+            self.keyField.stringValue = @"";
+            [self refreshModels];
+        }];
+        return;
     }
     if (!self.configuration.hasAPIKey) {
         self.statusLabel.stringValue = @"Enter an Anthropic API key first.";
@@ -1140,21 +1151,12 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
     [alert addButtonWithTitle:@"Cancel"];
     if ([alert runModal] != NSAlertFirstButtonReturn) return;
 
-    NSError *error = nil;
-    if (![self.configuration removeAPIKeyWithError:&error]) {
-        self.statusLabel.stringValue = error.localizedDescription;
-        self.statusLabel.textColor = NSColor.systemRedColor;
-        return;
-    }
-    if ([self.configuration.chatProvider
-            isEqualToString:ClaudeAIProviderAPI]) {
-        [self.configuration
-            selectChatProvider:ClaudeAIProviderSubscription];
-    }
-    self.statusLabel.stringValue =
-        @"The API key was removed from TerminalDB preferences.";
-    self.statusLabel.textColor = NSColor.secondaryLabelColor;
-    [self reloadConfiguration];
+    [self.configuration deleteAPIKeyWithCompletion:^(NSError *error) {
+        if (error) { self.statusLabel.stringValue = error.localizedDescription; self.statusLabel.textColor = NSColor.systemRedColor; return; }
+        if ([self.configuration.chatProvider isEqualToString:ClaudeAIProviderAPI]) [self.configuration selectChatProvider:ClaudeAIProviderSubscription];
+        [self reloadConfiguration];
+        self.statusLabel.stringValue = @"The API key was removed from the selected workstation.";
+    }];
 }
 
 - (void)done:(id)sender {

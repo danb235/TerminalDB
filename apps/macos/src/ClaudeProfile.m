@@ -78,6 +78,27 @@ static BOOL ClaudeProfileIdentifierIsSafe(NSString *identifier) {
 @end
 
 @implementation ClaudeProfileManager
++ (instancetype)managerForPeerDisplay {
+    ClaudeProfileManager *manager = [[self alloc] initForPeerDisplay];
+    // No local profile files or credentials are consulted by a remote view.
+    manager.profiles = @[];
+    return manager;
+}
+- (instancetype)initForPeerDisplay { return [super init]; }
+- (void)replacePeerAccounts:(NSArray<NSDictionary *> *)accounts selected:(NSString *)identifier {
+    NSMutableArray *profiles = [NSMutableArray array];
+    for (NSDictionary *account in accounts) {
+        ClaudeProfile *profile = [[ClaudeProfile alloc] init];
+        profile.identifier = account[@"id"] ?: @"";
+        profile.label = account[@"label"] ?: @"Claude";
+        profile.email = account[@"email"];
+        profile.subscriptionType = account[@"plan"];
+        profile.profileDirectory = @"/__TerminalDBPeerDisplay__";
+        [profiles addObject:profile];
+    }
+    self.profiles = profiles;
+    _lastSelectedProfile = [self profileWithIdentifier:identifier];
+}
 
 + (BOOL)runStorageSelfTests {
     NSString *testRoot = [NSTemporaryDirectory()

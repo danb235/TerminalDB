@@ -1,3 +1,4 @@
+#import "TerminalPreferences.h"
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
 
@@ -9,11 +10,11 @@
 #import "TerminalLedger.h"
 #import "TerminalPermissions.h"
 #import "TerminalProduct.h"
-#import "TerminalRemoteBridge.h"
 #import "TerminalTheme.h"
 #import "TerminalUpdater.h"
 #import "TerminalDBTerminal-Swift.h"
 #define TerminalView TDBTerminalSurface
+#import "TerminalApplication.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -57,10 +58,6 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
     return secondsSinceLaunch >= 0 && secondsSinceLaunch < 5.0;
 }
 
-@protocol TerminalTabActionTarget <NSObject>
-- (void)newWindowForTab:(id)sender;
-- (BOOL)terminalWindowDidRequestCancel:(NSWindow *)window;
-@end
 
 @interface TerminalWindow : NSWindow
 @property(nonatomic, weak) id<TerminalTabActionTarget> tabActionTarget;
@@ -127,156 +124,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     }
 }
 
-@interface AppDelegate : NSObject <
-    NSApplicationDelegate,
-    NSWindowDelegate,
-    NSMenuDelegate,
-    TerminalTabActionTarget,
-    ClaudeStatusBarDelegate,
-    ClaudeAssistantViewDelegate,
-    TerminalRemoteBridgeDelegate>
-+ (BOOL)runTerminalSelfTests;
-@property(nonatomic, weak, nullable) AppDelegate *owner;
-@property(nonatomic, strong) NSMutableArray<AppDelegate *> *windowControllers;
-@property(nonatomic, strong, nullable) TerminalRemoteBridge *remoteBridge;
-@property(nonatomic, strong, nullable)
-    TerminalRemotePanelController *remotePanelController;
-@property(nonatomic, copy) NSString *remoteInstanceIdentifier;
-@property(nonatomic, copy) NSString *remoteTabIdentifier;
-@property(nonatomic, strong) NSMenu *claudeMenu;
-@property(nonatomic, strong) NSMenu *viewMenu;
-@property(nonatomic, strong) NSMenu *historyMenu;
-@property(nonatomic, strong) ClaudeProfileManager *profileManager;
-@property(nonatomic, strong) ClaudeAPIConfiguration *apiConfiguration;
-@property(nonatomic, strong, nullable)
-    ClaudeAPISettingsWindowController *apiSettingsController;
-@property(nonatomic, strong) TerminalTheme *theme;
-@property(nonatomic, strong, nullable) ClaudeProfile *selectedProfile;
-@property(nonatomic, strong) NSWindow *window;
-@property(nonatomic, strong) NSView *workspaceView;
-@property(nonatomic, strong) NSMutableArray<AppDelegate *> *splitControllers;
-@property(nonatomic, weak, nullable) AppDelegate *embeddedSplitOwner;
-@property(nonatomic) BOOL embeddedSplitVertical;
-@property(nonatomic, strong) NSProgressIndicator *tabActivityIndicator;
-@property(nonatomic, strong) NSTimer *tabActivityTimer;
-@property(nonatomic, strong, nullable) NSDate *foregroundProcessBeganAt;
-@property(nonatomic, strong, nullable) NSDate *lastPTYOutputAt;
-@property(nonatomic) BOOL tabIsBusy;
-@property(nonatomic) BOOL tabActivityAnimating;
-@property(nonatomic, strong) NSView *terminalScrollView;
-@property(nonatomic, strong) TerminalView *terminalView;
-@property(nonatomic) int pty;
-@property(nonatomic) pid_t shellPid;
-@property(nonatomic) dispatch_source_t readSource;
-@property(nonatomic, strong, nullable) ClaudeProfile *claudeLoginProfile;
-@property(nonatomic) pid_t claudeLoginProcessGroup;
-@property(nonatomic, strong, nullable) NSDate *claudeLoginStartedAt;
-@property(nonatomic, strong, nullable)
-    ClaudeProfile *claudeLoginRestartProfile;
-@property(nonatomic) NSUInteger claudeLoginRestartGeneration;
-@property(nonatomic, copy, nullable) NSString *reportedWindowTitle;
-@property(nonatomic) NSUInteger terminalRows;
-@property(nonatomic) NSUInteger terminalColumns;
-@property(nonatomic) NSUInteger appliedPTYRows;
-@property(nonatomic) NSUInteger appliedPTYColumns;
-@property(nonatomic) BOOL remoteGeometryActive;
-@property(nonatomic, copy) NSArray<NSColor *> *ansiColors;
-@property(nonatomic, strong) NSColor *defaultForeground;
-@property(nonatomic, strong) NSColor *defaultBackground;
-@property(nonatomic) BOOL usingJetBrainsMono;
-@property(nonatomic) CGFloat terminalFontSize;
-@property(nonatomic) CGFloat terminalLineHeightMultiple;
-@property(nonatomic, strong) ClaudeStatusBar *claudeStatusBar;
-@property(nonatomic, strong) TerminalLedgerBar *ledgerBar;
-@property(nonatomic, strong) TerminalLedgerStore *ledgerStore;
-@property(nonatomic, strong, nullable)
-    TerminalHistoryController *historyController;
-@property(nonatomic, strong, nullable)
-    TerminalCommandInspectorController *commandInspectorController;
-@property(nonatomic, copy) NSString *activeLedgerCommand;
-@property(nonatomic, copy) NSString *activeLedgerDirectory;
-@property(nonatomic, strong, nullable) NSDate *activeLedgerStartedAt;
-@property(nonatomic) BOOL privateSession;
-@property(nonatomic) BOOL focusMode;
-@property(nonatomic) BOOL commandBarHidden;
-@property(nonatomic, strong) ClaudeAssistantView *assistantView;
-@property(nonatomic, strong) NSView *utilityPanelView;
-@property(nonatomic, strong) NSScrollView *utilityPanelScrollView;
-@property(nonatomic, strong) NSTextField *utilityPanelTitleLabel;
-@property(nonatomic, strong) NSButton *utilityPanelCloseButton;
-@property(nonatomic) BOOL utilityPanelRestoresAssistant;
-@property(nonatomic) BOOL utilityPanelUsesFullWidth;
-@property(nonatomic) CGFloat utilityPanelMinimumContentHeight;
-@property(nonatomic, copy, nullable) void (^utilityPanelDismissHandler)(void);
-@property(nonatomic, strong) NSButton *assistantToggleButton;
-@property(nonatomic, strong) NSButton *remoteWebButton;
-@property(nonatomic, strong) NSButton *commandBarToggleButton;
-@property(nonatomic, strong)
-    NSTitlebarAccessoryViewController *assistantAccessoryController;
-@property(nonatomic, strong, nullable) id assistantClient;
-@property(nonatomic, strong) TerminalInspector *terminalInspector;
-@property(nonatomic, strong) TerminalPermissionCenter *permissionCenter;
-@property(nonatomic, copy, nullable) NSDictionary *pendingExecutionApproval;
-@property(nonatomic, copy, nullable) NSString *lastAIApplyPatchPath;
-@property(nonatomic, strong) TerminalProductStore *productStore;
-@property(nonatomic, strong) TerminalUpdater *updater;
-@property(nonatomic, strong) NSMenuItem *checkForUpdatesMenuItem;
-@property(nonatomic, strong, nullable)
-    TerminalProductWindowController *productWindowController;
-@property(nonatomic, copy, nullable) NSString *activeMonitorIdentifier;
-@property(nonatomic, strong) NSMutableArray<NSDictionary *> *assistantMessages;
-@property(nonatomic, copy) NSString *assistantResponse;
-@property(nonatomic, copy) NSString *assistantDirectory;
-@property(nonatomic, copy) NSString *assistantSystemPrompt;
-@property(nonatomic) NSUInteger assistantToolIterations;
-@property(nonatomic) NSUInteger assistantRequestGeneration;
-@property(nonatomic, copy, nullable) NSString *assistantSubscriptionSessionID;
-@property(nonatomic, copy) NSString *assistantConfigurationSignature;
-@property(nonatomic, copy, nullable) NSString *claudeExecutable;
-@property(nonatomic, copy) NSString *windowProfilePath;
-@property(nonatomic, copy) NSString *windowRuntimeDirectory;
-@property(nonatomic, copy) NSString *windowBinDirectory;
-@property(nonatomic, copy) NSString *zshDotDirectory;
-@property(nonatomic, copy) NSString *claudeTabStatePath;
-@property(nonatomic, copy, nullable) NSString *claudeTabState;
-@property(nonatomic, strong, nullable) NSDate *claudeTabStateModifiedAt;
-@property(nonatomic, copy) NSString *claudeStatusLinePath;
-@property(nonatomic, copy, nullable) NSString *claudeModelName;
-@property(nonatomic, strong, nullable) NSDate *claudeStatusLineModifiedAt;
-@property(nonatomic, copy) NSString *shellTitlePath;
-@property(nonatomic, copy) NSString *shellCWDPath;
-@property(nonatomic, copy) NSString *shellCommandPath;
-@property(nonatomic, copy) NSString *shellExitPath;
-@property(nonatomic, copy, nullable) NSString *shellReportedTitle;
-@property(nonatomic, strong, nullable) NSDate *shellTitleModifiedAt;
-@property(nonatomic, copy, nullable) NSString *displayedContextDirectory;
-@property(nonatomic, copy, nullable) NSString *displayedContextModel;
-- (void)showAssistantConfigurationRequired;
-- (BOOL)assistantProviderIsReady;
-- (NSString *)assistantModelDisplayName;
-- (NSString *)assistantConfigurationSignatureValue;
-- (NSString *)assistantSubscriptionStatus;
-- (void)assistantConfigurationDidChange:(NSNotification *)notification;
-- (void)showCommandHistory:(nullable id)sender;
-- (void)showCommandInspectorForRecord:(NSDictionary *)record;
-- (void)pasteCommandForReview:(NSString *)command;
-- (void)attachRecordToAssistant:(NSDictionary *)record
-                         intent:(NSString *)intent;
-- (void)requestExecutionForCommand:(NSString *)command;
-- (void)showProductSection:(TerminalProductSection)section;
-- (void)showUtilityPanelView:(NSView *)view
-                       title:(NSString *)title
-                   fullWidth:(BOOL)fullWidth
-              dismissHandler:(nullable void (^)(void))dismissHandler;
-- (void)hideUtilityPanel:(nullable id)sender;
-- (void)saveRunbookFromRecord:(NSDictionary *)record;
-- (void)newTerminalSplitVertical:(BOOL)vertical;
-- (void)updateUpdaterMenuItem;
-- (BOOL)claudeIsForeground;
-- (void)refreshPersistentTerminalContext;
-- (BOOL)applyRemoteTerminalColumns:(NSUInteger)columns
-                              rows:(NSUInteger)rows;
-@end
+
 
 @implementation AppDelegate
 
@@ -303,19 +151,19 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     BOOL restored = NO;
     for (AppDelegate *controller in root.windowControllers) {
         if (![controller terminalWindowIsOnScreen]) continue;
-        if (controller.remoteGeometryActive) {
-            controller.remoteGeometryActive = NO;
+        if (controller.controllerGeometryActive) {
+            controller.controllerGeometryActive = NO;
             [controller updatePTYWindowSize];
             restored = YES;
         }
         for (AppDelegate *split in controller.splitControllers) {
-            if (!split.remoteGeometryActive) continue;
-            split.remoteGeometryActive = NO;
+            if (!split.controllerGeometryActive) continue;
+            split.controllerGeometryActive = NO;
             [split updatePTYWindowSize];
             restored = YES;
         }
     }
-    if (restored) [root.remoteBridge publishInventorySoon];
+    if (restored) for (AppDelegate *controller in root.windowControllers) [controller publishPeerState];
 }
 
 - (BOOL)terminalWindowIsOnScreen {
@@ -338,7 +186,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         containsObject:@"--visual-qa-usage-partial"];
     // Real interactive terminal, disposable storage, no scripted UI fixtures.
     BOOL terminalQA = [NSProcessInfo.processInfo.arguments
-        containsObject:@"--terminal-qa"];
+        containsObject:@"--terminal-qa"] || [NSProcessInfo.processInfo.environment[@"TERMINALDB_PEER_QA"] isEqualToString:@"1"];
     NSString *launchFixtureRoot = nil;
     if (backgroundTabQA || visualQA || terminalQA) {
         launchFixtureRoot = [NSTemporaryDirectory()
@@ -351,8 +199,8 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     }
     self.apiConfiguration = [[ClaudeAPIConfiguration alloc] init];
     self.theme = [TerminalTheme preferredTheme];
-    self.productStore = [TerminalProductStore sharedStore];
-    if (terminalQA) self.productStore = [TerminalProductStore ephemeralStoreForTesting];
+    self.productStore = terminalQA ? [TerminalProductStore ephemeralStoreForTesting]
+                                  : [TerminalProductStore sharedStore];
     self.updater = [[TerminalUpdater alloc]
         initWithRepository:@"danb235/TerminalDB"];
     __weak AppDelegate *weakRoot = self;
@@ -361,8 +209,21 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     };
     self.claudeExecutable = [self discoverClaudeExecutable];
     self.windowControllers = [NSMutableArray array];
-    self.remoteInstanceIdentifier = NSUUID.UUID.UUIDString.lowercaseString;
     NSWindow.allowsAutomaticWindowTabbing = YES;
+    if (TerminalDBRunsSessionHost()) {
+        [self startSessionHost];
+        return;
+    }
+    if (TerminalDBUsesPeerSessions()) {
+        NSError *serviceError = nil;
+        if (![TDBPeerServices startAndReturnError:&serviceError]) {
+            NSAlert *alert = [[NSAlert alloc] init]; alert.messageText = @"Enable TerminalDB background services";
+            alert.informativeText = serviceError.localizedDescription ?: @"The background services could not start.";
+            [alert addButtonWithTitle:@"Open System Settings"]; [alert addButtonWithTitle:@"Continue"];
+            if ([alert runModal] == NSAlertFirstButtonReturn) [TDBPeerServices openBackgroundSettings];
+        }
+        self.peerPanel = [[TDBPeerPanel alloc] init];
+    }
     [self installApplicationMenu];
     if (visualQA) {
         self.productStore = [TerminalProductStore ephemeralStoreForTesting];
@@ -546,14 +407,6 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                                                   error:nil];
     } else {
         [self newTerminalWindow:nil];
-        if (!visualQA && !terminalQA) {
-            // Start the per-user agent so an account-enrolled Mac can restore
-            // its remote session whenever TerminalDB is open. The agent stays
-            // disabled for Macs that have never opted into Remote Control.
-            self.remoteBridge =
-                [[TerminalRemoteBridge alloc] initWithDelegate:self];
-            [self.remoteBridge start];
-        }
         if (visualQA) {
             AppDelegate *controller = self.windowControllers.lastObject;
             [controller showAssistantPane];
@@ -781,14 +634,14 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                         });
                 }
             }
-        } else if (!terminalQA && [NSUserDefaults.standardUserDefaults
+        } else if (!terminalQA && [TerminalDBPreferences()
                        boolForKey:@"TerminalDBRestoreWorkspaceOnLaunch"] &&
                    self.productStore.workspaces.count > 0) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 [self showProductSection:
                     TerminalProductSectionWorkspaces];
             });
-        } else if (!terminalQA && ![NSUserDefaults.standardUserDefaults
+        } else if (!terminalQA && ![TerminalDBPreferences()
                        boolForKey:@"TerminalDBDidCompleteOnboarding"] &&
                    !self.apiConfiguration.hasAPIKey &&
                    self.profileManager.profiles.count == 0 &&
@@ -825,11 +678,11 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                                    action:@selector(showTerminalDBSettings:)
                             keyEquivalent:@","];
     settings.target = self;
-    NSMenuItem *remoteControl =
-        [applicationMenu addItemWithTitle:@"Remote Control…"
-                                   action:@selector(showRemoteControl:)
+    NSMenuItem *workstations =
+        [applicationMenu addItemWithTitle:@"Paired Workstations…"
+                                   action:@selector(showPairedWorkstations:)
                             keyEquivalent:@""];
-    remoteControl.target = self;
+    workstations.target = self;
     [applicationMenu addItem:NSMenuItem.separatorItem];
 
     NSMenuItem *services =
@@ -932,6 +785,8 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                              action:@selector(closeTerminalWindow:)
                       keyEquivalent:@"w"];
     closeTab.target = self;
+    NSMenuItem *endSession = [shellMenu addItemWithTitle:@"End Session…" action:@selector(endPeerSession:) keyEquivalent:@""];
+    endSession.target = self;
     NSMenuItem *closeWindow =
         [shellMenu addItemWithTitle:@"Close Window"
                              action:@selector(closeTerminalTabGroup:)
@@ -1114,6 +969,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                                   action:nil
                            keyEquivalent:@""];
     self.historyMenu = [[NSMenu alloc] initWithTitle:@"History"];
+    self.historyMenu.delegate = self;
     NSMenu *historyMenu = self.historyMenu;
     NSMenuItem *searchHistory =
         [historyMenu addItemWithTitle:@"Command History"
@@ -1137,30 +993,9 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                         keyEquivalent:@""];
     NSMenu *recentMenu =
         [[NSMenu alloc] initWithTitle:@"Recent Directories"];
-    NSMutableOrderedSet<NSString *> *recent =
-        [NSMutableOrderedSet orderedSet];
-    for (NSDictionary *record in
-            [TerminalLedgerStore sharedStore].records) {
-        NSString *directory = record[@"directory"];
-        if (directory.length > 0) [recent addObject:directory];
-        if (recent.count >= 10) break;
-    }
-    if (recent.count == 0) {
-        NSMenuItem *empty = [recentMenu
-            addItemWithTitle:@"No Recent Directories"
-                      action:nil
-               keyEquivalent:@""];
-        empty.enabled = NO;
-    } else {
-        for (NSString *directory in recent) {
-            NSMenuItem *item = [recentMenu
-                addItemWithTitle:directory
-                          action:@selector(openRecentDirectoryFromMenu:)
-                   keyEquivalent:@""];
-            item.target = self;
-            item.representedObject = directory;
-        }
-    }
+    NSMenuItem *emptyRecent = [recentMenu addItemWithTitle:@"No Recent Directories"
+                                                   action:nil keyEquivalent:@""];
+    emptyRecent.enabled = NO;
     recentDirectories.submenu = recentMenu;
     [historyMenu addItem:NSMenuItem.separatorItem];
     NSMenuItem *clearHistory =
@@ -1319,6 +1154,8 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     return @{
         @"title" : controller.window.tab.title ?: @"Terminal",
         @"directory" : [controller currentAssistantDirectory],
+        @"workstation_id": controller.peerTarget ?: @"",
+        @"terminal_session_id": controller.sessionClient.sessionID ?: @"",
         @"account_id" : controller.selectedProfile.identifier ?: @"",
         @"account_label" : controller.selectedProfile.label ?: @"",
         @"assistant_open" : @(!controller.assistantView.hidden),
@@ -1376,21 +1213,22 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     AppDelegate *root = [self rootController];
     AppDelegate *controller = [root activeTerminalController];
     if (controller == nil) return;
-    if (root.productWindowController == nil) {
+    if (root.productWindowController == nil || controller.sessionClient) {
         root.productWindowController =
             [[TerminalProductWindowController alloc]
                 initWithTheme:root.theme
-                        store:root.productStore ?:
+                        store:controller.productStore ?:
                             [TerminalProductStore sharedStore]];
         __weak AppDelegate *weakRoot = root;
+        __weak AppDelegate *weakProductOwner = controller;
         root.productWindowController.runCommandHandler =
             ^(NSString *command) {
-                AppDelegate *active = [weakRoot activeTerminalController];
+                AppDelegate *active = (weakProductOwner ?: [weakRoot activeTerminalController]);
                 [active requestExecutionForCommand:command];
             };
         root.productWindowController.pasteCommandHandler =
             ^(NSString *command) {
-                AppDelegate *active = [weakRoot activeTerminalController];
+                AppDelegate *active = (weakProductOwner ?: [weakRoot activeTerminalController]);
                 [active pasteCommandForReview:command];
             };
         root.productWindowController.restoreWorkspaceHandler =
@@ -1439,6 +1277,16 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                 void (^configurePane)(AppDelegate *, NSDictionary *) =
                     ^(AppDelegate *target, NSDictionary *pane) {
                     if (![pane isKindOfClass:NSDictionary.class]) return;
+                    if (target.sessionClient) {
+                        [target.sessionClient close];
+                        target.peerTarget = [pane[@"workstation_id"] isKindOfClass:NSString.class] ? pane[@"workstation_id"] : @"";
+                        target.peerAttachSession = [pane[@"terminal_session_id"] isKindOfClass:NSString.class] ? pane[@"terminal_session_id"] : @"";
+                        target.peerStartDirectory = pane[@"directory"] ?: @"";
+                        target.peerRestoreState = target.peerAttachSession.length > 0 ? nil : pane;
+                        [target connectToWorkstation];
+                        if ([pane[@"assistant_open"] boolValue]) [target showAssistantPane];
+                        return;
+                    }
                     NSString *accountID =
                         [pane[@"account_id"] isKindOfClass:NSString.class]
                             ? pane[@"account_id"] : @"";
@@ -1570,16 +1418,16 @@ static BOOL TerminalDBReapShell(pid_t pid) {
             [weakRoot addClaudeProfileFromMenu:nil];
         };
         root.productWindowController.showHistoryHandler = ^{
-            [[weakRoot activeTerminalController] showCommandHistory:nil];
+            [(weakProductOwner ?: [weakRoot activeTerminalController]) showCommandHistory:nil];
         };
         root.productWindowController.activateTerminalHandler = ^{
-            AppDelegate *active = [weakRoot activeTerminalController];
+            AppDelegate *active = (weakProductOwner ?: [weakRoot activeTerminalController]);
             [active.window makeKeyAndOrderFront:nil];
             [active.window makeFirstResponder:active.terminalView];
         };
         root.productWindowController.askAIHandler =
             ^(NSDictionary *context, NSString *prompt) {
-                AppDelegate *active = [weakRoot activeTerminalController];
+                AppDelegate *active = (weakProductOwner ?: [weakRoot activeTerminalController]);
                 [active showAssistantPane];
                 NSString *identifier = context[@"id"] ?:
                     NSUUID.UUID.UUIDString;
@@ -1602,6 +1450,18 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                 }];
                 [active.assistantView setDraftPrompt:prompt];
             };
+        if (controller.sessionClient) {
+            root.productWindowController.peerProjectItems = ^NSArray *{ return weakProductOwner.peerProjectCache ?: @[]; };
+            root.productWindowController.peerFilePreview = ^(NSString *path, void (^completion)(NSString *)) {
+                [weakProductOwner.sessionClient request:@"project.preview" payload:@{@"path": path} completion:^(NSDictionary *result) {
+                    completion(result[@"preview"] ?: result[@"error"] ?: @"");
+                }];
+            };
+            [controller.sessionClient request:@"project.files" payload:@{} completion:^(NSDictionary *result) {
+                weakProductOwner.peerProjectCache = result[@"items"] ?: @[];
+                [weakRoot.productWindowController refresh];
+            }];
+        }
         root.productWindowController.workspaceSnapshotProvider =
             ^NSDictionary *{
                 AppDelegate *rootController = weakRoot;
@@ -1725,30 +1585,15 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     [[self rootController] showProductSection:TerminalProductSectionSettings];
 }
 
-- (void)showRemoteControl:(id)sender {
+- (void)showPairedWorkstations:(id)sender {
     (void)sender;
     AppDelegate *root = [self rootController];
     AppDelegate *controller = [root activeTerminalController];
-    if (controller == nil) return;
-    while (controller.embeddedSplitOwner != nil) {
-        controller = controller.embeddedSplitOwner;
-    }
-    if (root.remoteBridge == nil) {
-        root.remoteBridge =
-            [[TerminalRemoteBridge alloc] initWithDelegate:root];
-    }
-    [root.remoteBridge start];
-    if (root.remotePanelController == nil) {
-        root.remotePanelController =
-            [[TerminalRemotePanelController alloc]
-                initWithBridge:root.remoteBridge];
-    }
-    [controller showUtilityPanelView:root.remotePanelController.view
-                               title:@"Remote Control"
-                           fullWidth:NO
-                      dismissHandler:nil];
-    [root.remotePanelController
-        prepareForPresentationInWindow:controller.window];
+    if (!controller) return;
+    if (!root.peerPanel) root.peerPanel = [[TDBPeerPanel alloc] init];
+    [root.peerPanel refresh];
+    [controller showUtilityPanelView:root.peerPanel.view title:@"Paired Workstations"
+                          fullWidth:YES dismissHandler:nil];
 }
 
 - (NSDictionary *)remoteUsageForProfile:(ClaudeProfile *)profile {
@@ -1790,126 +1635,22 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     };
 }
 
-- (NSDictionary *)terminalRemoteInventoryForBridge:
-    (TerminalRemoteBridge *)bridge {
-    (void)bridge;
-    AppDelegate *root = [self rootController];
-    NSMutableArray *tabs = [NSMutableArray array];
-    // keyWindow is nil while another application is active, so fall back to
-    // the main window to keep reporting the tab this Mac has in front.
-    NSWindow *keyWindow = NSApp.keyWindow ?: NSApp.mainWindow;
-    NSString *frontTabIdentifier = nil;
-    for (AppDelegate *controller in root.windowControllers) {
-        if (controller.remoteTabIdentifier.length == 0 ||
-            controller.window == nil) {
-            continue;
-        }
-        NSString *title = controller.window.tab.title;
-        if (title.length == 0) title = @"Terminal";
-        NSString *directory = [controller currentAssistantDirectory];
-        NSString *claudeState = controller.claudeTabState;
-        if (![claudeState isEqualToString:@"working"] &&
-            ![claudeState isEqualToString:@"attention"] &&
-            ![claudeState isEqualToString:@"rate-limit"] &&
-            ![claudeState isEqualToString:@"error"]) {
-            claudeState = controller.tabIsBusy ? @"working" : @"ready";
-        }
-        AppDelegate *windowOwner = controller;
-        while (windowOwner.embeddedSplitOwner != nil) {
-            windowOwner = windowOwner.embeddedSplitOwner;
-        }
-        // The tab a desktop user is looking at: the visible one in its macOS
-        // tab group. Several windows can each have one, so the instance also
-        // reports which of them is in front, below.
-        NSWindowTabGroup *tabGroup = windowOwner.window.tabGroup;
-        BOOL visibleInItsWindow =
-            tabGroup == nil || tabGroup.selectedWindow == windowOwner.window;
-        NSMutableDictionary *tab = [@{
-            @"id" : controller.remoteTabIdentifier,
-            @"instanceId" : root.remoteInstanceIdentifier,
-            @"windowId" : [NSString stringWithFormat:@"%ld",
-                (long)windowOwner.window.windowNumber],
-            @"paneId" : controller.remoteTabIdentifier,
-            @"title" : title,
-            @"directory" : directory,
-            @"environment" : @"LOCAL",
-            @"foregroundProcess" :
-                controller.tabIsBusy ? (controller.shellReportedTitle ?: @"process")
-                                     : @"zsh",
-            @"inputMode" : [controller terminalRemoteInputMode],
-            @"busy" : @(controller.tabIsBusy),
-            @"claudeState" : claudeState,
-            @"selected" : @(visibleInItsWindow),
-            @"updatedAt" : NSDate.date.description,
-        } mutableCopy];
-        if (visibleInItsWindow && keyWindow != nil &&
-            windowOwner.window == keyWindow) {
-            frontTabIdentifier = controller.remoteTabIdentifier;
-        }
-        if (controller.embeddedSplitOwner != nil) {
-            tab[@"parentPaneId"] =
-                controller.embeddedSplitOwner.remoteTabIdentifier;
-            tab[@"splitDirection"] =
-                controller.embeddedSplitVertical ? @"right" : @"down";
-        }
-        if (controller.selectedProfile != nil) {
-            tab[@"accountId"] = controller.selectedProfile.identifier;
-            tab[@"accountLabel"] = controller.selectedProfile.label;
-        }
-        if ([controller claudeIsForeground] &&
-            controller.claudeModelName.length > 0) {
-            tab[@"model"] = controller.claudeModelName;
-        }
-        [tabs addObject:tab];
-    }
-    NSMutableArray *accounts = [NSMutableArray array];
-    for (ClaudeProfile *profile in root.profileManager.profiles) {
-        [accounts addObject:[root remoteUsageForProfile:profile]];
-    }
-    NSString *host = NSProcessInfo.processInfo.hostName ?: @"Mac";
-    NSMutableDictionary *instance = [@{
-        @"id" : root.remoteInstanceIdentifier,
-        @"name" : [NSString stringWithFormat:@"TerminalDB · %d",
-            NSProcessInfo.processInfo.processIdentifier],
-        @"host" : host,
-        @"tabs" : tabs,
-        @"accounts" : accounts,
-    } mutableCopy];
-    if (frontTabIdentifier.length > 0) {
-        instance[@"selectedTabId"] = frontTabIdentifier;
-    }
-    return instance;
-}
-
-- (AppDelegate *)terminalControllerForRemoteIdentifier:
+- (AppDelegate *)terminalControllerForSessionIdentifier:
     (NSString *)tabIdentifier {
     AppDelegate *root = [self rootController];
     for (AppDelegate *controller in root.windowControllers) {
-        if ([controller.remoteTabIdentifier isEqualToString:tabIdentifier]) {
+        if ([controller.terminalSessionIdentifier isEqualToString:tabIdentifier]) {
             return controller;
         }
     }
     return nil;
 }
 
-- (NSString *)terminalRemoteANSISnapshot {
+- (NSString *)terminalANSISnapshot {
     return [self.terminalView ansiSnapshot];
 }
 
-- (NSDictionary *)terminalRemoteViewportForTabIdentifier:
-    (NSString *)tabIdentifier {
-    AppDelegate *controller =
-        [self terminalControllerForRemoteIdentifier:tabIdentifier];
-    if (controller == nil) return nil;
-    return @{
-        @"text" : [controller terminalRemoteANSISnapshot],
-        @"rows" : @(MAX((NSUInteger)1, controller.terminalRows)),
-        @"columns" : @(MAX((NSUInteger)1, controller.terminalColumns)),
-        @"inputMode" : [controller terminalRemoteInputMode],
-    };
-}
-
-- (NSString *)terminalRemoteInputMode {
+- (NSString *)terminalInputMode {
     if (self.pty >= 0) {
         struct termios attributes;
         if (tcgetattr(self.pty, &attributes) == 0 &&
@@ -1928,281 +1669,6 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         return @"application";
     }
     return @"secure";
-}
-
-- (BOOL)terminalRemoteBridge:(TerminalRemoteBridge *)bridge
-                  writeInput:(NSString *)input
-             toTabIdentifier:(NSString *)tabIdentifier
-                       error:(NSError **)error {
-    (void)bridge;
-    AppDelegate *controller =
-        [self terminalControllerForRemoteIdentifier:tabIdentifier];
-    if (controller == nil || controller.pty < 0) {
-        if (error != NULL) {
-            *error = [NSError errorWithDomain:@"com.terminaldb.remote"
-                                         code:404
-                                     userInfo:@{
-                NSLocalizedDescriptionKey : @"The terminal tab is no longer open."
-            }];
-        }
-        return NO;
-    }
-    NSData *data = [input dataUsingEncoding:NSUTF8StringEncoding];
-    if (data.length == 0) return YES;
-    if (![controller.terminalView enqueueInputData:data]) {
-        if (error != NULL) {
-            *error = [NSError errorWithDomain:@"com.terminaldb.remote"
-                                         code:500
-                                     userInfo:@{
-                NSLocalizedDescriptionKey : @"The PTY did not accept the complete input."
-            }];
-        }
-        return NO;
-    }
-    return YES;
-}
-
-- (BOOL)terminalRemoteBridge:(TerminalRemoteBridge *)bridge
- resizeTerminalTabIdentifier:(NSString *)tabIdentifier
-                     columns:(NSUInteger)columns
-                        rows:(NSUInteger)rows
-                      active:(BOOL)active
-                       error:(NSError **)error {
-    (void)bridge;
-    AppDelegate *controller =
-        [self terminalControllerForRemoteIdentifier:tabIdentifier];
-    if (controller == nil || controller.pty < 0) {
-        if (error != NULL) {
-            *error = [NSError errorWithDomain:@"com.terminaldb.remote"
-                                         code:404
-                                     userInfo:@{
-                NSLocalizedDescriptionKey : @"The terminal tab is no longer open."
-            }];
-        }
-        return NO;
-    }
-    if (!active) {
-        controller.remoteGeometryActive = NO;
-        [controller updatePTYWindowSize];
-        return YES;
-    }
-    // While this terminal is on screen, its own window decides how wide it
-    // is. Accepting a controller's grid here shrank the desktop terminal and
-    // left it shrunk. The controller renders whatever the Mac sends instead.
-    // Once the window is hidden, minimised, covered or the screen is locked,
-    // nobody here can see it, so the controller's grid is free to apply.
-    if ([controller terminalWindowIsOnScreen]) {
-        controller.remoteGeometryActive = NO;
-        [controller updatePTYWindowSize];
-        return YES;
-    }
-    if (![controller applyRemoteTerminalColumns:columns rows:rows]) {
-        if (error != NULL) {
-            *error = [NSError errorWithDomain:@"com.terminaldb.remote"
-                                         code:400
-                                     userInfo:@{
-                NSLocalizedDescriptionKey : @"The requested terminal geometry is outside safe limits."
-            }];
-        }
-        return NO;
-    }
-    controller.remoteGeometryActive = YES;
-    return YES;
-}
-
-- (BOOL)terminalRemoteBridge:(TerminalRemoteBridge *)bridge
-     createTabFromIdentifier:(NSString *)tabIdentifier
-                       error:(NSError **)error {
-    AppDelegate *root = [self rootController];
-    AppDelegate *source =
-        [self terminalControllerForRemoteIdentifier:tabIdentifier];
-    if (source == nil) {
-        if (error != NULL) {
-            *error = [NSError errorWithDomain:@"com.terminaldb.remote"
-                                         code:404
-                                     userInfo:@{
-                NSLocalizedDescriptionKey : @"The source terminal tab is no longer open."
-            }];
-        }
-        return NO;
-    }
-
-    AppDelegate *host = source;
-    while (host.embeddedSplitOwner != nil) {
-        host = host.embeddedSplitOwner;
-    }
-    if (host.window == nil) {
-        if (error != NULL) {
-            *error = [NSError errorWithDomain:@"com.terminaldb.remote"
-                                         code:409
-                                     userInfo:@{
-                NSLocalizedDescriptionKey : @"The source terminal window is closing."
-            }];
-        }
-        return NO;
-    }
-
-    AppDelegate *controller = [root createTerminalController];
-    [host.window addTabbedWindow:controller.window ordered:NSWindowAbove];
-    controller.window.tabGroup.selectedWindow = controller.window;
-    [root presentTerminalController:controller];
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [bridge publishInventory];
-    });
-    return YES;
-}
-
-- (BOOL)terminalRemoteBridge:(TerminalRemoteBridge *)bridge
-         selectTabIdentifier:(NSString *)tabIdentifier
-                       error:(NSError **)error {
-    AppDelegate *controller =
-        [self terminalControllerForRemoteIdentifier:tabIdentifier];
-    if (controller == nil) {
-        if (error != NULL) {
-            *error = [NSError errorWithDomain:@"com.terminaldb.remote"
-                                         code:404
-                                     userInfo:@{
-                NSLocalizedDescriptionKey : @"The terminal tab is no longer open."
-            }];
-        }
-        return NO;
-    }
-
-    AppDelegate *windowOwner = controller;
-    while (windowOwner.embeddedSplitOwner != nil) {
-        windowOwner = windowOwner.embeddedSplitOwner;
-    }
-    if (windowOwner.window == nil) return NO;
-    windowOwner.window.tabGroup.selectedWindow = windowOwner.window;
-    [windowOwner.window makeKeyAndOrderFront:nil];
-    [windowOwner.window makeFirstResponder:controller.terminalView];
-    [bridge publishInventory];
-    return YES;
-}
-
-- (BOOL)terminalRemoteBridge:(TerminalRemoteBridge *)bridge
-          closeTabIdentifier:(NSString *)tabIdentifier
-                       error:(NSError **)error {
-    AppDelegate *controller =
-        [self terminalControllerForRemoteIdentifier:tabIdentifier];
-    if (controller == nil) {
-        if (error != NULL) {
-            *error = [NSError errorWithDomain:@"com.terminaldb.remote"
-                                         code:404
-                                     userInfo:@{
-                NSLocalizedDescriptionKey : @"The terminal tab is already closed."
-            }];
-        }
-        return NO;
-    }
-    if (controller.embeddedSplitOwner != nil) {
-        if (error != NULL) {
-            *error = [NSError errorWithDomain:@"com.terminaldb.remote"
-                                         code:409
-                                     userInfo:@{
-                NSLocalizedDescriptionKey :
-                    @"Split panes cannot be closed as tabs."
-            }];
-        }
-        return NO;
-    }
-    if ([controller hasBusyProcessInPaneTree]) {
-        if (error != NULL) {
-            *error = [NSError errorWithDomain:@"com.terminaldb.remote"
-                                         code:409
-                                     userInfo:@{
-                NSLocalizedDescriptionKey :
-                    @"Stop the foreground process before closing this tab."
-            }];
-        }
-        return NO;
-    }
-    // Closing the only tab quits TerminalDB on this Mac, which would also end
-    // Remote Control for every controller. That has to be a decision made at
-    // the Mac itself.
-    AppDelegate *closeRoot = [self rootController];
-    if (closeRoot.windowControllers.count <= 1) {
-        if (error != NULL) {
-            *error = [NSError errorWithDomain:@"com.terminaldb.remote"
-                                         code:409
-                                     userInfo:@{
-                NSLocalizedDescriptionKey :
-                    @"The last tab can only be closed on the Mac."
-            }];
-        }
-        return NO;
-    }
-
-    [controller.window performClose:nil];
-    // windowWillClose removes the native controller on the next main-queue
-    // turn. Publish after that removal so every browser receives the exact
-    // desktop tab inventory instead of a speculative local deletion.
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [bridge publishInventory];
-    });
-    return YES;
-}
-
-- (BOOL)terminalRemoteBridge:(TerminalRemoteBridge *)bridge
-               switchAccount:(NSString *)accountIdentifier
-            forTabIdentifier:(NSString *)tabIdentifier
-                       error:(NSError **)error {
-    (void)bridge;
-    AppDelegate *controller =
-        [self terminalControllerForRemoteIdentifier:tabIdentifier];
-    ClaudeProfile *profile =
-        [[self rootController].profileManager
-            profileWithIdentifier:accountIdentifier];
-    if (controller == nil || profile == nil) {
-        if (error != NULL) {
-            *error = [NSError errorWithDomain:@"com.terminaldb.remote"
-                                         code:404
-                                     userInfo:@{
-                NSLocalizedDescriptionKey :
-                    @"The tab or Claude account is no longer available."
-            }];
-        }
-        return NO;
-    }
-    pid_t foregroundProcessGroup =
-        controller.pty >= 0 ? tcgetpgrp(controller.pty) : -1;
-    if (foregroundProcessGroup > 0 &&
-        foregroundProcessGroup != controller.shellPid) {
-        if (error != NULL) {
-            *error = [NSError errorWithDomain:@"com.terminaldb.remote"
-                                         code:409
-                                     userInfo:@{
-                NSLocalizedDescriptionKey :
-                    @"Finish the foreground process before switching Claude accounts."
-            }];
-        }
-        return NO;
-    }
-    controller.selectedProfile = profile;
-    [controller.profileManager setLastSelectedProfile:profile];
-    [controller.profileManager prepareRuntimeFilesForProfile:profile];
-    [controller writeWindowProfileFile];
-    [controller updateWindowTitle];
-    if ([controller.apiConfiguration.chatProvider
-            isEqualToString:ClaudeAIProviderSubscription]) {
-        [controller resetAssistantConversation];
-    }
-    return YES;
-}
-
-- (void)terminalRemoteBridgeDidRequestUsageRefresh:
-    (TerminalRemoteBridge *)bridge {
-    (void)bridge;
-    AppDelegate *root = [self rootController];
-    for (AppDelegate *controller in root.windowControllers) {
-        [controller.claudeStatusBar refreshNow];
-    }
-}
-
-- (void)terminalRemoteBridgeStatusDidChange:
-    (TerminalRemoteBridge *)bridge {
-    (void)bridge;
-    [[self rootController].remotePanelController refresh];
 }
 
 - (NSDictionary *)currentCommandRecord {
@@ -2243,8 +1709,11 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     (void)sender;
     AppDelegate *root = [self rootController];
     AppDelegate *host = [root activeTerminalController];
+    root.peerTarget = host.peerTarget; root.peerPrivateRequested = YES;
     AppDelegate *controller = [root createTerminalController];
+    root.peerTarget = nil; root.peerPrivateRequested = NO;
     controller.privateSession = YES;
+    controller.peerPrivateRequested = YES;
     controller.window.title = @"TerminalDB — Private Session";
     [controller.ledgerBar showReadyInDirectory:[NSString stringWithFormat:
         @"PRIVATE · %@", [controller currentAssistantDirectory]]];
@@ -2329,6 +1798,26 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 - (void)menuNeedsUpdate:(NSMenu *)menu {
     AppDelegate *root = [self rootController];
     AppDelegate *controller = [root activeTerminalController];
+    if (menu == root.historyMenu) {
+        NSMenu *recentMenu = [menu itemWithTitle:@"Recent Directories"].submenu;
+        [recentMenu removeAllItems];
+        NSMutableOrderedSet<NSString *> *recent = [NSMutableOrderedSet orderedSet];
+        for (NSDictionary *record in controller.ledgerStore.records) {
+            NSString *directory = record[@"directory"];
+            if (directory.length > 0) [recent addObject:directory];
+            if (recent.count >= 10) break;
+        }
+        for (NSString *directory in recent) {
+            NSMenuItem *item = [recentMenu addItemWithTitle:directory
+                action:@selector(openRecentDirectoryFromMenu:) keyEquivalent:@""];
+            item.target = root; item.representedObject = directory;
+        }
+        if (recent.count == 0) {
+            NSMenuItem *empty = [recentMenu addItemWithTitle:@"No Recent Directories" action:nil keyEquivalent:@""];
+            empty.enabled = NO;
+        }
+        return;
+    }
     if (menu == root.viewMenu) {
         for (NSMenuItem *item in menu.itemArray) {
             if (item.action == @selector(toggleAIChatFromMenu:)) {
@@ -2399,7 +1888,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     [menu addItem:attachSelection];
     [menu addItem:NSMenuItem.separatorItem];
 
-    BOOL usesSubscription = [root.apiConfiguration.chatProvider
+    BOOL usesSubscription = [controller.apiConfiguration.chatProvider
         isEqualToString:ClaudeAIProviderSubscription];
     NSMenuItem *providerParent = [[NSMenuItem alloc]
         initWithTitle:[NSString stringWithFormat:@"AI Provider: %@",
@@ -2418,7 +1907,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         providerItem.target = root;
         providerItem.representedObject = definition[1];
         providerItem.state =
-            [root.apiConfiguration.chatProvider isEqualToString:definition[1]]
+            [controller.apiConfiguration.chatProvider isEqualToString:definition[1]]
                 ? NSControlStateValueOn : NSControlStateValueOff;
         [providerMenu addItem:providerItem];
     }
@@ -2426,13 +1915,13 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     [menu addItem:providerParent];
 
     NSString *selectedModelID = usesSubscription
-        ? root.apiConfiguration.subscriptionModelID
-        : root.apiConfiguration.selectedModelID;
+        ? controller.apiConfiguration.subscriptionModelID
+        : controller.apiConfiguration.selectedModelID;
     NSString *selectedModelName = usesSubscription
-        ? [root.apiConfiguration
+        ? [controller.apiConfiguration
             displayNameForSubscriptionModelID:selectedModelID]
         : (selectedModelID.length > 0
-            ? [root.apiConfiguration displayNameForModelID:selectedModelID]
+            ? [controller.apiConfiguration displayNameForModelID:selectedModelID]
             : nil);
     NSMenuItem *modelParent = [[NSMenuItem alloc]
         initWithTitle:selectedModelName.length > 0
@@ -2444,10 +1933,10 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     NSMenu *modelMenu = [[NSMenu alloc] initWithTitle:@"AI Chat Model"];
     NSArray<NSDictionary *> *models = usesSubscription
         ? ClaudeAPIConfiguration.subscriptionModels
-        : root.apiConfiguration.models;
+        : controller.apiConfiguration.models;
     if (models.count == 0) {
         NSMenuItem *empty = [[NSMenuItem alloc]
-            initWithTitle:root.apiConfiguration.hasAPIKey
+            initWithTitle:controller.apiConfiguration.hasAPIKey
                 ? @"No Models Loaded"
                 : @"Add an API Key in Settings"
                    action:nil
@@ -2473,7 +1962,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
             item.target = root;
             item.representedObject = @{
                 @"id" : identifier,
-                @"provider" : root.apiConfiguration.chatProvider,
+                @"provider" : controller.apiConfiguration.chatProvider,
             };
             item.state = [identifier isEqualToString:selectedModelID]
                 ? NSControlStateValueOn : NSControlStateValueOff;
@@ -2487,13 +1976,13 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                    action:@selector(refreshAIChatModelsFromMenu:)
             keyEquivalent:@""];
         refreshModels.target = root;
-        refreshModels.enabled = root.apiConfiguration.hasAPIKey;
+        refreshModels.enabled = controller.apiConfiguration.hasAPIKey;
         [modelMenu addItem:refreshModels];
     }
     modelParent.submenu = modelMenu;
     [menu addItem:modelParent];
 
-    NSString *permissionMode = [NSUserDefaults.standardUserDefaults
+    NSString *permissionMode = controller.sessionClient ? controller.peerState[@"permissionMode"] ?: @"ask" : [TerminalDBPreferences()
         stringForKey:@"TerminalDBPermissionMode"] ?: @"ask";
     NSMenuItem *permissionParent = [[NSMenuItem alloc]
         initWithTitle:@"Permission Mode"
@@ -2535,7 +2024,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         keyEquivalent:@""];
     NSMenu *accountMenu = [[NSMenu alloc]
         initWithTitle:@"Claude Code Account for This Tab"];
-    NSArray<ClaudeProfile *> *profiles = root.profileManager.profiles;
+    NSArray<ClaudeProfile *> *profiles = controller.profileManager.profiles;
     if (profiles.count == 0) {
         NSMenuItem *empty = [[NSMenuItem alloc]
             initWithTitle:@"No Claude Code Accounts"
@@ -2626,7 +2115,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                action:@selector(stopAIFromMenu:)
         keyEquivalent:@"."];
     stop.target = root;
-    stop.enabled = controller.assistantClient != nil;
+    stop.enabled = controller.sessionClient ? [controller.peerState[@"assistant"][@"working"] boolValue] : controller.assistantClient != nil;
     [menu addItem:stop];
     NSMenuItem *revertPatch = [[NSMenuItem alloc]
         initWithTitle:@"Revert Last AI Patch…"
@@ -2681,13 +2170,18 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 - (void)selectPermissionModeFromMenu:(NSMenuItem *)sender {
     NSString *mode = [sender.representedObject
         isKindOfClass:NSString.class] ? sender.representedObject : @"ask";
-    [NSUserDefaults.standardUserDefaults
-        setObject:mode forKey:@"TerminalDBPermissionMode"];
+    AppDelegate *controller = [[self rootController] activeTerminalController];
+    if (controller.sessionClient) [controller.sessionClient request:@"settings.update" payload:@{@"permissionMode": mode} completion:^(NSDictionary *result) {}];
+    else [TerminalDBPreferences() setObject:mode forKey:@"TerminalDBPermissionMode"];
 }
 
 - (void)stopAIFromMenu:(id)sender {
     (void)sender;
     AppDelegate *controller = [[self rootController] activeTerminalController];
+    if (controller.sessionClient) {
+        [controller.sessionClient request:@"assistant.cancel" payload:@{} completion:^(NSDictionary *result) {}];
+        return;
+    }
     if (controller.assistantClient == nil) return;
     controller.assistantRequestGeneration++;
     [controller.assistantClient cancel];
@@ -2700,6 +2194,13 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     (void)sender;
     AppDelegate *controller =
         [[self rootController] activeTerminalController];
+    if (controller.sessionClient) {
+        [controller.sessionClient request:@"patch.revert" payload:@{} completion:^(NSDictionary *result) {
+            if (result[@"error"]) [controller showPeerError:result[@"error"]];
+            else [controller requestPeerExecution:result[@"command"]];
+        }];
+        return;
+    }
     NSString *path = controller.lastAIApplyPatchPath;
     if (path.length == 0 ||
         ![NSFileManager.defaultManager fileExistsAtPath:path]) {
@@ -2735,7 +2236,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         [sender.representedObject isKindOfClass:NSString.class]
             ? sender.representedObject : nil;
     ClaudeProfile *profile = identifier.length > 0
-        ? [self.profileManager profileWithIdentifier:identifier]
+        ? [controller.profileManager profileWithIdentifier:identifier]
         : nil;
     if (controller == nil || profile == nil) return;
     [controller.claudeStatusBar selectProfile:profile];
@@ -2795,7 +2296,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
             ? selection[@"provider"] : nil;
     if (identifier == nil) return;
     ClaudeAPIConfiguration *configuration =
-        [[self rootController] apiConfiguration];
+        [[[self rootController] activeTerminalController] apiConfiguration];
     if ([provider isEqualToString:ClaudeAIProviderSubscription]) {
         [configuration selectSubscriptionModelID:identifier];
     } else if (identifier.length > 0) {
@@ -2808,13 +2309,13 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         [sender.representedObject isKindOfClass:NSString.class]
             ? sender.representedObject : nil;
     if (provider.length == 0) return;
-    [[[self rootController] apiConfiguration] selectChatProvider:provider];
+    [[[[self rootController] activeTerminalController] apiConfiguration] selectChatProvider:provider];
 }
 
 - (void)refreshAIChatModelsFromMenu:(id)sender {
     (void)sender;
     AppDelegate *root = [self rootController];
-    [root.apiConfiguration
+    [[root activeTerminalController].apiConfiguration
         refreshModelsWithCompletion:^(NSArray<NSDictionary *> *models,
                                       NSError *error) {
         (void)models;
@@ -2831,13 +2332,18 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         [[sender representedObject] isKindOfClass:NSString.class]
             ? [sender representedObject] : nil;
     ClaudeProfile *profile = identifier.length > 0
-        ? [root.profileManager profileWithIdentifier:identifier]
+        ? [active.profileManager profileWithIdentifier:identifier]
         : active.selectedProfile;
     [root removeClaudeProfile:profile];
 }
 
 - (void)removeClaudeProfile:(ClaudeProfile *)profile {
     AppDelegate *root = [self rootController];
+    AppDelegate *peerController = [root activeTerminalController];
+    if (peerController.sessionClient) {
+        [peerController claudeStatusBar:peerController.claudeStatusBar didRequestRemoveProfile:profile];
+        return;
+    }
     if (profile == nil) return;
 
     for (AppDelegate *controller in root.windowControllers) {
@@ -2956,7 +2462,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     if (active == nil) return;
     BOOL hidden = !active.focusMode && !active.commandBarHidden;
     if (!hidden && active.focusMode) active.focusMode = NO;
-    [NSUserDefaults.standardUserDefaults setBool:hidden
+    [TerminalDBPreferences() setBool:hidden
                                           forKey:TerminalDBCommandBarHiddenDefaultsKey];
     // This is a workspace preference, rather than terminal state. Apply it
     // immediately to every open tab and split so switching terminals never
@@ -3025,12 +2531,6 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         [self rootController].theme.fontSize];
 }
 
-- (void)openRemoteWebApp:(id)sender {
-    (void)sender;
-    NSURL *url = [NSURL URLWithString:@"https://app.terminaldb.app"];
-    if (url != nil) [NSWorkspace.sharedWorkspace openURL:url];
-}
-
 - (void)showTerminalDBHelp:(id)sender {
     (void)sender;
     NSAlert *help = [[NSAlert alloc] init];
@@ -3092,10 +2592,10 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 - (void)showClaudeAPISettings:(id)sender {
     (void)sender;
     AppDelegate *root = [self rootController];
-    if (root.apiSettingsController == nil) {
+    if (root.apiSettingsController == nil || [root activeTerminalController].sessionClient) {
         root.apiSettingsController =
             [[ClaudeAPISettingsWindowController alloc]
-                initWithConfiguration:root.apiConfiguration];
+                initWithConfiguration:[root activeTerminalController].apiConfiguration];
     }
     AppDelegate *active = [root activeTerminalController] ?: root;
     while (active.embeddedSplitOwner != nil) {
@@ -3127,6 +2627,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 }
 
 - (void)requestExecutionForCommand:(NSString *)command {
+    if (self.sessionClient) { [self requestPeerExecution:command]; return; }
     NSString *trimmed = [command
         stringByTrimmingCharactersInSet:
             NSCharacterSet.whitespaceAndNewlineCharacterSet];
@@ -3181,7 +2682,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     } else if ([environment isEqualToString:@"PRODUCTION"]) {
         host = @"PRODUCTION";
     }
-    NSString *permissionMode = [NSUserDefaults.standardUserDefaults
+    NSString *permissionMode = [TerminalDBPreferences()
         stringForKey:@"TerminalDBPermissionMode"] ?: @"ask";
     if ([permissionMode isEqualToString:@"paste-only"]) {
         [self pasteCommandForReview:trimmed];
@@ -3363,22 +2864,26 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     AppDelegate *controller = [[AppDelegate alloc] init];
     controller.owner = root;
     controller.profileManager = root.profileManager;
+    if (TerminalDBUsesPeerSessions()) controller.profileManager = [ClaudeProfileManager managerForPeerDisplay];
     controller.apiConfiguration = root.apiConfiguration;
     controller.theme = root.theme;
     controller.productStore = root.productStore;
     controller.claudeExecutable = root.claudeExecutable;
     controller.selectedProfile = root.profileManager.lastSelectedProfile;
-    controller.remoteTabIdentifier =
+    if (TerminalDBUsesPeerSessions()) controller.selectedProfile = nil;
+    controller.peerTarget = root.peerTarget;
+    controller.peerAttachSession = root.peerAttachSession;
+    controller.peerStartDirectory = root.peerStartDirectory;
+    controller.peerPrivateRequested = root.peerPrivateRequested;
+    controller.terminalSessionIdentifier =
         NSUUID.UUID.UUIDString.lowercaseString;
     [root.windowControllers addObject:controller];
     [controller createTerminalWindow];
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [root.remoteBridge publishInventory];
-    });
     return controller;
 }
 
 - (void)presentTerminalController:(AppDelegate *)controller {
+    if (TerminalDBRunsSessionHost()) return;
     BOOL backgroundUIQA = [NSProcessInfo.processInfo.arguments
         containsObject:@"--visual-qa"];
     BOOL visibleUIQA = [NSProcessInfo.processInfo.arguments
@@ -3743,10 +3248,10 @@ static BOOL TerminalDBReapShell(pid_t pid) {
             second.assistantToggleButton.image != nil &&
             [[second.assistantToggleButton accessibilityLabel]
                 isEqualToString:@"Show AI Chat"] &&
-            second.remoteWebButton.image != nil &&
-            [[second.remoteWebButton accessibilityLabel]
-                isEqualToString:@"Open TerminalDB Remote"] &&
-            second.remoteWebButton.action == @selector(openRemoteWebApp:);
+            second.workstationsButton.image != nil &&
+            [[second.workstationsButton accessibilityLabel]
+                isEqualToString:@"Paired Workstations"] &&
+            second.workstationsButton.action == @selector(showPairedWorkstations:);
         [second showAssistantPane];
         BOOL chatExpanded =
             !second.assistantView.hidden &&
@@ -3815,11 +3320,12 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     NSWindow *hostWindow =
         [sender isKindOfClass:NSWindow.class]
             ? (NSWindow *)sender
-            : (NSApp.keyWindow ?: NSApp.mainWindow);
+            : (NSApp.keyWindow ?: NSApp.mainWindow ?: [root activeTerminalController].window);
     if (hostWindow == nil) {
         [root newTerminalWindow:nil];
         return;
     }
+    if (TerminalDBUsesPeerSessions()) { [root showPeerPicker:hostWindow]; return; }
 
     AppDelegate *controller = [root createTerminalController];
     [hostWindow addTabbedWindow:controller.window ordered:NSWindowAbove];
@@ -3848,7 +3354,10 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     AppDelegate *host = self;
     if (host.workspaceView == nil || host.workspaceView.superview == nil) return;
     if (!host.assistantView.hidden) [host hideAssistantPane];
+    root.peerTarget = host.peerTarget;
+    root.peerStartDirectory = [host currentAssistantDirectory];
     AppDelegate *child = [root createTerminalController];
+    root.peerTarget = nil; root.peerStartDirectory = nil;
     child.embeddedSplitOwner = host;
     child.embeddedSplitVertical = vertical;
     if (host.splitControllers == nil) {
@@ -3900,9 +3409,9 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 - (void)createTerminalWindow {
     self.pty = -1;
     self.assistantMessages = [NSMutableArray array];
-    self.privateSession = [NSUserDefaults.standardUserDefaults
+    self.privateSession = [TerminalDBPreferences()
         boolForKey:@"TerminalDBPrivateSessionDefault"];
-    self.commandBarHidden = [NSUserDefaults.standardUserDefaults
+    self.commandBarHidden = [TerminalDBPreferences()
         boolForKey:TerminalDBCommandBarHiddenDefaultsKey];
     self.splitControllers = [NSMutableArray array];
     self.terminalInspector = [[TerminalInspector alloc] init];
@@ -3910,9 +3419,10 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         [[TerminalPermissionCenter alloc] initWithTheme:self.theme];
     self.ledgerStore = ([NSProcessInfo.processInfo.arguments
         containsObject:@"--visual-qa"] || [NSProcessInfo.processInfo.arguments
-        containsObject:@"--terminal-qa"])
+        containsObject:@"--terminal-qa"] || [NSProcessInfo.processInfo.environment[@"TERMINALDB_PEER_QA"] isEqualToString:@"1"])
         ? [TerminalLedgerStore ephemeralStoreForTesting]
         : [TerminalLedgerStore sharedStore];
+    if (TerminalDBUsesPeerSessions()) self.ledgerStore = [[TerminalLedgerStore alloc] initInMemory];
     self.activeLedgerCommand = @"";
     self.activeLedgerDirectory = @"";
     self.assistantResponse = @"";
@@ -3973,6 +3483,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                            weight:NSFontWeightRegular];
     self.terminalView.pty = -1;
     self.terminalView.inputEnabled = YES;
+    self.terminalView.headless = TerminalDBRunsSessionHost();
     __weak typeof(self) weakSelf = self;
     self.terminalView.userDidSendInput = ^{
         AppDelegate *strongSelf = weakSelf;
@@ -4012,7 +3523,13 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     self.terminalView.gridSizeChanged = ^{ [weakSelf updatePTYWindowSize]; };
     self.terminalView.inputFailed = ^{
         AppDelegate *strongSelf = weakSelf;
-        if (strongSelf == nil || strongSelf.window.attachedSheet != nil) return;
+        if (strongSelf == nil) return;
+        if (TerminalDBRunsSessionHost()) {
+            [[strongSelf rootController].sessionServer publish:@{@"type": @"input-failed", @"sessionId": strongSelf.terminalSessionIdentifier,
+                @"detail": @"The shell stopped accepting input. Some text may not have arrived. Review this session before starting a new terminal."}];
+            return;
+        }
+        if (strongSelf.window.attachedSheet != nil) return;
         NSAlert *alert = [[NSAlert alloc] init];
         alert.messageText = @"Terminal input could not be delivered";
         alert.informativeText = @"The terminal process stopped accepting input. Some of your text may not have arrived. Open a new tab to continue.";
@@ -4082,6 +3599,14 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                                  frame.size.height - statusBarHeight)
                 theme:self.theme];
     self.assistantView.delegate = self;
+    if (TerminalDBRunsSessionHost()) {
+        __weak AppDelegate *weakSession = self;
+        self.assistantView.peerPresentationDidChange = ^(NSDictionary *state) {
+            AppDelegate *session = weakSession;
+            if (session.terminalSessionIdentifier) [[session rootController].sessionServer publish:@{
+                @"type": @"assistant", @"sessionId": session.terminalSessionIdentifier, @"state": state}];
+        };
+    }
     self.assistantView.hidden = YES;
     [contentView addSubview:self.assistantView];
 
@@ -4172,25 +3697,29 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         @"Open AI Chat (Command-Shift-L)";
     self.assistantToggleButton.frame = NSMakeRect(72, 1, 30, 26);
     NSView *assistantAccessoryView =
-        [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 106, 28)];
-    self.remoteWebButton =
+        [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 218, 28)];
+    self.peerControlButton = [NSButton buttonWithTitle:@"Connecting…" target:self action:@selector(takePeerControl:)];
+    self.peerControlButton.frame = NSMakeRect(108, 1, 108, 26);
+    self.peerControlButton.bezelStyle = NSBezelStyleRounded;
+    [assistantAccessoryView addSubview:self.peerControlButton];
+    self.workstationsButton =
         [[NSButton alloc] initWithFrame:NSMakeRect(4, 1, 30, 26)];
-    self.remoteWebButton.title = @"";
-    self.remoteWebButton.bordered = NO;
-    self.remoteWebButton.controlSize = NSControlSizeSmall;
-    NSImage *remoteWebImage =
+    self.workstationsButton.title = @"";
+    self.workstationsButton.bordered = NO;
+    self.workstationsButton.controlSize = NSControlSizeSmall;
+    NSImage *workstationsImage =
         [NSImage imageWithSystemSymbolName:@"globe"
-                  accessibilityDescription:@"Open TerminalDB Remote"];
-    remoteWebImage = [remoteWebImage imageWithSymbolConfiguration:
+                  accessibilityDescription:@"Paired Workstations"];
+    workstationsImage = [workstationsImage imageWithSymbolConfiguration:
         [NSImageSymbolConfiguration configurationWithPointSize:14
                                                         weight:NSFontWeightMedium]];
-    self.remoteWebButton.image = remoteWebImage;
-    self.remoteWebButton.imagePosition = NSImageOnly;
-    [self.remoteWebButton setAccessibilityLabel:@"Open TerminalDB Remote"];
-    self.remoteWebButton.contentTintColor = self.theme.ansiColors[6];
-    self.remoteWebButton.target = self;
-    self.remoteWebButton.action = @selector(openRemoteWebApp:);
-    self.remoteWebButton.toolTip = @"Open TerminalDB Remote in Browser";
+    self.workstationsButton.image = workstationsImage;
+    self.workstationsButton.imagePosition = NSImageOnly;
+    [self.workstationsButton setAccessibilityLabel:@"Paired Workstations"];
+    self.workstationsButton.contentTintColor = self.theme.ansiColors[6];
+    self.workstationsButton.target = self;
+    self.workstationsButton.action = @selector(showPairedWorkstations:);
+    self.workstationsButton.toolTip = @"Manage Paired Workstations";
 
     self.commandBarToggleButton =
         [[NSButton alloc] initWithFrame:NSMakeRect(38, 1, 30, 26)];
@@ -4201,7 +3730,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     self.commandBarToggleButton.contentTintColor = self.theme.ansiColors[6];
     self.commandBarToggleButton.target = self;
     self.commandBarToggleButton.action = @selector(toggleCommandBar:);
-    [assistantAccessoryView addSubview:self.remoteWebButton];
+    [assistantAccessoryView addSubview:self.workstationsButton];
     [assistantAccessoryView addSubview:self.commandBarToggleButton];
     [assistantAccessoryView addSubview:self.assistantToggleButton];
     self.assistantAccessoryController =
@@ -4220,6 +3749,10 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         selectedProfile:self.selectedProfile
         theme:self.theme];
     self.claudeStatusBar.delegate = self;
+    self.claudeStatusBar.peerMode = TerminalDBUsesPeerSessions();
+    self.claudeStatusBar.peerRefreshHandler = ^{
+        [weakSelf.sessionClient request:@"account.refresh" payload:@{} completion:^(NSDictionary *result) {}];
+    };
     self.claudeStatusBar.autoresizingMask =
         NSViewWidthSizable | NSViewMaxYMargin;
     [self.claudeStatusBar showDirectory:[self currentAssistantDirectory]
@@ -4509,6 +4042,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 }
 
 - (void)configureClaudeIntegration {
+    if (TerminalDBUsesPeerSessions()) return;
     NSString *cacheRoot = [NSHomeDirectory()
         stringByAppendingPathComponent:
             @"Library/Caches/com.terminaldb.app"];
@@ -4757,6 +4291,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 }
 
 - (void)startShell {
+    if (TerminalDBUsesPeerSessions()) { [self connectToWorkstation]; return; }
     struct winsize size = [self currentTerminalWindowSize];
 
     char *realClaudePath = self.claudeExecutable.length > 0
@@ -4781,6 +4316,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     }
 
     if (pid == 0) {
+        if (self.peerStartDirectory.length > 0) chdir(self.peerStartDirectory.fileSystemRepresentation);
         const char *shell = getenv("SHELL");
         if (shell == NULL || shell[0] == '\0') shell = "/bin/zsh";
         setenv("TERM", "xterm-256color", 1);
@@ -4818,10 +4354,11 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 
     self.readSource = dispatch_source_create(
         DISPATCH_SOURCE_TYPE_READ, (uintptr_t)master, 0,
-        dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0));
+        dispatch_get_main_queue());
 
     __weak typeof(self) weakSelf = self;
     dispatch_source_set_event_handler(self.readSource, ^{
+        if (weakSelf.pty != master) return;
         char buffer[8192];
         ssize_t count = read(master, buffer, sizeof(buffer));
         if (count <= 0) {
@@ -4837,16 +4374,16 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         }
 
         NSData *data = [NSData dataWithBytes:buffer length:(NSUInteger)count];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            weakSelf.lastPTYOutputAt = [NSDate date];
-            AppDelegate *root = [weakSelf rootController];
-            [root.remoteBridge publishOutputData:data
-                                   tabIdentifier:weakSelf.remoteTabIdentifier
-                                            rows:weakSelf.terminalRows
-                                         columns:weakSelf.terminalColumns
-                                        inputMode:[weakSelf terminalRemoteInputMode]];
-            [weakSelf consumeTerminalData:data];
-        });
+        // Reading and parsing share one queue. Only the kernel PTY buffer can
+        // fill while this queue is occupied; no unbounded delivery callbacks or
+        // read/exit races can accumulate between the PTY and terminal state.
+        weakSelf.lastPTYOutputAt = [NSDate date];
+        AppDelegate *root = [weakSelf rootController];
+        [weakSelf consumeTerminalData:data];
+        if (TerminalDBRunsSessionHost()) {
+            [root.sessionServer publish:@{@"type": @"output", @"sessionId": weakSelf.terminalSessionIdentifier,
+                @"data": [data base64EncodedStringWithOptions:0]}];
+        }
     });
     dispatch_resume(self.readSource);
 }
@@ -4908,8 +4445,10 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     for (;;) {
         ssize_t count = read(self.pty, buffer, sizeof(buffer));
         if (count <= 0) break;
-        [self consumeTerminalData:[NSData dataWithBytes:buffer
-                                                length:(NSUInteger)count]];
+        NSData *data = [NSData dataWithBytes:buffer length:(NSUInteger)count];
+        [self consumeTerminalData:data];
+        if (TerminalDBRunsSessionHost()) [[self rootController].sessionServer publish:@{
+            @"type": @"output", @"sessionId": self.terminalSessionIdentifier, @"data": [data base64EncodedStringWithOptions:0]}];
     }
     if (self.readSource != nil) {
         dispatch_source_cancel(self.readSource);
@@ -4936,6 +4475,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 }
 
 - (void)beginLedgerCommand {
+    if (self.sessionClient) return;
     NSString *command =
         [self ledgerFileContentsAtPath:self.shellCommandPath];
     if (command.length == 0) return;
@@ -4963,9 +4503,11 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         [self.productStore beginMonitoringCommand:command
                                         directory:self.activeLedgerDirectory
                                       environment:environment];
+    [self publishPeerState];
 }
 
 - (void)finishLedgerCommand {
+    if (self.sessionClient) return;
     if (self.activeLedgerCommand.length == 0 ||
         self.activeLedgerStartedAt == nil) {
         if ([NSProcessInfo.processInfo.arguments
@@ -5034,9 +4576,11 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     self.activeLedgerCommand = @"";
     self.activeLedgerDirectory = @"";
     self.activeLedgerStartedAt = nil;
+    [self publishPeerState];
 }
 
 - (NSString *)currentAssistantDirectory {
+    if (self.sessionClient) return self.peerState[@"directory"] ?: @"~";
     NSString *directory = [NSString
         stringWithContentsOfFile:self.shellCWDPath
                        encoding:NSUTF8StringEncoding
@@ -5509,6 +5053,12 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 }
 
 - (void)beginAssistantRequestForPrompt:(NSString *)prompt {
+    if (self.sessionClient) {
+        [self showAssistantPane];
+        [self.sessionClient request:@"assistant.send" payload:@{@"prompt": prompt ?: @"", @"contextItems": self.assistantView.contextItems ?: @[]}
+                         completion:^(NSDictionary *result) {}];
+        return;
+    }
     NSString *trimmedPrompt = [prompt
         stringByTrimmingCharactersInSet:
             NSCharacterSet.whitespaceAndNewlineCharacterSet];
@@ -5774,6 +5324,13 @@ static BOOL TerminalDBReapShell(pid_t pid) {
             @"terminaldb-%@.patch", NSUUID.UUID.UUIDString]];
     NSData *data =
         [reviewedPatch dataUsingEncoding:NSUTF8StringEncoding];
+    if (self.sessionClient) {
+        [self.sessionClient request:@"patch.stage" payload:@{@"patch": reviewedPatch} completion:^(NSDictionary *result) {
+            if (result[@"error"]) [self showPeerError:result[@"error"]];
+            else [self requestPeerExecution:result[@"command"]];
+        }];
+        return;
+    }
     if (![data writeToFile:path options:NSDataWritingAtomic error:nil]) {
         NSAlert *error = [[NSAlert alloc] init];
         error.messageText = @"Could not prepare the patch";
@@ -5932,6 +5489,10 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 }
 
 - (void)resetAssistantConversation {
+    if (self.sessionClient) {
+        [self.sessionClient request:@"assistant.reset" payload:@{} completion:^(NSDictionary *result) {}];
+        return;
+    }
     id client = self.assistantClient;
     self.assistantClient = nil;
     self.assistantRequestGeneration++;
@@ -6001,6 +5562,10 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 
 - (void)claudeStatusBar:(ClaudeStatusBar *)statusBar
        didSelectProfile:(ClaudeProfile *)profile {
+    if (self.sessionClient) {
+        [self.sessionClient request:@"account.select" payload:@{@"accountId": profile.identifier ?: @""} completion:^(NSDictionary *result) {}];
+        return;
+    }
     pid_t foregroundProcessGroup =
         self.pty >= 0 ? tcgetpgrp(self.pty) : -1;
     if (foregroundProcessGroup > 0 &&
@@ -6050,6 +5615,12 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     }
 
     NSError *error = nil;
+    if (self.sessionClient) {
+        [self.sessionClient request:@"account.add" payload:@{@"label": labelField.stringValue} completion:^(NSDictionary *result) {
+            if (result[@"accountId"]) [self.sessionClient request:@"account.login" payload:@{@"accountId": result[@"accountId"]} completion:^(NSDictionary *response) {}];
+        }];
+        return;
+    }
     ClaudeProfile *profile =
         [self.profileManager createProfileWithLabel:labelField.stringValue
                                              error:&error];
@@ -6070,7 +5641,14 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 - (void)claudeStatusBar:(ClaudeStatusBar *)statusBar
  didRequestRemoveProfile:(ClaudeProfile *)profile {
     (void)statusBar;
-    [[self rootController] removeClaudeProfile:profile];
+    if (self.sessionClient) {
+        if (!profile) return;
+        NSAlert *alert = [[NSAlert alloc] init]; alert.messageText = @"Remove this Claude account?";
+        alert.informativeText = [NSString stringWithFormat:@"This removes the profile and its stored credentials from %@. It does not cancel the Claude subscription.", self.sessionClient.workstationName];
+        [alert addButtonWithTitle:@"Remove Account"]; [alert addButtonWithTitle:@"Cancel"];
+        if ([alert runModal] != NSAlertFirstButtonReturn) return;
+        [self.sessionClient request:@"account.remove" payload:@{@"accountId": profile.identifier} completion:^(NSDictionary *result) {}];
+    } else [[self rootController] removeClaudeProfile:profile];
 }
 
 - (void)claudeStatusBarDidRequestUsagePanel:(ClaudeStatusBar *)statusBar {
@@ -6103,7 +5681,8 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 - (void)claudeStatusBar:(ClaudeStatusBar *)statusBar
  didRequestLoginProfile:(ClaudeProfile *)profile {
     (void)statusBar;
-    [self startClaudeLoginForProfile:profile];
+    if (self.sessionClient) [self.sessionClient request:@"account.login" payload:@{@"accountId": profile.identifier} completion:^(NSDictionary *result) {}];
+    else [self startClaudeLoginForProfile:profile];
 }
 
 - (void)clearClaudeLoginTracking {
@@ -6278,6 +5857,13 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 }
 
 - (void)updateWindowTitle {
+    if (self.sessionClient) {
+        NSString *title = self.peerState[@"title"] ?: @"Terminal";
+        NSString *host = self.sessionClient.workstationName ?: @"This Mac";
+        self.window.tab.title = [NSString stringWithFormat:@"%@ · %@", title, host];
+        self.window.title = [@"TerminalDB — " stringByAppendingString:self.window.tab.title];
+        [self refreshTabToolTip]; return;
+    }
     NSString *base = self.reportedWindowTitle.length > 0
         ? self.reportedWindowTitle
         : (self.shellReportedTitle.length > 0
@@ -6359,6 +5945,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 }
 
 - (void)startTabActivityMonitoring {
+    if (self.sessionClient) return;
     self.tabActivityTimer =
         [NSTimer scheduledTimerWithTimeInterval:0.2
                                          target:self
@@ -6373,6 +5960,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     [self refreshClaudeTabState];
     [self refreshClaudeStatusLine];
     [self refreshPersistentTerminalContext];
+    [self publishPeerState];
     pid_t foregroundProcessGroup =
         self.pty >= 0 ? tcgetpgrp(self.pty) : -1;
     BOOL foregroundProcessRunning =
@@ -6471,7 +6059,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     self.displayedContextModel = model;
     [self.claudeStatusBar showDirectory:directory model:model];
     [self updateWindowTitle];
-    [[self rootController].remoteBridge publishInventory];
+
 }
 
 - (void)refreshShellReportedTitle {
@@ -6527,7 +6115,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     if ([self.claudeTabState isEqualToString:state]) return;
     self.claudeTabState = state;
     [self updateWindowTitle];
-    [[self rootController].remoteBridge publishInventorySoon];
+
 }
 
 - (void)setTabBusy:(BOOL)busy {
@@ -6539,7 +6127,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     [self refreshTabToolTip];
     // A controller decides whether a tab can be closed from this flag, so it
     // must not wait for the next periodic inventory.
-    [[self rootController].remoteBridge publishInventorySoon];
+
 }
 
 - (void)setTabActivityAnimating:(BOOL)animating {
@@ -6595,7 +6183,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 - (void)windowDidBecomeKey:(NSNotification *)notification {
     (void)notification;
     [self restoreDesktopTerminalGeometry];
-    [[self rootController].remoteBridge publishInventorySoon];
+
     if (!self.assistantView.hidden) {
         [self.assistantView focusComposer];
     } else {
@@ -6618,6 +6206,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 }
 
 - (BOOL)windowShouldClose:(NSWindow *)sender {
+    if (self.sessionClient) return YES;
     (void)sender;
     if (self.embeddedSplitOwner != nil ||
         ![self hasBusyProcessInPaneTree]) {
@@ -6648,7 +6237,14 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 }
 
 - (void)updatePTYWindowSize {
-    if (self.remoteGeometryActive) return;
+    if (self.window.inLiveResize) return;
+    if (self.sessionClient) {
+        if (self.sessionClient.connected && self.sessionClient.controlling) {
+            [self.sessionClient request:@"terminal.resize" payload:@{@"columns": @(self.terminalView.terminalColumns), @"rows": @(self.terminalView.terminalRows)} completion:^(NSDictionary *result) {}];
+        }
+        return;
+    }
+    if (self.controllerGeometryActive) return;
     struct winsize size = [self currentTerminalWindowSize];
     if (self.pty < 0) return;
     if (self.appliedPTYRows == size.ws_row &&
@@ -6663,7 +6259,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     // duplicated full-screen frames after a window resize.
 }
 
-- (BOOL)applyRemoteTerminalColumns:(NSUInteger)columns
+- (BOOL)applyControllerColumns:(NSUInteger)columns
                               rows:(NSUInteger)rows {
     if (columns < 20 || columns > 500 || rows < 5 || rows > 200) {
         return NO;
@@ -6692,6 +6288,8 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 }
 
 - (void)windowWillClose:(NSNotification *)notification {
+    if (TerminalDBRunsSessionHost()) [[self rootController].sessionServer publish:@{@"type": @"ended", @"sessionId": self.terminalSessionIdentifier}];
+    [self.sessionClient close];
     (void)notification;
     NSArray<AppDelegate *> *embedded = [self.splitControllers copy];
     [self.splitControllers removeAllObjects];
@@ -6732,13 +6330,11 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     AppDelegate *closingController = self;
     dispatch_async(dispatch_get_main_queue(), ^{
         [root.windowControllers removeObject:closingController];
-        [root.remoteBridge publishInventory];
+
         if (root.windowControllers.count == 0) {
-            // The per-user agent aggregates every TerminalDB process. Closing
-            // this process must not disable another still-open instance; the
-            // agent ends Remote Control after its final authenticated local
-            // client disconnects.
-            [root.remoteBridge stop];
+            if (TerminalDBRunsSessionHost()) return;
+            // Closing the interface never stops its background session host.
+
             [NSApp terminate:nil];
         }
     });
@@ -6837,7 +6433,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     BOOL claudeIdentityAvailable =
         [claudeIdentity claudeIsForeground] &&
         [claudeIdentity.claudeModelName isEqualToString:@"Opus Test"] &&
-        [[claudeIdentity terminalRemoteInputMode]
+        [[claudeIdentity terminalInputMode]
             isEqualToString:@"application"];
     [NSFileManager.defaultManager removeItemAtPath:statusLinePath error:nil];
     if (!claudeIdentityAvailable) {
@@ -7593,10 +7189,10 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 
     AppDelegate *remoteGeometry = newTerminal();
     BOOL appliedRemoteGeometry =
-        [remoteGeometry applyRemoteTerminalColumns:178 rows:35];
+        [remoteGeometry applyControllerColumns:178 rows:35];
     BOOL rejectedUnsafeGeometry =
-        ![remoteGeometry applyRemoteTerminalColumns:501 rows:35] &&
-        ![remoteGeometry applyRemoteTerminalColumns:178 rows:4];
+        ![remoteGeometry applyControllerColumns:501 rows:35] &&
+        ![remoteGeometry applyControllerColumns:178 rows:4];
     if (!appliedRemoteGeometry || !rejectedUnsafeGeometry ||
         remoteGeometry.terminalColumns != 178 ||
         remoteGeometry.terminalRows != 35) {
@@ -7604,14 +7200,6 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                 "FAIL bounded remote terminal geometry columns=%lu rows=%lu\n",
                 (unsigned long)remoteGeometry.terminalColumns,
                 (unsigned long)remoteGeometry.terminalRows);
-        failures++;
-    }
-    if (![TerminalRemoteBridge runUTF8OutputDecodingSelfTests]) {
-        fprintf(stderr, "FAIL remote PTY output preserves split UTF-8\n");
-        failures++;
-    }
-    if (![TerminalRemotePanelController runAccountControlsSelfTests]) {
-        fprintf(stderr, "FAIL Remote Control exposes a visible Create Account action\n");
         failures++;
     }
 
@@ -7720,11 +7308,15 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
     (void)sender;
-    return YES;
+    return !TerminalDBRunsSessionHost();
 }
 
 - (NSApplicationTerminateReply)applicationShouldTerminate:
     (NSApplication *)sender {
+    if (TerminalDBUsesPeerSessions()) {
+        for (AppDelegate *controller in [self rootController].windowControllers) [controller.sessionClient close];
+        return NSTerminateNow;
+    }
     (void)sender;
     AppDelegate *root = [self rootController];
     NSUInteger running = 0;
@@ -7768,6 +7360,22 @@ static AppDelegate *TerminalDBApplicationDelegate;
 int main(void) {
     @autoreleasepool {
         NSApplication *app = NSApplication.sharedApplication;
+        if ([NSProcessInfo.processInfo.arguments containsObject:@"--peer-self-test"]) {
+            return [TDBPeerSelfTests run] ? 0 : 1;
+        }
+        if ([NSProcessInfo.processInfo.arguments containsObject:@"--peer-agent"] ||
+            [NSProcessInfo.processInfo.processName isEqualToString:@"TerminalDBPeerAgent"]) {
+            [app setActivationPolicy:NSApplicationActivationPolicyProhibited];
+            static TDBPeerAgent *agent;
+            agent = [[TDBPeerAgent alloc] init];
+            NSError *error = nil;
+            if (![agent startAndReturnError:&error]) {
+                fprintf(stderr, "TerminalDB peer service could not start.\n");
+                return 1;
+            }
+            [app run];
+            return 0;
+        }
         if ([NSProcessInfo.processInfo.arguments containsObject:@"--self-test"]) {
             return [AppDelegate runTerminalSelfTests] ? 0 : 1;
         }
@@ -7778,7 +7386,7 @@ int main(void) {
         BOOL visibleVisualQA = [NSProcessInfo.processInfo.arguments
             containsObject:@"--visual-qa-show-window"];
         [app setActivationPolicy:
-            backgroundTabQA || (visualQA && !visibleVisualQA)
+            TerminalDBRunsSessionHost() || backgroundTabQA || (visualQA && !visibleVisualQA)
                 ? NSApplicationActivationPolicyAccessory
                 : NSApplicationActivationPolicyRegular];
         TerminalDBApplicationDelegate = [[AppDelegate alloc] init];

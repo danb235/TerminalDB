@@ -171,6 +171,7 @@ do {
     check(count == expected.count &&
               Data(received.prefix(max(0, count))) == expected,
           "dropping files inserts complete bracketed-paste input into the TUI")
+    check(!view.enqueueInputData(Data(repeating: 65, count: 4 * 1_048_576 + 1)), "PTY rejects an oversized input before queuing partial bytes")
     view.pty = -1
     close(fds[0]); close(fds[1])
 }
@@ -220,6 +221,44 @@ do {
     }
 }
 
+// Reconnect in the middle of output must preserve parser and application modes,
+// including state that is not represented by the visible cells alone.
+do {
+    let cases: [(String, Data, Data)] = [
+        ("partial UTF8", Data([0x41, 0xe7, 0x95]), Data([0x8c, 0x42])),
+        ("partial CSI", Data("A\(esc)[38;2;10;".utf8), Data("120;240mB".utf8)),
+        ("partial OSC", Data("A\(esc)]0;synthetic".utf8), Data(" title\u{7}B".utf8)),
+        ("wrap disabled", Data("\(esc)[?7l1234567890".utf8), Data("XY".utf8)),
+        ("insert mode", Data("abcdef\(esc)[1;2H\(esc)[4h".utf8), Data("XY".utf8)),
+        ("origin and margins", Data("\(esc)[2;4r\(esc)[?69h\(esc)[3;8s\(esc)[?6h\(esc)[2;2HA".utf8), Data("\(esc)[1;1HX\nY".utf8)),
+        ("saved cursor modes", Data("\(esc)[2;4r\(esc)[?6h\(esc)[2;3H\(esc)[31m\(esc)7\(esc)[?6l\(esc)[1;1H\(esc)[32m".utf8), Data("\(esc)8XY".utf8)),
+        ("DEC charset", Data("\(esc)(0lq".utf8), Data("qk\(esc)(B!".utf8)),
+        ("saved charset", Data("\(esc)(0\(esc)7\(esc)(B\(esc)[2;1H".utf8), Data("\(esc)8lqk".utf8)),
+        ("restored independent charset", Data("\(esc)(0\(esc)7\(esc)(B\(esc)8".utf8), Data("lqk".utf8)),
+    ]
+    for (name, prefix, suffix) in cases {
+        let source = makeSurface(10, 5), copy = makeSurface(10, 5)
+        source.feedData(prefix)
+        copy.feedData(source.ansiSnapshotData())
+        source.feedData(suffix); copy.feedData(suffix)
+        check(cells(source) == cells(copy) && term(source).buffer.x == term(copy).buffer.x && term(source).buffer.y == term(copy).buffer.y,
+              "snapshot continues \(name)")
+    }
+    let source = makeSurface(), copy = makeSurface()
+    source.feedText("\(esc)[=3u\(esc)[>0u\(esc)[=7u\(esc)[>0u\(esc)[=15u")
+    copy.feedData(source.ansiSnapshotData())
+    check(term(source).keyboardEnhancementFlags == term(copy).keyboardEnhancementFlags, "snapshot restores enhanced keyboard flags")
+    for _ in 0..<2 {
+        source.feedText("\(esc)[<u"); copy.feedText("\(esc)[<u")
+        check(term(source).keyboardEnhancementFlags == term(copy).keyboardEnhancementFlags, "snapshot restores enhanced keyboard stack")
+    }
+    let oversized = makeSurface()
+    oversized.feedText("\(esc)]0;" + String(repeating: "x", count: 66_000))
+    check(!oversized.snapshotReady, "oversized unfinished control prefix defers snapshot instead of truncating state")
+    oversized.feedText("\u{7}ready")
+    check(oversized.snapshotReady && oversized.string.contains("ready"), "snapshot readiness recovers when oversized control sequence completes")
+}
+
 do {
     let source = makeSurface(500, 200), copy = makeSurface(500, 200)
     let row = (0..<500).map { index in
@@ -241,6 +280,74 @@ do {
     view.feedText("\(esc)]633;C\u{7}output\(esc)]633;D\(esc)\\\(esc)]0;QA title\u{7}")
     check(boundaries == ["C", "D"] && title == "QA title", "shell OSC callbacks preserve boundaries and title")
     check(view.string.contains("output") && !view.string.contains("633"), "shell integration never appears as screen text")
+}
+
+// Only the authoritative host may answer terminal queries. Native viewers
+// still send real user input, including input-method commits.
+do {
+    let view = makeSurface()
+    var sent = Data()
+    view.inputHandler = { sent.append($0); return true }
+    view.viewer = true
+    view.feedText("\(esc)[6n")
+    check(sent.isEmpty, "viewer suppresses terminal-generated device replies")
+    native(view).insertText("typed", replacementRange: NSRange(location: NSNotFound, length: 0))
+    check(sent == Data("typed".utf8), "viewer forwards genuine keyboard input")
+    var focused: [Bool] = []
+    view.focusHandler = { focused.append($0) }
+    sent.removeAll()
+    view.feedText("\(esc)[?1004h")
+    check(sent.isEmpty && focused.isEmpty, "viewer suppresses focus reports during host output")
+    term(view).setTerminalFocus(false)
+    check(focused == [false] && sent.isEmpty, "viewer routes focus as an action without a raw terminal reply")
+    sent.removeAll()
+    view.viewer = false
+    view.feedText("\(esc)[6n")
+    check(!sent.isEmpty, "authoritative host still answers terminal queries")
+}
+
+// The background host parses without its renderer and emits exactly one query reply.
+do {
+    let host = makeSurface(); host.headless = true
+    var sent = Data(), boundaries: [String] = []
+    host.inputHandler = { sent.append($0); return true }
+    host.commandBoundary = { boundaries.append($0) }
+    host.resizeGrid(columns: 100, rows: 30)
+    host.feedText("\(esc)]633;C\u{7}日本語\(esc)[6n")
+    check(host.string.contains("日本語") && host.terminalColumns == 100 && host.terminalRows == 30, "headless host owns Unicode screen and geometry")
+    check(boundaries == ["C"] && sent.filter { $0 == 0x1b }.count == 1, "headless host alone answers query and receives shell hooks")
+    let viewer = makeSurface(); viewer.viewer = true
+    viewer.feedText(host.ansiSnapshot())
+    check(viewer.string.contains("日本語"), "headless host snapshot restores a native viewer")
+}
+
+do {
+    let viewer = makeSurface(); viewer.viewer = true
+    viewer.resizeGrid(columns: 100, rows: 30)
+    viewer.frame.size = NSSize(width: 360, height: 240)
+    viewer.needsLayout = true; viewer.layoutSubtreeIfNeeded()
+    check(viewer.terminalColumns == 100 && viewer.terminalRows == 30, "passive viewer preserves controller geometry after layout")
+    viewer.useLocalGrid()
+    check(viewer.terminalColumns != 100, "takeover returns sizing to the controlling view")
+}
+
+do {
+    let host = makeSurface(); host.headless = true
+    var output = Data()
+    host.inputHandler = { output.append($0); return true }
+    host.feedText("\(esc)[?1002h\(esc)[?1006hmouse program")
+    let snapshot = host.ansiSnapshot()
+    check(output.isEmpty, "snapshot reads mouse protocol without sending a synthetic event to the shell")
+    let viewer = makeSurface(); viewer.viewer = true; viewer.feedText(snapshot)
+    check(term(viewer).mouseMode == .buttonEventTracking && viewer.ansiSnapshot().contains("\(esc)[?1006h"), "snapshot preserves mouse tracking and encoding")
+    viewer.inputEnabled = false
+    check(!native(viewer).allowMouseReporting, "passive views retain local selection and scrolling")
+    viewer.inputEnabled = true
+    check(native(viewer).allowMouseReporting, "controller restores application mouse reporting")
+    var mouseInput = Data()
+    viewer.inputHandler = { mouseInput.append($0); return true }
+    term(viewer).sendEvent(buttonFlags: 0, x: 1, y: 2, pixelX: 10, pixelY: 20)
+    check(String(decoding: mouseInput, as: UTF8.self) == "\(esc)[<0;2;3M", "genuine application mouse input reaches the host")
 }
 
 // Slow-reader backpressure regression: exact bytes and order, including paste

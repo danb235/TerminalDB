@@ -1,0 +1,551 @@
+import Foundation
+import Network
+import AppKit
+
+private final class PendingPeerPair {
+    let link: PeerTLSLink
+    var name = "Nearby Mac"
+    var endpoint: PeerEndpoint?
+    var localApproval = false
+    var remoteApproval = false
+    init(_ link: PeerTLSLink, endpoint: PeerEndpoint? = nil) { self.link = link; self.endpoint = endpoint }
+}
+
+@objc(TDBPeerAgent)
+public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
+    private var identity: PeerDeviceIdentity!
+    private var trust: PeerTrustStore!
+    private let gate = PeerPairingGate()
+    private var network: PeerTLSNetwork!
+    private var listener: PeerLocalListener?
+    private var advertisement: NetService?
+    private let browser = NetServiceBrowser()
+    private var services: [String: NetService] = [:]
+    private var nearby: [String: PeerEndpoint] = [:]
+    private var pendingPairs: [String: PendingPeerPair] = [:]
+    private var links: [String: PeerTLSLink] = [:]
+    private var forwardedTargets: [String: String] = [:]
+    private var outgoingGateways: [String: String] = [:]
+    private var localClients: [String: PeerLocalConnection] = [:]
+    private var hostLinks: [String: PeerLocalConnection] = [:]
+    private var wakeObserver: NSObjectProtocol?
+    private var applyingRevocations = false
+    private var status = "Starting"
+    private var statusDetail = ""
+
+    @objc public func start() throws {
+        do { identity = try PeerDeviceIdentity() }
+        catch {
+            let detail = (error as? PeerFailure)?.message ?? "macOS could not initialize the device identity. Check Keychain access, then reopen TerminalDB."
+            try? PeerPaths.save(Data(detail.utf8), name: "startup-error.txt")
+            throw PeerFailure(detail)
+        }
+        try? FileManager.default.removeItem(at: PeerPaths.file("startup-error.txt"))
+        trust = try PeerTrustStore()
+        network = PeerTLSNetwork(identity: identity, trust: trust, gate: gate)
+        network.accepted = { [weak self] link in self?.acceptNetwork(link) }
+        listener = try PeerLocalListener(name: "peer")
+        listener?.accepted = { [weak self] connection, hello in self?.acceptLocal(connection, hello: hello) }
+        try network.listen(port: trust.settings.listenPort) { [weak self] error in
+            guard let self else { return }
+            self.status = error == nil ? "Ready" : "Unavailable"
+            self.statusDetail = error == nil ? "Paired Macs connect directly. No cloud service is used." : "The peer listener could not start. Check the configured port and macOS network permissions."
+            if error == nil { self.advertise() }
+            self.broadcastState()
+        }
+        browser.delegate = self
+        browser.searchForServices(ofType: PeerProtocol.serviceType, inDomain: "local.")
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            self.gate.close(); self.expirePairing()
+            self.browser.stop(); self.services.removeAll(); self.nearby.removeAll()
+            self.advertise(); self.browser.searchForServices(ofType: PeerProtocol.serviceType, inDomain: "local.")
+            self.broadcastState()
+        }
+    }
+    deinit { if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) } }
+
+    private func advertise() {
+        advertisement?.stop()
+        let service = NetService(domain: "local.", type: PeerProtocol.serviceType,
+                                 name: "tdb-" + identity.fingerprint.prefix(12), port: Int32(trust.settings.listenPort))
+        service.setTXTRecord(NetService.data(fromTXTRecord: ["v": Data("1".utf8)]))
+        service.delegate = self
+        service.publish()
+        advertisement = service
+    }
+
+    private func acceptLocal(_ connection: PeerLocalConnection, hello: [String: Any]) {
+        localClients[connection.id] = connection
+        let originalClose = connection.disconnected
+        var remote: PeerTLSLink?
+        var closed = false
+        connection.receive = { [weak self, weak connection] message in
+            guard let self, let connection else { return }
+            if message["type"] as? String == "connect", let peerID = message["peerId"] as? String {
+                self.connect(peerID: peerID, cancelled: { closed }) { result in
+                    guard !closed else { if case .success(let link) = result { link.close() }; return }
+                    switch result {
+                    case .failure:
+                        connection.send(["type": "error", "detail": "The paired Mac is unreachable. Check its saved address, power, and firewall settings."])
+                        connection.close()
+                    case .success(let link):
+                        remote = link
+                        link.receive = { [weak self] message in
+                            guard let self else { return }
+                            var message = message
+                            if message["type"] as? String == "ready" {
+                                message["connectionPath"] = link.pathLabel
+                                self.acceptEndpoints(message["peerEndpoints"], from: link.peerID)
+                            } else if message["type"] as? String == "peer.endpoints" {
+                                self.acceptEndpoints(message["endpoints"], from: link.peerID); return
+                            }
+                            connection.send(message)
+                        }
+                        link.disconnected = { [weak self] in self?.links.removeValue(forKey: link.id); connection.close() }
+                        link.send(["type": "hello", "version": PeerProtocol.version,
+                                   "clientId": hello["clientId"] as? String ?? UUID().uuidString,
+                                   "endpoints": self.endpointAdvertisement()])
+                    }
+                }
+            } else if let remote { remote.send(message) }
+            else { self.manage(message, connection: connection) }
+        }
+        connection.disconnected = { [weak self, weak connection] in
+            closed = true
+            originalClose?(); remote?.close()
+            if let connection { self?.localClients.removeValue(forKey: connection.id) }
+        }
+        connection.send(["type": "ready", "version": PeerProtocol.version])
+    }
+
+    private func manage(_ message: [String: Any], connection: PeerLocalConnection) {
+        guard let operation = message["operation"] as? String,
+              let request = message["requestId"] as? String, UUID(uuidString: request) != nil else { connection.close(); return }
+        func reply(_ payload: [String: Any] = [:]) {
+            var result = payload; result["type"] = "reply"; result["requestId"] = request
+            connection.send(result)
+        }
+        do {
+            switch operation {
+            case "peers.state": reply(state())
+            case "peers.pairing.open":
+                gate.open(); reply(state()); broadcastState()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 180) { [weak self] in self?.expirePairing() }
+            case "peers.pairing.close": gate.close(); expirePairing(); reply(state())
+            case "peers.pair":
+                guard gate.isOpen, let service = message["service"] as? String, let endpoint = nearby[service] else {
+                    throw PeerFailure("Open pairing on both Macs, then select a discovered Mac on this LAN.")
+                }
+                network.connect(endpoint: endpoint, expected: nil, pairing: true) { [weak self] result in
+                    guard let self else { return }
+                    switch result {
+                    case .failure: reply(["error": "The nearby Mac could not pair. Open pairing on both Macs and check Local Network permission."])
+                    case .success(let link):
+                        self.track(link)
+                        let pending = PendingPeerPair(link, endpoint: endpoint)
+                        self.pendingPairs[link.id] = pending
+                        self.installPairing(pending)
+                        self.sendPairInfo(link)
+                        reply(self.state())
+                    }
+                }
+            case "peers.approve":
+                guard let id = message["candidate"] as? String, let candidate = pendingPairs[id], gate.isOpen,
+                      message["fingerprint"] as? String == candidate.link.peerID else {
+                    throw PeerFailure("This pairing expired or its fingerprint changed. Start pairing again.")
+                }
+                candidate.localApproval = true
+                candidate.link.send(["type": "pair.approve"])
+                try finishPairing(candidate)
+                reply(state()); broadcastState()
+            case "peers.remove":
+                let id = message["peerId"] as? String ?? ""
+                guard trust.contains(id) else { throw PeerFailure("That workstation is no longer paired.") }
+                try trust.update { settings in
+                    if message["otherMacs"] as? Bool == true {
+                        var pending = settings.pendingRevocations ?? [:]
+                        for host in settings.peers.keys where host != id {
+                            pending[host] = Array(Set((pending[host] ?? []) + [id])).sorted()
+                        }
+                        settings.pendingRevocations = pending
+                    }
+                    settings.peers.removeValue(forKey: id)
+                    settings.pendingRevocations?.removeValue(forKey: id)
+                }
+                disconnectPeer(id)
+                reply(state()); broadcastState(); applyPendingRevocations()
+            case "peers.retryRemovals": applyPendingRevocations(); reply(state())
+            case "peers.endpoint":
+                let id = message["peerId"] as? String ?? ""
+                let endpoint = try PeerEndpoint.parse(message["address"] as? String ?? "")
+                try trust.update {
+                    guard var peer = $0.peers[id] else { throw PeerFailure("Pair this workstation before saving its address.") }
+                    peer.endpoints.removeAll { $0.scope == "internet" }
+                    peer.endpoints.append(endpoint); $0.peers[id] = peer
+                }
+                reply(state()); broadcastState()
+            case "peers.publicEndpoint":
+                let text = (message["address"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let endpoints = text.isEmpty ? [] : [try PeerEndpoint.parse(text)]
+                try trust.update { $0.publicEndpoints = endpoints }
+                for link in links.values where trust.contains(link.peerID) && hostLinks[link.id] != nil {
+                    link.send(["type": "peer.endpoints", "endpoints": endpointAdvertisement()])
+                }
+                reply(state()); broadcastState()
+            case "peers.testEndpoint":
+                guard let peerID = message["peerId"] as? String,
+                      let endpoint = trust.settings.publicEndpoints.first else {
+                    throw PeerFailure("Save this Mac’s public address, then select a paired Mac on another network to test it.")
+                }
+                connect(peerID: peerID) { result in
+                    guard case .success(let link) = result else { reply(["error": "The testing Mac is unreachable."]); return }
+                    var finished = false
+                    let finish: ([String: Any]) -> Void = { response in
+                        guard !finished else { return }; finished = true; link.close(); reply(response)
+                    }
+                    link.receive = { response in
+                        guard response["type"] as? String == "endpoint.result" else { return }
+                        finish(["testResult": response["detail"] as? String ?? "Test finished."])
+                    }
+                    link.disconnected = { [weak self] in self?.links.removeValue(forKey: link.id); finish(["error": "The testing Mac disconnected before verification finished."]) }
+                    link.send(["type": "endpoint.check", "address": endpoint.display])
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 15) { finish(["error": "Endpoint verification timed out."]) }
+                }
+            case "peers.forwarding":
+                try trust.update { $0.allowForwarding = message["enabled"] as? Bool ?? false }
+                reply(state()); broadcastState()
+            default: reply(["error": "This peer management operation is unsupported."])
+            }
+        } catch { reply(["error": error.localizedDescription]) }
+    }
+
+    private func acceptNetwork(_ link: PeerTLSLink) {
+        track(link)
+        if !trust.contains(link.peerID) {
+            guard gate.isOpen else { link.close(); return }
+            let candidate = PendingPeerPair(link)
+            if let host = link.channel?.remoteAddress?.ipAddress {
+                candidate.endpoint = PeerEndpoint(host: host, port: PeerProtocol.defaultPort, scope: "lan")
+            }
+            pendingPairs[link.id] = candidate
+            installPairing(candidate)
+            sendPairInfo(link)
+            return
+        }
+        var applicationAccepted = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak link] in
+            guard let link, !applicationAccepted else { return }
+            link.close()
+        }
+        let originalClose = link.disconnected
+        link.disconnected = { [weak self] in
+            originalClose?()
+            self?.links.removeValue(forKey: link.id)
+            self?.hostLinks.removeValue(forKey: link.id)?.close()
+        }
+        link.receive = { [weak self, weak link] message in
+            guard let self, let link else { return }
+            guard self.trust.contains(link.peerID) else { link.close(); return }
+            if message["type"] as? String == "peer.endpoints" {
+                self.acceptEndpoints(message["endpoints"], from: link.peerID); return
+            }
+            if let host = self.hostLinks[link.id] { host.send(message); return }
+            if message["type"] as? String == "revocation.apply" {
+                applicationAccepted = true
+                guard let target = message["target"] as? String, target.count == 64,
+                      target.allSatisfy({ $0.isHexDigit }), target != self.identity.fingerprint else { link.close(); return }
+                do {
+                    try self.trust.update { $0.peers.removeValue(forKey: target) }
+                    self.disconnectPeer(target)
+                    link.send(["type": "revocation.result", "accepted": true]); self.broadcastState()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { link.close() }
+                } catch { link.close() }
+                return
+            }
+            if message["type"] as? String == "endpoint.check" {
+                applicationAccepted = true
+                // The target is the authenticated requester's key. This can
+                // never be used to open a terminal or proxy to a third party.
+                link.receive = { _ in link.close() }
+                do {
+                    let endpoint = try PeerEndpoint.parse(message["address"] as? String ?? "")
+                    self.network.connect(endpoint: endpoint, expected: link.peerID, pairing: false) { result in
+                        let detail: String
+                        if case .success(let probe) = result {
+                            probe.close()
+                            detail = "The selected paired Mac reached this address and verified the device key. This verifies internet reachability only when that testing Mac is on another network; a LAN test may use router loopback."
+                        } else { detail = "The paired Mac could not reach and authenticate this address. Check the router or IPv6 firewall rule, address, and port." }
+                        link.send(["type": "endpoint.result", "detail": detail])
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { link.close() }
+                    }
+                } catch { link.close() }
+                return
+            }
+            if message["type"] as? String == "tunnel.open" {
+                applicationAccepted = true
+                self.forward(message, link: link); return
+            }
+            guard message["type"] as? String == "hello", message["version"] as? Int == PeerProtocol.version,
+                  let client = message["clientId"] as? String, UUID(uuidString: client) != nil else { link.close(); return }
+            applicationAccepted = true
+            self.acceptEndpoints(message["endpoints"], from: link.peerID)
+            do {
+                let host = try PeerLocalConnection.connect("host")
+                self.hostLinks[link.id] = host
+                host.receive = { response in
+                    var response = response
+                    if response["type"] as? String == "ready" {
+                        response["peerConnected"] = true; response["peerEndpoints"] = self.endpointAdvertisement()
+                    }
+                    link.send(response)
+                }
+                host.disconnected = { link.close() }
+                host.start()
+                host.send(["type": "hello", "version": PeerProtocol.version, "role": "peer",
+                           "peerId": link.peerID, "clientId": client,
+                           "secret": try String(contentsOf: PeerPaths.file("host.secret"), encoding: .utf8)])
+            } catch {
+                link.send(["type": "error", "detail": "The Mac's session service is unavailable."]); link.close()
+            }
+        }
+    }
+
+    private func installPairing(_ candidate: PendingPeerPair) {
+        let link = candidate.link
+        link.receive = { [weak self, weak candidate] message in
+            guard let self, let candidate, self.gate.isOpen else { link.close(); return }
+            switch message["type"] as? String {
+            case "pair.info":
+                let name = message["name"] as? String ?? "Mac"
+                candidate.name = String(name.prefix(100))
+                if let port = message["port"] as? Int, (1...65535).contains(port) { candidate.endpoint?.port = port }
+                self.broadcastState()
+            case "pair.approve":
+                candidate.remoteApproval = true
+                do { try self.finishPairing(candidate) } catch { link.close() }
+                self.broadcastState()
+            default: link.close()
+            }
+        }
+        link.disconnected = { [weak self] in
+            self?.pendingPairs.removeValue(forKey: link.id)
+            self?.links.removeValue(forKey: link.id)
+            self?.broadcastState()
+        }
+    }
+
+    private func sendPairInfo(_ link: PeerTLSLink) {
+        link.send(["type": "pair.info", "name": Host.current().localizedName ?? "Mac", "port": trust.settings.listenPort])
+    }
+    private func finishPairing(_ candidate: PendingPeerPair) throws {
+        guard candidate.localApproval && candidate.remoteApproval else { return }
+        let id = candidate.link.peerID
+        guard id != identity.fingerprint else { throw PeerFailure("A workstation cannot pair with itself.") }
+        try trust.update { settings in
+            settings.peers[id] = TrustedPeer(id: id, name: candidate.name,
+                endpoints: candidate.endpoint.map { [$0] } ?? [], pairedAt: Date())
+        }
+        pendingPairs.removeValue(forKey: candidate.link.id)
+        // Reconnect through ordinary pinned TLS after pairing. The pairing
+        // channel itself never becomes an execution channel.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { candidate.link.close() }
+    }
+    private func expirePairing() {
+        guard !gate.isOpen else { return }
+        for pair in pendingPairs.values { pair.link.close() }
+        pendingPairs.removeAll(); broadcastState()
+    }
+
+    private func connect(peerID: String, cancelled: @escaping () -> Bool = { false }, completion: @escaping (Result<PeerTLSLink, Error>) -> Void) {
+        guard let peer = trust.settings.peers[peerID] else {
+            completion(.failure(PeerFailure("This workstation is not paired."))); return
+        }
+        let endpoints = peer.endpoints.sorted { $0.scope == "lan" && $1.scope != "lan" }
+        func attempt(_ remaining: ArraySlice<PeerEndpoint>) {
+            guard !cancelled() else { completion(.failure(PeerFailure("Connection cancelled."))); return }
+            guard let endpoint = remaining.first else {
+                self.connectThroughPeer(target: peerID, cancelled: cancelled, completion: completion); return
+            }
+            network.connect(endpoint: endpoint, expected: peerID, pairing: false) { result in
+                switch result {
+                case .success(let link):
+                    if cancelled() { link.close(); completion(.failure(PeerFailure("Connection cancelled."))); return }
+                    self.track(link); completion(.success(link))
+                case .failure: attempt(remaining.dropFirst())
+                }
+            }
+        }
+        attempt(endpoints[...])
+    }
+
+    private func connectThroughPeer(target: String, cancelled: @escaping () -> Bool = { false }, completion: @escaping (Result<PeerTLSLink, Error>) -> Void) {
+        let candidates = trust.settings.peers.values.filter { $0.id != target }.flatMap { peer in
+            peer.endpoints.map { (peer.id, $0) }
+        }
+        func attempt(_ remaining: ArraySlice<(String, PeerEndpoint)>) {
+            guard !cancelled() else { completion(.failure(PeerFailure("Connection cancelled."))); return }
+            guard let candidate = remaining.first else {
+                completion(.failure(PeerFailure("No direct or paired forwarding path is reachable."))); return
+            }
+            network.connectForwarded(endpoint: candidate.1, gateway: candidate.0, target: target) { result in
+                switch result {
+                case .success(let link):
+                    if cancelled() { link.close(); completion(.failure(PeerFailure("Connection cancelled."))); return }
+                    link.pathLabel = "Via " + (self.trust.settings.peers[candidate.0]?.name ?? "paired Mac")
+                    self.track(link, gateway: candidate.0); completion(.success(link))
+                case .failure: attempt(remaining.dropFirst())
+                }
+            }
+        }
+        attempt(candidates[...])
+    }
+
+    private func forward(_ message: [String: Any], link: PeerTLSLink) {
+        guard trust.settings.allowForwarding,
+              let target = message["target"] as? String, target != link.peerID,
+              let peer = trust.settings.peers[target], links.count <= PeerProtocol.maximumConnections else {
+            link.send(["type": "error", "detail": "This Mac does not permit that forwarding path."]); link.close(); return
+        }
+        forwardedTargets[link.id] = target
+        network.forward(link, endpoints: peer.endpoints)
+    }
+
+    private func track(_ link: PeerTLSLink, gateway: String? = nil) {
+        links[link.id] = link
+        if let gateway { outgoingGateways[link.id] = gateway }
+        link.channel?.closeFuture.whenComplete { [weak self] _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.links.removeValue(forKey: link.id)
+                self.forwardedTargets.removeValue(forKey: link.id)
+                self.outgoingGateways.removeValue(forKey: link.id)
+                self.hostLinks.removeValue(forKey: link.id)?.close()
+                self.pendingPairs.removeValue(forKey: link.id)
+            }
+        }
+    }
+    private func disconnectPeer(_ id: String) {
+        for link in links.values where link.peerID == id || forwardedTargets[link.id] == id || outgoingGateways[link.id] == id {
+            link.close()
+        }
+    }
+
+    private func applyPendingRevocations() {
+        guard !applyingRevocations else { return }
+        applyingRevocations = true
+        let work = (trust.settings.pendingRevocations ?? [:]).flatMap { host, targets in targets.map { (host, $0) } }
+        func next(_ items: ArraySlice<(String, String)>) {
+            guard let item = items.first else { self.applyingRevocations = false; self.broadcastState(); return }
+            self.connect(peerID: item.0) { result in
+                guard case .success(let link) = result else { next(items.dropFirst()); return }
+                var finished = false
+                let finish: (Bool) -> Void = { accepted in
+                    guard !finished else { return }; finished = true
+                    if accepted {
+                        try? self.trust.update {
+                            $0.pendingRevocations?[item.0]?.removeAll { $0 == item.1 }
+                            if $0.pendingRevocations?[item.0]?.isEmpty == true { $0.pendingRevocations?.removeValue(forKey: item.0) }
+                        }
+                    }
+                    self.links.removeValue(forKey: link.id); link.close(); next(items.dropFirst())
+                }
+                link.receive = { message in
+                    if message["type"] as? String == "revocation.result" { finish(message["accepted"] as? Bool == true) }
+                }
+                link.disconnected = { finish(false) }
+                link.send(["type": "revocation.apply", "target": item.1])
+                DispatchQueue.main.asyncAfter(deadline: .now() + 15) { finish(false) }
+            }
+        }
+        next(work[...])
+    }
+
+    private func endpointAdvertisement() -> [[String: Any]] {
+        trust.settings.publicEndpoints.prefix(8).map { ["address": $0.display] }
+    }
+    private func acceptEndpoints(_ value: Any?, from peerID: String) {
+        guard trust.contains(peerID), let entries = value as? [[String: Any]], entries.count <= 8 else { return }
+        let endpoints = entries.compactMap { item -> PeerEndpoint? in
+            guard let address = item["address"] as? String else { return nil }
+            return try? PeerEndpoint.parse(address, scope: "internet-announced")
+        }
+        guard endpoints.count == entries.count else { return }
+        // Only this device's pinned TLS identity can announce its addresses.
+        // Pairing and access to other peers are never inherited.
+        try? trust.update { settings in
+            settings.peers[peerID]?.endpoints.removeAll { $0.scope == "internet-announced" }
+            settings.peers[peerID]?.endpoints.append(contentsOf: endpoints)
+        }
+    }
+
+    private func state() -> [String: Any] {
+        let peers: [[String: Any]] = trust.settings.peers.values.sorted { $0.name < $1.name }.map {
+            ["id": $0.id, "name": $0.name, "endpoints": $0.endpoints.map { ["address": $0.display, "scope": $0.scope] }]
+        }
+        return ["status": status, "detail": statusDetail, "fingerprint": identity.fingerprint,
+                "hardwareBacked": identity.hardwareBacked, "pairingOpen": gate.isOpen, "port": trust.settings.listenPort,
+                "forwarding": trust.settings.allowForwarding, "peers": peers,
+                "publicAddress": trust.settings.publicEndpoints.first?.display ?? "",
+                "pendingRemovals": (trust.settings.pendingRevocations ?? [:]).keys.sorted().map { trust.settings.peers[$0]?.name ?? "Unavailable Mac" },
+                "nearby": nearby.keys.sorted().map { ["service": $0, "address": nearby[$0]!.display] },
+                "candidates": pendingPairs.values.map { ["id": $0.link.id, "name": $0.name,
+                    "fingerprint": $0.link.peerID, "approvedHere": $0.localApproval, "approvedThere": $0.remoteApproval] }]
+    }
+    private func broadcastState() {
+        var result = state(); result["type"] = "peers.state"
+        for connection in localClients.values { connection.send(result) }
+    }
+
+    public func netServiceBrowser(_ browser: NetServiceBrowser, didNotSearch errorDict: [String: NSNumber]) {
+        statusDetail = "Nearby discovery is unavailable. Allow TerminalDB in System Settings → Privacy & Security → Local Network, then reopen it. Saved paired addresses can still connect."
+        broadcastState()
+    }
+    public func netService(_ sender: NetService, didNotPublish errorDict: [String: NSNumber]) {
+        statusDetail = "Nearby advertising is unavailable. Check Local Network permission and whether another TerminalDB peer service is using this device identity."
+        broadcastState()
+    }
+
+    public func netServiceBrowser(_ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool) {
+        guard service.name != advertisement?.name, services.count < 128 else { return }
+        services[service.name] = service
+        service.delegate = self; service.resolve(withTimeout: 5)
+    }
+    public func netServiceBrowser(_ browser: NetServiceBrowser, didRemove service: NetService, moreComing: Bool) {
+        services.removeValue(forKey: service.name); nearby.removeValue(forKey: service.name); broadcastState()
+    }
+    public func netServiceDidResolveAddress(_ sender: NetService) {
+        guard (1...65535).contains(sender.port) else { return }
+        let addresses = (sender.addresses ?? []).sorted { a, b in
+            a.withUnsafeBytes { $0.load(as: sockaddr.self).sa_family } == AF_INET &&
+            b.withUnsafeBytes { $0.load(as: sockaddr.self).sa_family } != AF_INET
+        }
+        var resolved: String?
+        for data in addresses {
+            var name = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let result = data.withUnsafeBytes { raw -> Int32 in
+                guard let base = raw.baseAddress else { return -1 }
+                return getnameinfo(base.assumingMemoryBound(to: sockaddr.self), socklen_t(data.count), &name,
+                                   socklen_t(name.count), nil, 0, NI_NUMERICHOST)
+            }
+            if result == 0 { resolved = String(cString: name); break }
+        }
+        guard let host = resolved else { return }
+        let endpoint = PeerEndpoint(host: host, port: sender.port, scope: "lan")
+        nearby[sender.name] = endpoint
+        // Service names are address hints only. Only refresh a saved address
+        // after a pinned-key handshake, never by matching this public prefix.
+        for peer in trust.settings.peers.values where sender.name == "tdb-" + peer.id.prefix(12) {
+            network.connect(endpoint: endpoint, expected: peer.id, pairing: false) { [weak self] result in
+                guard let self, case .success(let link) = result else { return }
+                link.close()
+                try? self.trust.update {
+                    $0.peers[peer.id]?.endpoints.removeAll { $0.scope == "lan" }
+                    $0.peers[peer.id]?.endpoints.insert(endpoint, at: 0)
+                }
+                self.broadcastState()
+            }
+        }
+        broadcastState()
+    }
+}

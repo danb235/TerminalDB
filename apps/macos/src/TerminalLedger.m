@@ -1,3 +1,4 @@
+#import "TerminalPreferences.h"
 #import "TerminalLedger.h"
 
 #import "TerminalTheme.h"
@@ -665,6 +666,17 @@ static NSString *TerminalLedgerCSVCell(id value) {
     return self;
 }
 
+- (instancetype)initInMemory {
+    self = [super init];
+    if (self) { _records = @[]; _ephemeral = YES; }
+    return self;
+}
+- (void)replacePeerRecords:(NSArray<NSDictionary *> *)records {
+    if (!self.ephemeral) return;
+    self.records = records ?: @[];
+    [NSNotificationCenter.defaultCenter postNotificationName:TerminalLedgerDidChangeNotification object:self];
+}
+
 - (void)persist {
     if (self.ephemeral) return;
     NSData *data =
@@ -714,7 +726,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
     };
     NSMutableArray *updated = [self.records mutableCopy];
     [updated insertObject:record atIndex:0];
-    NSInteger maximum = [NSUserDefaults.standardUserDefaults
+    NSInteger maximum = [TerminalDBPreferences()
         integerForKey:@"TerminalLedgerMaximumRecords"];
     if (maximum <= 0) maximum = 5000;
     maximum = MAX(100, MIN(50000, maximum));
@@ -723,7 +735,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
             NSMakeRange((NSUInteger)maximum,
                         updated.count - (NSUInteger)maximum)];
     }
-    NSInteger retentionDays = [NSUserDefaults.standardUserDefaults
+    NSInteger retentionDays = [TerminalDBPreferences()
         integerForKey:@"TerminalLedgerRetentionDays"];
     if (retentionDays > 0) {
         NSTimeInterval cutoff =
@@ -1219,6 +1231,15 @@ static NSString *TerminalLedgerCSVCell(id value) {
     self.detailsButton.enabled = NO;
     [self setNeedsLayout:YES];
     [self setNeedsDisplay:YES];
+}
+
+- (void)showConnectionMessage:(NSString *)message {
+    [self showReadyInDirectory:@""];
+    self.stateLabel.stringValue = @"CONNECTION";
+    self.stateLabel.textColor = self.theme.ansiColors[3];
+    self.commandLabel.stringValue = message ?: @"Workstation unavailable";
+    self.metadataLabel.stringValue = @"Work stays on its original workstation.";
+    self.outputLabel.stringValue = @"Check that the Mac is awake and logged in, then use Reconnect. For internet access, check its saved address and router or firewall rule.";
 }
 
 - (void)beginCommand:(NSString *)command directory:(NSString *)directory {

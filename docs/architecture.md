@@ -1,14 +1,18 @@
 # Architecture
 
-TerminalDB is a dependency free AppKit application built directly with `clang`.
+TerminalDB is an AppKit application built with clang and a pinned Swift package.
+SwiftTerm provides terminal emulation; Apple SwiftNIO, NIOSSL and Swift
+Certificates provide peer networking and TLS.
 The repository also contains a static marketing site and GitHub Actions release
 automation.
 
 ## Native application
 
-`src/main.m` owns the application lifecycle, windows, PTY, terminal parser,
-shell integration, menus, tabs, splits, assistant orchestration, and native QA
-entry points.
+`src/main.m` owns native application lifecycle, menus, windows and the legacy
+product adapters. `TerminalPeerIntegration` exposes host-side services to native
+clients. The per-user session helper owns PTYs, shells, shell integration and the
+authoritative SwiftTerm engine; the peer helper owns authenticated connectivity.
+See [peer architecture](remote-architecture.md) for protocol and trust details.
 
 Supporting components separate the main product concerns:
 
@@ -24,7 +28,8 @@ Supporting components separate the main product concerns:
 | `ClaudeStatusBar` | Active account and usage status |
 | `TerminalTheme` | Application colors, fonts, and Claude Code theme adaptation |
 
-Each terminal tab owns a PTY and a `zsh` process. Temporary shell hooks mark
+Each persistent session owns a PTY and a `zsh` process in the session helper.
+Tabs attach as viewers; closing one does not end its session. Temporary shell hooks mark
 command boundaries, current directories, titles, exit codes, and Claude Code
 state. TerminalDB turns those lifecycle events into command records.
 
@@ -58,6 +63,8 @@ own files.
 The terminal itself does not send telemetry. Network access occurs when the user
 uses:
 
+- Bonjour LAN discovery and connections to explicitly paired Macs
+- configured internet paths and enabled paired forwarding
 - Anthropic API chat and model discovery
 - a Claude Code subscription session
 - Claude usage refresh
@@ -72,3 +79,9 @@ validates and deploys it independently from the app.
 `.github/workflows/release.yml` validates version tags, runs native tests,
 builds a universal bundle, applies the configured stable identity, publishes
 SHA 256 checksums, and creates a GitHub release.
+
+## Persistent native workstation sessions
+
+The session and peer helpers replace GUI-owned live sessions and the cloud
+remote implementation. See [peer architecture](remote-architecture.md) for the
+current process boundaries, transport, authority and recovery contract.

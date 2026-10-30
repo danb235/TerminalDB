@@ -1,3 +1,4 @@
+#import "TerminalPreferences.h"
 #import "TerminalProduct.h"
 
 #import "TerminalTheme.h"
@@ -195,7 +196,24 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     return monitors;
 }
 
+- (instancetype)initInMemory {
+    self = [super init];
+    if (self) {
+        _mutableRunbooks = [NSMutableArray array];
+        _mutableWorkspaces = [NSMutableArray array];
+        _mutableMonitors = [NSMutableArray array];
+    }
+    return self;
+}
+- (void)replacePeerState:(NSDictionary *)state {
+    if (self.storagePath.length > 0) return;
+    self.mutableRunbooks = [state[@"runbooks"] mutableCopy] ?: [NSMutableArray array];
+    self.mutableWorkspaces = [state[@"workspaces"] mutableCopy] ?: [NSMutableArray array];
+    self.mutableMonitors = [state[@"monitors"] mutableCopy] ?: [NSMutableArray array];
+}
+
 - (void)persist {
+    if (self.storagePath.length == 0) return;
     NSDictionary *state = @{
         @"version" : @1,
         @"runbooks" : self.mutableRunbooks,
@@ -874,6 +892,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
 }
 
 - (NSArray<NSDictionary *> *)projectItems {
+    if (self.peerProjectItems) return self.peerProjectItems();
     NSMutableArray<NSDictionary *> *items = [NSMutableArray arrayWithArray:@[
         @{@"id" : @"git", @"name" : @"Git status",
           @"detail" : @"Branch, staged changes, working tree, and untracked files",
@@ -936,6 +955,11 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         count++;
     }
     return items;
+}
+
+- (NSArray<NSDictionary *> *)projectItemsForPeerDirectory:(NSString *)directory {
+    self.directory = directory;
+    return [self projectItems];
 }
 
 - (NSArray<NSDictionary *> *)starterRunbooks {
@@ -1286,6 +1310,14 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         [detail appendFormat:@"OUTPUT\n%@\n", item[@"output"]];
     }
     if ([item[@"kind"] isEqualToString:@"file"]) {
+        if (self.peerFilePreview) {
+            self.detailView.string = [detail stringByAppendingString:@"Loading preview from the workstation…"];
+            NSString *selectedID = item[@"id"];
+            self.peerFilePreview(item[@"path"], ^(NSString *preview) {
+                if ([[self selectedItem][@"id"] isEqual:selectedID]) self.detailView.string = [detail stringByAppendingFormat:@"PREVIEW\n%@", preview];
+            });
+            return;
+        }
         NSString *path = item[@"path"];
         NSDictionary *attributes =
             [NSFileManager.defaultManager attributesOfItemAtPath:path
@@ -1529,7 +1561,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     } else if (self.section == TerminalProductSectionSettings) {
         NSString *identifier = item[@"id"];
         if ([identifier isEqualToString:@"general"]) {
-            NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+            NSUserDefaults *defaults = TerminalDBPreferences();
             BOOL restore =
                 [defaults boolForKey:@"TerminalDBRestoreWorkspaceOnLaunch"];
             NSAlert *alert = [[NSAlert alloc] init];
@@ -1643,7 +1675,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
             [history addButtonWithTitle:@"Cancel"];
             NSModalResponse response = [history runModal];
             if (response == NSAlertThirdButtonReturn) return;
-            [NSUserDefaults.standardUserDefaults
+            [TerminalDBPreferences()
                 setBool:(response == NSAlertSecondButtonReturn)
                  forKey:@"TerminalDBPrivateSessionDefault"];
         } else if (step == 3 || step == 4) {
@@ -1667,10 +1699,10 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
                 ? @"read-only"
                 : (response == NSAlertThirdButtonReturn
                     ? @"paste-only" : @"ask");
-            [NSUserDefaults.standardUserDefaults
+            [TerminalDBPreferences()
                 setObject:mode forKey:@"TerminalDBPermissionMode"];
         } else if (step == 7) {
-            [NSUserDefaults.standardUserDefaults
+            [TerminalDBPreferences()
                 setBool:YES forKey:@"TerminalDBDidCompleteOnboarding"];
             [self dismissPresentedSurface];
             return;
@@ -1759,14 +1791,14 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         return;
     }
     if (self.section == TerminalProductSectionSettings) {
-        [NSUserDefaults.standardUserDefaults
+        [TerminalDBPreferences()
             removeObjectForKey:@"TerminalDBDidCompleteOnboarding"];
         self.section = TerminalProductSectionOnboarding;
         [self refresh];
         return;
     }
     if (self.section == TerminalProductSectionOnboarding) {
-        [NSUserDefaults.standardUserDefaults
+        [TerminalDBPreferences()
             setBool:YES forKey:@"TerminalDBDidCompleteOnboarding"];
         [self dismissPresentedSurface];
         return;

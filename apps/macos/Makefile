@@ -5,8 +5,9 @@ SOURCES := src/main.m src/ClaudeAPI.m src/ClaudeAssistantView.m \
 	src/TerminalInspector.m \
 	src/ClaudeProfile.m src/ClaudeStatusBar.m src/TerminalTheme.m \
 	src/TerminalLedger.m src/TerminalPermissions.m src/TerminalProduct.m \
-	src/TerminalUpdater.m src/TerminalRemoteBridge.m
-REMOTE_AGENT_SOURCE := remote-agent/TerminalDBRemoteAgent.swift
+	src/TerminalUpdater.m src/TerminalPeerIntegration.m src/TerminalPeerStores.m src/TerminalPreferences.m
+HEADERS := $(wildcard src/*.h)
+HELPER_RESOURCES := $(wildcard Resources/LaunchAgents/*.plist)
 ICON_RESOURCE := Resources/AppIcon.icns
 FONT_RESOURCES := \
 	Resources/Fonts/JetBrainsMono-Regular.ttf \
@@ -18,17 +19,18 @@ SCRIPT_RESOURCES := \
 	Resources/Scripts/claude-status-bridge.sh \
 	Resources/Scripts/claude-tab-state.sh
 
-.PHONY: all release run install test test-ci test-surface qa-tabs qa-claude-state qa-claude-status qa-remote-agent qa-signature qa-icon qa-secrets clean
+.PHONY: all release run install test test-ci test-surface qa-tabs qa-claude-state qa-claude-status qa-peers qa-peer-network qa-signature qa-icon qa-secrets clean
 
 all: $(BIN)
 
 SURFACE_SOURCES := $(wildcard TerminalSurface/Sources/TerminalDBTerminal/*.swift)
-SURFACE_BUILD := Scripts/build-terminal-surface.sh TerminalSurface/Package.swift TerminalSurface/Package.resolved
+SURFACE_BUILD := Scripts/patch-terminal-parser.py Scripts/prepare-terminal-package.sh $(wildcard TerminalSurface/Patches/*.swift) Scripts/build-terminal-surface.sh TerminalSurface/Package.swift TerminalSurface/Package.resolved
 
-$(BIN): $(SOURCES) $(REMOTE_AGENT_SOURCE) Info.plist Makefile $(FONT_RESOURCES) $(LICENSE_RESOURCES) $(SCRIPT_RESOURCES) $(ICON_RESOURCE) $(SURFACE_SOURCES) $(SURFACE_BUILD) Scripts/build-app.sh
+$(BIN): $(SOURCES) $(HEADERS) $(HELPER_RESOURCES) Info.plist Makefile $(FONT_RESOURCES) $(LICENSE_RESOURCES) $(SCRIPT_RESOURCES) $(ICON_RESOURCE) $(SURFACE_SOURCES) $(SURFACE_BUILD) Scripts/build-app.sh
 	TERMINALDB_NATIVE_ONLY=1 ./Scripts/build-app.sh debug
 
 test-surface:
+	./Scripts/prepare-terminal-package.sh TerminalSurface/.build
 	xcrun swift run --package-path TerminalSurface -c release TerminalSurfaceTests
 
 run: all
@@ -58,7 +60,7 @@ test: all
 	$(MAKE) qa-signature
 	$(MAKE) qa-icon
 	$(MAKE) qa-secrets
-	$(MAKE) qa-remote-agent
+	$(MAKE) qa-peers
 	$(MAKE) qa-tabs
 	$(MAKE) qa-claude-state
 	$(MAKE) qa-claude-status
@@ -69,7 +71,7 @@ test-ci: all
 	$(MAKE) qa-signature
 	$(MAKE) qa-icon
 	$(MAKE) qa-secrets
-	$(MAKE) qa-remote-agent
+	$(MAKE) qa-peers
 	$(MAKE) qa-claude-state
 	$(MAKE) qa-claude-status
 
@@ -147,33 +149,13 @@ qa-claude-status: all
 		test "$$(stat -f '%Lp' "$$status_dir/window.json")" = "600"; \
 		printf '%s\n' "TerminalDB per-window Claude model hook QA: passed"
 
-qa-remote-agent: all
-	@set -eu; \
-		$(APP)/Contents/MacOS/TerminalDBRemoteAgent --self-test; \
-		$(APP)/Contents/MacOS/TerminalDBRemoteAgent --persistent-identity-self-test; \
-		state_dir="$$(mktemp -d)"; \
-		TERMINALDB_REMOTE_STATE_DIR="$$state_dir" \
-		TERMINALDB_REMOTE_EPHEMERAL_IDENTITY=1 \
-			$(APP)/Contents/MacOS/TerminalDBRemoteAgent \
-			>"$$state_dir/agent.stdout" 2>"$$state_dir/agent.stderr" & agent_pid="$$!"; \
-		trap 'kill "$$agent_pid" 2>/dev/null || true; wait "$$agent_pid" 2>/dev/null || true; rm -r "$$state_dir"' \
-			EXIT HUP INT TERM; \
-		ready=0; \
-		for attempt in 1 2 3 4 5 6 7 8 9 10; do \
-			if test -S "$$state_dir/agent.sock" && test -s "$$state_dir/agent.secret"; then \
-				ready=1; \
-				break; \
-			fi; \
-			sleep 0.1; \
-		done; \
-		if test "$$ready" -ne 1; then \
-			cat "$$state_dir/agent.stderr" >&2; \
-			exit 1; \
-		fi; \
-		test "$$(stat -f '%Lp' "$$state_dir/agent.sock")" = "600"; \
-		test "$$(stat -f '%Lp' "$$state_dir/agent.secret")" = "600"; \
-		test "$$(wc -c < "$$state_dir/agent.secret" | tr -d ' ')" -ge 40; \
-		printf '%s\n' "TerminalDB remote agent QA: 0600 socket and launch secret passed"
+qa-peers: all
+	$(BIN) --peer-self-test
+	python3 Tests/peer-session-qa.py $(BIN)
 
 clean:
 	rm -r build
+
+# Requires an interactive Mac with Local Network permission; separate from CI.
+qa-peer-network: all
+	python3 Tests/peer-network-qa.py $(BIN)

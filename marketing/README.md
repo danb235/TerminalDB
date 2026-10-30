@@ -44,11 +44,8 @@ variable `CLOUDFLARE_PAGES_PROJECT` and the secrets
 The intended first project name is `terminaldb`. A custom domain can be added
 later without changing the site.
 
-The account indicator loads the dedicated status bridge at
-`https://app.terminaldb.app/auth-status.html`. The bridge accepts requests only
-from the TerminalDB marketing origins and returns a signed-in boolean plus the
-Cognito username. Tokens remain in the app origin and are never shared with
-the marketing site.
+The site has no TerminalDB account bridge or terminal connectivity endpoint.
+The download and Claude feature demonstrations remain independent.
 
 ## Design provenance
 

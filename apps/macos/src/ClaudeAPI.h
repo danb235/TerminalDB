@@ -20,6 +20,8 @@ extern NSString *const ClaudeAIProviderAPI;
 - (nullable NSString *)apiKey;
 - (BOOL)saveAPIKey:(NSString *)apiKey error:(NSError **)error;
 - (BOOL)removeAPIKeyWithError:(NSError **)error;
+- (void)storeAPIKey:(NSString *)key completion:(void (^)(NSError *_Nullable error))completion;
+- (void)deleteAPIKeyWithCompletion:(void (^)(NSError *_Nullable error))completion;
 - (void)selectChatProvider:(NSString *)provider;
 - (void)selectModelID:(NSString *)modelID;
 - (void)selectSubscriptionModelID:(NSString *)modelID;
