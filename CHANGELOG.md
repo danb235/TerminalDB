@@ -20,6 +20,41 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-09-25
+
+### Fixed
+
+- In-app updates now validate both supported Mac architectures without a
+  failing `lipo` verification command. When a terminal command is running,
+  the update waits for the user to finish it instead of attempting to quit.
+
+## [0.5.5] - 2026-09-25
+
+### Changed
+
+- TerminalDB opens directly to a usable terminal. Claude subscriptions are
+  optional and can be added later from the Claude menu. Adding a subscription
+  leaves sign-in as an explicit action.
+
+### Fixed
+
+- Sign In now opens Claude Code's subscription browser flow when supported by
+  the installed CLI. Older CLI versions use visible terminal setup prompts.
+  TerminalDB picks the newest CLI when multiple copies are installed.
+- Adding or signing in to a subscription while a command is running opens a
+  separate tab, preserving the current session and its account. Account cards
+  show each subscription's sign-in and usage status.
+
+## [0.5.4] - 2026-09-25
+
+### Fixed
+
+- Adding a Claude subscription account now starts the sign-in flow with older
+  Claude Code installations, including versions that reject the former login
+  command before opening a browser. TerminalDB also waits for the account
+  dialog to close before sending the command, so its first character is not
+  lost.
+
 ## [0.5.3] - 2026-09-12
 
 ### Added

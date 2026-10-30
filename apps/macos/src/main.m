@@ -58,6 +58,59 @@ static BOOL TerminalDBCanRestartTrackedClaudeLogin(
     return secondsSinceLaunch >= 0 && secondsSinceLaunch < 5.0;
 }
 
+static BOOL TerminalDBClaudeSupportsDirectLoginHelp(NSString *help) {
+    return [help containsString:@"Usage: claude auth login"] &&
+        [help containsString:@"--claudeai"];
+}
+
+static NSString *TerminalDBClaudeCommandOutput(
+    NSString *executable, NSArray<NSString *> *arguments,
+    NSTimeInterval timeout) {
+    NSTask *task = [[NSTask alloc] init];
+    task.executableURL = [NSURL fileURLWithPath:executable];
+    task.arguments = arguments;
+    NSPipe *output = [NSPipe pipe];
+    task.standardOutput = output;
+    task.standardError = [NSFileHandle fileHandleWithNullDevice];
+    if (![task launchAndReturnError:nil]) return nil;
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
+    while (task.running && [deadline timeIntervalSinceNow] > 0) {
+        [NSThread sleepForTimeInterval:0.02];
+    }
+    if (task.running) [task terminate];
+    [task waitUntilExit];
+    if (task.terminationStatus != 0) return nil;
+    NSData *data = [output.fileHandleForReading readDataToEndOfFile];
+    return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+}
+
+static NSArray<NSNumber *> *TerminalDBClaudeVersion(NSString *output) {
+    NSString *token = [output componentsSeparatedByCharactersInSet:
+        NSCharacterSet.whitespaceAndNewlineCharacterSet].firstObject;
+    NSArray<NSString *> *parts = [token componentsSeparatedByString:@"."];
+    if (parts.count != 3) return nil;
+    NSMutableArray<NSNumber *> *version = [NSMutableArray array];
+    NSCharacterSet *nonDigits =
+        NSCharacterSet.decimalDigitCharacterSet.invertedSet;
+    for (NSString *part in parts) {
+        if (part.length == 0 ||
+            [part rangeOfCharacterFromSet:nonDigits].location != NSNotFound) {
+            return nil;
+        }
+        [version addObject:@(part.integerValue)];
+    }
+    return version;
+}
+
+static NSComparisonResult TerminalDBCompareClaudeVersions(
+    NSArray<NSNumber *> *left, NSArray<NSNumber *> *right) {
+    for (NSUInteger index = 0; index < 3; index++) {
+        NSComparisonResult result = [left[index] compare:right[index]];
+        if (result != NSOrderedSame) return result;
+    }
+    return NSOrderedSame;
+}
+
 
 @interface TerminalWindow : NSWindow
 @property(nonatomic, weak) id<TerminalTabActionTarget> tabActionTarget;
@@ -206,6 +259,9 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     __weak AppDelegate *weakRoot = self;
     self.updater.statusDidChange = ^{
         [weakRoot updateUpdaterMenuItem];
+    };
+    self.updater.busyTerminalCount = ^NSUInteger {
+        return [weakRoot busyTerminalCount];
     };
     self.claudeExecutable = [self discoverClaudeExecutable];
     self.windowControllers = [NSMutableArray array];
@@ -640,14 +696,6 @@ static BOOL TerminalDBReapShell(pid_t pid) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 [self showProductSection:
                     TerminalProductSectionWorkspaces];
-            });
-        } else if (!terminalQA && ![TerminalDBPreferences()
-                       boolForKey:@"TerminalDBDidCompleteOnboarding"] &&
-                   !self.apiConfiguration.hasAPIKey &&
-                   self.profileManager.profiles.count == 0 &&
-                   [TerminalLedgerStore sharedStore].records.count == 0) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [self showProductSection:TerminalProductSectionOnboarding];
             });
         }
         if (!visualQA && !terminalQA) [self.updater checkOnLaunchIfDue];
@@ -2058,7 +2106,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 
     [accountMenu addItem:NSMenuItem.separatorItem];
     NSMenuItem *addAccount = [[NSMenuItem alloc]
-        initWithTitle:@"Add Claude Code Account…"
+        initWithTitle:@"Add Claude Subscription…"
                action:@selector(addClaudeProfileFromMenu:)
         keyEquivalent:@""];
     addAccount.target = root;
@@ -3326,11 +3374,22 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         return;
     }
     if (TerminalDBUsesPeerSessions()) { [root showPeerPicker:hostWindow]; return; }
+    [root newTerminalTabFromWindow:hostWindow];
+}
 
+- (AppDelegate *)newTerminalTabFromWindow:(NSWindow *)hostWindow {
+    AppDelegate *root = [self rootController];
+    AppDelegate *parent = [hostWindow.delegate isKindOfClass:AppDelegate.class]
+        ? (AppDelegate *)hostWindow.delegate : [root activeTerminalController];
+    root.peerTarget = parent.peerTarget;
     AppDelegate *controller = [root createTerminalController];
-    [hostWindow addTabbedWindow:controller.window ordered:NSWindowAbove];
-    controller.window.tabGroup.selectedWindow = controller.window;
+    root.peerTarget = nil;
+    if (hostWindow != nil) {
+        [hostWindow addTabbedWindow:controller.window ordered:NSWindowAbove];
+        controller.window.tabGroup.selectedWindow = controller.window;
+    }
     [root presentTerminalController:controller];
+    return controller;
 }
 
 - (void)newWindowForTab:(id)sender {
@@ -4029,10 +4088,26 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                 stringByAppendingPathComponent:@"bin/claude"]];
     }
 
+    NSString *fallback = nil;
+    NSString *newest = nil;
+    NSArray<NSNumber *> *newestVersion = nil;
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
     for (NSString *candidate in candidates) {
-        if ([files isExecutableFileAtPath:candidate]) return candidate;
+        if ([seen containsObject:candidate] ||
+            ![files isExecutableFileAtPath:candidate]) continue;
+        [seen addObject:candidate];
+        if (fallback == nil) fallback = candidate;
+        NSString *output = TerminalDBClaudeCommandOutput(
+            candidate, @[@"--version"], 2.0);
+        NSArray<NSNumber *> *version = TerminalDBClaudeVersion(output);
+        if (version != nil && (newestVersion == nil ||
+            TerminalDBCompareClaudeVersions(version, newestVersion)
+                == NSOrderedDescending)) {
+            newest = candidate;
+            newestVersion = version;
+        }
     }
-    return nil;
+    return newest ?: fallback;
 }
 
 - (NSString *)shellQuotedString:(NSString *)value {
@@ -4143,6 +4218,12 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         NSMutableString *contents = [NSMutableString stringWithFormat:
             @"_terminaldb_zdotdir=$ZDOTDIR\n"
              "ZDOTDIR=%@\n"
+             // /etc/zshrc sets HISTFILE before this wrapper runs. Point its
+             // default back at the user's dot directory, while still letting
+             // the user's startup files choose a different history file.
+             "if [[ \"$HISTFILE\" == \"$_terminaldb_zdotdir/.zsh_history\" ]]; then\n"
+             "  HISTFILE=\"$ZDOTDIR/.zsh_history\"\n"
+             "fi\n"
              "[[ -r %@ ]] && source %@\n"
              "ZDOTDIR=$_terminaldb_zdotdir\n"
              "unset _terminaldb_zdotdir\n"
@@ -5597,11 +5678,13 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 - (void)claudeStatusBarDidRequestAddProfile:(ClaudeStatusBar *)statusBar {
     (void)statusBar;
     NSAlert *alert = [[NSAlert alloc] init];
-    alert.messageText = @"Add Claude account";
+    alert.messageText = @"Add Claude subscription";
     alert.informativeText =
-        @"Name this TerminalDB-only account profile. You will sign in through "
-         "Claude’s browser flow next.";
-    [alert addButtonWithTitle:@"Create and Sign In"];
+        @"Give this subscription a name. TerminalDB keeps its Claude Code "
+         "sign-in separate from your other subscriptions. Sign in from "
+         "Accounts & Usage after creating it. A busy tab opens the new "
+         "subscription in another tab.";
+    [alert addButtonWithTitle:@"Add Subscription"];
     [alert addButtonWithTitle:@"Cancel"];
 
     NSTextField *labelField =
@@ -5617,7 +5700,9 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     NSError *error = nil;
     if (self.sessionClient) {
         [self.sessionClient request:@"account.add" payload:@{@"label": labelField.stringValue} completion:^(NSDictionary *result) {
-            if (result[@"accountId"]) [self.sessionClient request:@"account.login" payload:@{@"accountId": result[@"accountId"]} completion:^(NSDictionary *response) {}];
+            if (!result[@"accountId"]) return;
+            if ([result[@"busy"] boolValue]) [self openPeerAccountTab:result[@"accountId"] login:NO];
+            else [self.claudeStatusBar presentUsageWindow];
         }];
         return;
     }
@@ -5631,11 +5716,25 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         return;
     }
 
+    pid_t foregroundProcessGroup =
+        self.pty >= 0 ? tcgetpgrp(self.pty) : -1;
+    if (foregroundProcessGroup > 0 &&
+        foregroundProcessGroup != self.shellPid) {
+        // The running Claude process keeps its original credentials. Give the
+        // new subscription its own tab rather than showing a false account
+        // switch in this one.
+        [self.claudeStatusBar dismissUsagePanel:nil];
+        AppDelegate *newTab = [[self rootController]
+            newTerminalTabFromWindow:self.window];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [newTab.claudeStatusBar presentUsageWindow];
+        });
+        return;
+    }
     self.selectedProfile = profile;
     [self writeWindowProfileFile];
     [self.claudeStatusBar selectProfile:profile];
     [self updateWindowTitle];
-    [self startClaudeLoginForProfile:profile];
 }
 
 - (void)claudeStatusBar:(ClaudeStatusBar *)statusBar
@@ -5680,9 +5779,45 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 
 - (void)claudeStatusBar:(ClaudeStatusBar *)statusBar
  didRequestLoginProfile:(ClaudeProfile *)profile {
-    (void)statusBar;
-    if (self.sessionClient) [self.sessionClient request:@"account.login" payload:@{@"accountId": profile.identifier} completion:^(NSDictionary *result) {}];
-    else [self startClaudeLoginForProfile:profile];
+    if (self.sessionClient) {
+        [statusBar dismissUsagePanel:nil];
+        [self.sessionClient request:@"account.login" payload:@{@"accountId": profile.identifier} completion:^(NSDictionary *result) {
+            if ([result[@"code"] isEqual:@"session-busy"]) [self openPeerAccountTab:profile.identifier login:YES];
+        }];
+        return;
+    }
+    // Let the panel finish returning focus to the terminal before sending
+    // Claude Code's command. Sending in the button callback loses its first
+    // character on some systems.
+    [statusBar dismissUsagePanel:nil];
+    pid_t foregroundProcessGroup =
+        self.pty >= 0 ? tcgetpgrp(self.pty) : -1;
+    NSTimeInterval loginAge = self.claudeLoginStartedAt != nil
+        ? -self.claudeLoginStartedAt.timeIntervalSinceNow : 60.0;
+    BOOL retryingThisLogin =
+        [self.claudeLoginProfile.identifier
+            isEqualToString:profile.identifier] &&
+        TerminalDBCanRestartTrackedClaudeLogin(
+            foregroundProcessGroup, self.shellPid,
+            self.claudeLoginProcessGroup,
+            self.claudeLoginProfile != nil, loginAge);
+    if (foregroundProcessGroup > 0 &&
+        foregroundProcessGroup != self.shellPid && !retryingThisLogin) {
+        // Keep the running command and its account intact. The new tab picks
+        // up this profile from the shared manager before starting sign-in.
+        [self.profileManager setLastSelectedProfile:profile];
+        AppDelegate *newTab = [[self rootController]
+            newTerminalTabFromWindow:self.window];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+            (int64_t)(0.2 * NSEC_PER_SEC)),
+            dispatch_get_main_queue(), ^{
+            [newTab startClaudeLoginForProfile:profile];
+        });
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self startClaudeLoginForProfile:profile];
+    });
 }
 
 - (void)clearClaudeLoginTracking {
@@ -5700,8 +5835,10 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     [self writeWindowProfileFile];
     [self.claudeStatusBar selectProfile:profile];
     [self updateWindowTitle];
-    [self.window makeKeyAndOrderFront:nil];
-    [self.window makeFirstResponder:self.terminalView];
+    if (!TerminalDBRunsSessionHost()) {
+        [self.window makeKeyAndOrderFront:nil];
+        [self.window makeFirstResponder:self.terminalView];
+    }
 
     self.claudeLoginProfile = profile;
     self.claudeLoginProcessGroup = -1;
@@ -5709,8 +5846,25 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     self.claudeLoginRestartProfile = nil;
     self.claudeLoginRestartGeneration++;
 
-    const char *command = "claude auth login --claudeai\r";
+    // Current Claude Code opens the browser directly. Older installations
+    // reject this subcommand, so keep their visible interactive setup path.
+    const char *command = [self claudeSupportsDirectLogin]
+        ? "claude auth login --claudeai\r" : "claude\r";
     [self.terminalView sendBytes:command length:strlen(command)];
+}
+
+- (BOOL)canRestartTrackedClaudeLoginForProfile:(ClaudeProfile *)profile {
+    pid_t foreground = self.pty >= 0 ? tcgetpgrp(self.pty) : -1;
+    NSTimeInterval age = self.claudeLoginStartedAt ? -self.claudeLoginStartedAt.timeIntervalSinceNow : 60.0;
+    return [self.claudeLoginProfile.identifier isEqual:profile.identifier] &&
+        TerminalDBCanRestartTrackedClaudeLogin(foreground, self.shellPid,
+            self.claudeLoginProcessGroup, self.claudeLoginProfile != nil, age);
+}
+
+- (BOOL)claudeSupportsDirectLogin {
+    NSString *help = TerminalDBClaudeCommandOutput(
+        self.claudeExecutable, @[@"auth", @"login", @"--help"], 3.0);
+    return TerminalDBClaudeSupportsDirectLoginHelp(help ?: @"");
 }
 
 - (void)restartTrackedClaudeLoginForProfile:(ClaudeProfile *)profile
@@ -5795,8 +5949,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         NSAlert *alert = [[NSAlert alloc] init];
         alert.messageText = @"A command is already running";
         alert.informativeText =
-            @"Finish the current command, then choose "
-             "Sign in / Reauthenticate again.";
+            @"Finish the current command, then choose Sign In again.";
         [alert runModal];
         return;
     }
@@ -6192,6 +6345,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 }
 
 - (BOOL)hasForegroundProcessInThisPane {
+    if (self.sessionClient) return !self.sessionClient.connected || [self.peerState[@"busy"] boolValue];
     pid_t foreground =
         self.pty >= 0 ? tcgetpgrp(self.pty) : -1;
     return foreground > 0 && foreground != self.shellPid;
@@ -6398,6 +6552,21 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         TerminalDBCanRestartTrackedClaudeLogin(420, 100, 420, NO, 1) ||
         TerminalDBCanRestartTrackedClaudeLogin(100, 100, 100, YES, 1)) {
         fprintf(stderr, "FAIL Claude login retry process ownership\n");
+        failures++;
+    }
+    if (!TerminalDBClaudeSupportsDirectLoginHelp(
+            @"Usage: claude auth login [options]\n  --claudeai") ||
+        TerminalDBClaudeSupportsDirectLoginHelp(
+            @"Usage: claude [options] [command]\n")) {
+        fprintf(stderr, "FAIL Claude direct login capability detection\n");
+        failures++;
+    }
+    if (TerminalDBCompareClaudeVersions(
+            TerminalDBClaudeVersion(@"2.1.282 (Claude Code)"),
+            TerminalDBClaudeVersion(@"2.1.39 (Claude Code)"))
+            != NSOrderedDescending ||
+        TerminalDBClaudeVersion(@"unknown") != nil) {
+        fprintf(stderr, "FAIL Claude executable version selection\n");
         failures++;
     }
 
@@ -7157,6 +7326,19 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     }
     [NSFileManager.defaultManager removeItemAtPath:removalRoot error:nil];
 
+    NSString *historyTestDirectory = [NSTemporaryDirectory()
+        stringByAppendingPathComponent:[NSString stringWithFormat:
+            @"terminaldb-history-%@", NSUUID.UUID.UUIDString]];
+    [NSFileManager.defaultManager
+        createDirectoryAtPath:historyTestDirectory
+        withIntermediateDirectories:YES
+        attributes:@{NSFilePosixPermissions : @0700}
+        error:nil];
+    const char *savedZdotdirValue = getenv("ZDOTDIR");
+    NSString *savedZdotdir = savedZdotdirValue != NULL
+        ? [NSString stringWithUTF8String:savedZdotdirValue]
+        : nil;
+    setenv("ZDOTDIR", historyTestDirectory.fileSystemRepresentation, 1);
     AppDelegate *claudeLaunch = newTerminal();
     [claudeLaunch configureClaudeIntegration];
     NSString *generatedClaudeShim = [NSString stringWithContentsOfFile:
@@ -7174,9 +7356,37 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         fprintf(stderr, "FAIL Claude native scrollback launch environment\n");
         failures++;
     }
+    setenv("ZDOTDIR", claudeLaunch.zshDotDirectory.fileSystemRepresentation, 1);
+    NSString *defaultHistory = TerminalDBClaudeCommandOutput(
+        @"/bin/zsh", @[@"-l", @"-i", @"-c", @"print -r -- \"$HISTFILE\""], 3.0);
+    NSString *expectedHistory =
+        [historyTestDirectory stringByAppendingPathComponent:@".zsh_history"];
+    NSString *customHistory =
+        [historyTestDirectory stringByAppendingPathComponent:@"custom_history"];
+    [@"HISTFILE=\"$ZDOTDIR/custom_history\"\n"
+        writeToFile:[historyTestDirectory stringByAppendingPathComponent:@".zshrc"]
+         atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    NSString *overriddenHistory = TerminalDBClaudeCommandOutput(
+        @"/bin/zsh", @[@"-l", @"-i", @"-c", @"print -r -- \"$HISTFILE\""], 3.0);
+    if (![[defaultHistory stringByTrimmingCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet]
+            isEqualToString:expectedHistory] ||
+        ![[overriddenHistory stringByTrimmingCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet]
+            isEqualToString:customHistory]) {
+        fprintf(stderr, "FAIL zsh history location and user override\n");
+        failures++;
+    }
+    if (savedZdotdir != nil) {
+        setenv("ZDOTDIR", savedZdotdir.fileSystemRepresentation, 1);
+    } else {
+        unsetenv("ZDOTDIR");
+    }
     [NSFileManager.defaultManager
         removeItemAtPath:claudeLaunch.windowRuntimeDirectory
         error:nil];
+    [NSFileManager.defaultManager
+        removeItemAtPath:historyTestDirectory error:nil];
 
     AppDelegate *activityState = newTerminal();
     [activityState setTabBusy:YES];
@@ -7318,14 +7528,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         return NSTerminateNow;
     }
     (void)sender;
-    AppDelegate *root = [self rootController];
-    NSUInteger running = 0;
-    for (AppDelegate *controller in root.windowControllers) {
-        if (controller.embeddedSplitOwner == nil &&
-            [controller hasBusyProcessInPaneTree]) {
-            running++;
-        }
-    }
+    NSUInteger running = [self busyTerminalCount];
     if (running == 0) return NSTerminateNow;
     NSAlert *alert = [[NSAlert alloc] init];
     alert.alertStyle = NSAlertStyleWarning;
@@ -7342,6 +7545,18 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     alert.buttons.lastObject.hasDestructiveAction = YES;
     return [alert runModal] == NSAlertSecondButtonReturn
         ? NSTerminateNow : NSTerminateCancel;
+}
+
+- (NSUInteger)busyTerminalCount {
+    AppDelegate *root = [self rootController];
+    NSUInteger running = 0;
+    for (AppDelegate *controller in root.windowControllers) {
+        if (controller.embeddedSplitOwner == nil &&
+            [controller hasBusyProcessInPaneTree]) {
+            running++;
+        }
+    }
+    return running;
 }
 
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)sender

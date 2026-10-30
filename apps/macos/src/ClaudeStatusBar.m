@@ -495,7 +495,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     CGFloat columnX = floor((viewportWidth - columnWidth) / 2.0);
     CGFloat y = 34;
     NSTextField *eyebrow = [self
-        usageWindowLabel:@"CLAUDE CODE SUBSCRIPTIONS"
+        usageWindowLabel:@"OPTIONAL CLAUDE CODE PROFILES"
                     size:10
                    weight:NSFontWeightSemibold
                     color:self.theme.ansiColors[6]
@@ -526,8 +526,8 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     y += 48;
 
     NSString *configured = profiles.count == 1
-        ? @"1 subscription configured"
-        : [NSString stringWithFormat:@"%lu subscriptions configured",
+        ? @"1 profile configured"
+        : [NSString stringWithFormat:@"%lu profiles configured",
             (unsigned long)profiles.count];
     NSTextField *summary = [self
         usageWindowLabel:[NSString stringWithFormat:
@@ -560,9 +560,9 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         progress.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
         NSString *progressText = completed == 0
             ? [NSString stringWithFormat:
-                @"Checking %lu subscriptions…", (unsigned long)total]
+                @"Checking %lu profiles…", (unsigned long)total]
             : [NSString stringWithFormat:
-                @"Refreshing subscriptions… %lu of %lu complete",
+                @"Refreshing profiles… %lu of %lu complete",
                 (unsigned long)completed, (unsigned long)total];
         NSTextField *progressLabel = [self
             usageWindowLabel:progressText
@@ -635,14 +635,14 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         empty.layer.backgroundColor = self.theme.statusBarBackground.CGColor;
         empty.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
         NSTextField *emptyTitle = [self
-            usageWindowLabel:@"No Claude Code subscriptions yet"
+            usageWindowLabel:@"No Claude profiles yet"
                          size:17
                        weight:NSFontWeightSemibold
                         color:self.theme.terminalForeground
                         frame:NSMakeRect(22, 88, columnWidth - 44, 26)];
         NSTextField *emptyDetail = [self
             usageWindowLabel:
-                @"Add an account to switch Claude subscriptions by terminal tab and track each allowance here."
+                @"Claude is optional. Add a profile when you want to use Claude Code in a terminal tab."
                          size:12
                        weight:NSFontWeightRegular
                         color:self.theme.statusBarActiveForeground
@@ -656,6 +656,8 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     for (NSDictionary *entry in entries) {
         ClaudeProfile *profile = entry[@"profile"];
         NSArray<NSDictionary *> *forecasts = entry[@"forecasts"];
+        BOOL signedIn = [entry[@"account_state"]
+            isEqualToString:@"signed_in"];
         BOOL signedOut = [entry[@"account_state"]
             isEqualToString:@"signed_out"];
         BOOL sourceStale = [entry[@"source_stale"] boolValue];
@@ -693,15 +695,20 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
                         frame:NSMakeRect(20, 164, columnWidth - 206, 24)];
         accountTitle.selectable = NO;
         [card addSubview:accountTitle];
-        NSString *identity = profile.email.length > 0
-            ? [NSString stringWithFormat:@"%@ · %@%@", profile.email, plan,
-                signedOut ? @" · Sign-in required" : @""]
-            : @"Not signed in";
+        NSString *identity = signedIn
+            ? (profile.email.length > 0
+                ? [NSString stringWithFormat:@"Signed in · %@ · %@",
+                    profile.email, plan]
+                : @"Signed in")
+            : (signedOut ? @"Sign-in required"
+                : ((waitingForRefresh || refreshing)
+                    ? @"Checking sign-in…"
+                    : @"Sign-in status unavailable"));
         NSTextField *accountDetail = [self
             usageWindowLabel:identity
                          size:11.5
                        weight:NSFontWeightRegular
-                        color:profile.email.length > 0 && !signedOut
+                        color:signedIn
                             ? self.theme.statusBarActiveForeground
                             : self.theme.ansiColors[3]
                         frame:NSMakeRect(20, 142, columnWidth - 206, 20)];
@@ -757,7 +764,8 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         freshnessLabel.selectable = NO;
         [card addSubview:freshnessLabel];
 
-        BOOL requiresSignIn = signedOut || profile.email.length == 0;
+        BOOL requiresSignIn = !signedIn &&
+            (signedOut || profile.email.length == 0);
         NSButton *use = [NSButton
             buttonWithTitle:requiresSignIn ? @"Sign In…"
                 : (active ? @"Active on This Tab" : @"Use on This Tab")
@@ -768,6 +776,9 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         use.frame = NSMakeRect(columnWidth - 166, 158, 146, 30);
         use.identifier = profile.identifier;
         use.enabled = requiresSignIn || !active;
+        if (requiresSignIn) {
+            use.toolTip = @"Opens your browser for this profile when Claude Code supports direct sign-in. A busy tab opens sign-in in a new tab.";
+        }
         [card addSubview:use];
         NSButton *remove = [NSButton buttonWithTitle:@"Remove…"
                                               target:self
@@ -921,10 +932,10 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         profiles.count > 0 && self.claudeExecutable.length > 0;
     refresh.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
     [document addSubview:refresh];
-    NSButton *add = [NSButton buttonWithTitle:@"Add Account…"
+    NSButton *add = [NSButton buttonWithTitle:@"Add Subscription…"
                                        target:self
                                        action:@selector(addProfileFromStatusMenu:)];
-    add.frame = NSMakeRect(columnX + 160, y, 132, 32);
+    add.frame = NSMakeRect(columnX + 160, y, 160, 32);
     add.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
     [document addSubview:add];
     NSButton *done = [NSButton buttonWithTitle:@"Done"
@@ -1244,9 +1255,9 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 
 - (void)updateProfileLabel {
     if (self.selectedProfile == nil) {
-        self.profileLabel.stringValue = @"●  No Claude account";
+        self.profileLabel.stringValue = @"Claude optional";
         self.profileLabel.toolTip =
-            @"Choose an account from the Claude menu.";
+            @"Add a Claude profile from the AI menu whenever you want one.";
         return;
     }
     self.profileLabel.stringValue =
@@ -2642,9 +2653,11 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         [fixtureBar.usageLabel.stringValue containsString:@"⚠ Fable"];
     NSView *dashboard = [fixtureBar prepareUsagePanel];
     BOOL dashboardShowsAllAccounts =
-        ClaudeUsageViewContainsText(dashboard, @"2 subscriptions configured") &&
+        ClaudeUsageViewContainsText(dashboard, @"2 profiles configured") &&
         ClaudeUsageViewContainsText(dashboard, @"Usage Summary") &&
         ClaudeUsageViewContainsText(dashboard, @"Second Subscription") &&
+        ClaudeUsageViewContainsText(dashboard, @"Signed in · first@example.com") &&
+        ClaudeUsageViewContainsText(dashboard, @"Add Subscription…") &&
         ClaudeUsageViewContainsText(dashboard, @"BURN") &&
         ClaudeUsageViewContainsText(dashboard, @"AVAILABLE PACE") &&
         ClaudeUsageViewContainsText(dashboard, @"RESET") &&
@@ -2668,7 +2681,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     NSView *startingRefreshDashboard = [fixtureBar prepareUsagePanel];
     BOOL dashboardShowsStartingRefresh =
         ClaudeUsageViewContainsText(startingRefreshDashboard,
-            @"Checking 2 subscriptions…") &&
+            @"Checking 2 profiles…") &&
         ClaudeUsageViewContainsText(startingRefreshDashboard,
             @"Refreshing account status and usage…") &&
         ClaudeUsageViewContainsText(startingRefreshDashboard,

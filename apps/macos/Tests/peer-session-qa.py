@@ -136,6 +136,19 @@ def main():
             assert a.input("printf '%s' $$ > first-shell-id\r").get("accepted")
             wait_for(lambda: (root / "first-shell-id").exists())
             checks += 1
+            wait_for(lambda: not a.request("host.state")["busy"])
+            original_account = a.request("host.state")["accountId"]
+            assert a.input("/bin/sleep 30\r").get("accepted")
+            wait_for(lambda: a.request("host.state")["busy"])
+            account = a.request("account.add", label="Disposable busy-session QA")
+            assert account.get("busy") and account.get("accountId")
+            assert a.request("host.state")["accountId"] == original_account
+            assert a.request("account.login", accountId=account["accountId"]).get("code") == "session-busy"
+            checks += 1
+            assert a.input("\x03").get("accepted")
+            wait_for(lambda: not a.request("host.state")["busy"])
+            assert a.request("account.remove", accountId=account["accountId"]).get("accepted")
+            checks += 1
             b = Client(root); clients.append(b)
             assert not b.attach(a.session)["controlling"]
             assert b.request("project.inspect", command="printf forbidden > must-not-exist").get("code") == "control-required"

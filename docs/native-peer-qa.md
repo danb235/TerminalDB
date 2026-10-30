@@ -36,7 +36,7 @@ credentials or pairing material in screenshots, logs or public reports.
 
 ## Automated evidence
 
-Current native pass: 92 terminal-surface checks, 32 peer checks and 16
+Current native pass: 92 terminal-surface checks, 32 peer checks and 18
 persistent-session integration checks passed. An additional 12 checks exercise
 real peer agents, Bonjour discovery, fingerprint mismatch, bilateral approval,
 unpaired denial, remote PTYs, takeover, product services, reconnect and revocation.
@@ -47,7 +47,9 @@ Unicode, large-message assembly, malformed fragments, queue budgets, control
 fencing, receipt namespaces, pinned mutual TLS, wrong-key rejection, revocation
 and real nested TLS forwarding. Persistent-helper tests exercise real PTYs and
 protected IPC, duplicate create receipts, stale/expired input, passive inspection
-denial, takeover, shell identity, interface disconnects and peer-agent restarts.
+denial, takeover, shell identity, interface disconnects and peer-agent restarts. Busy-session account creation
+leaves the active job and selected account intact; login is redirected into a
+new tab on that workstation.
 SwiftTerm tests cover single-authority query replies, headless parsing, snapshots,
 selection, Unicode and large-paste backpressure. These supplement visible QA.
 

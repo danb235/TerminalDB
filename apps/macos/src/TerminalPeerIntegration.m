@@ -246,13 +246,15 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
         if ([controller hasForegroundProcessInThisPane]) { reply(@{@"error": @"Wait for the active command to finish before changing Claude accounts."}); return; }
         [controller claudeStatusBar:controller.claudeStatusBar didSelectProfile:profile];
     } else if ([operation isEqualToString:@"account.add"]) {
-        if ([controller hasForegroundProcessInThisPane]) { reply(@{@"error": @"Wait for the shell prompt before adding a Claude account."}); return; }
+        BOOL busy = [controller hasForegroundProcessInThisPane];
         NSError *error = nil;
         ClaudeProfile *profile = [root.profileManager createProfileWithLabel:request[@"label"] ?: @"Claude" error:&error];
         if (!profile) { reply(@{@"error": @"The workstation could not create that Claude profile."}); return; }
-        controller.selectedProfile = profile; [controller writeWindowProfileFile];
-        [controller.claudeStatusBar selectProfile:profile];
-        [controller publishPeerState]; reply(@{@"accountId": profile.identifier}); return;
+        if (!busy) {
+            controller.selectedProfile = profile; [controller writeWindowProfileFile];
+            [controller.claudeStatusBar selectProfile:profile];
+        }
+        [controller publishPeerState]; reply(@{@"accountId": profile.identifier, @"busy": @(busy)}); return;
     } else if ([operation isEqualToString:@"account.remove"]) {
         ClaudeProfile *profile = [root.profileManager profileWithIdentifier:request[@"accountId"] ?: @""];
         for (AppDelegate *view in root.windowControllers) {
@@ -274,7 +276,10 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
         [controller.claudeStatusBar refreshNow];
     } else if ([operation isEqualToString:@"account.login"]) {
         ClaudeProfile *profile = [root.profileManager profileWithIdentifier:request[@"accountId"] ?: @""];
-        if (!profile || controller.claudeExecutable.length == 0 || [controller hasForegroundProcessInThisPane]) {
+        if ([controller hasForegroundProcessInThisPane] && ![controller canRestartTrackedClaudeLoginForProfile:profile]) {
+            reply(@{@"error": @"This session is busy. Open sign-in in another tab.", @"code": @"session-busy"}); return;
+        }
+        if (!profile || controller.claudeExecutable.length == 0) {
             reply(@{@"error": @"Select a Claude profile, install Claude Code on this workstation, and wait for its shell prompt before signing in."}); return;
         }
         [controller startClaudeLoginForProfile:profile];
@@ -452,6 +457,8 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
                 [self.sessionClient request:@"terminal.resize" payload:@{@"rows": @(self.terminalView.terminalRows), @"columns": @(self.terminalView.terminalColumns)} completion:^(NSDictionary *result) {}];
                 [self.sessionClient request:@"terminal.focus" payload:@{@"focused": @(self.window.isKeyWindow)} completion:^(NSDictionary *result) {}];
             }
+            void (^action)(void) = self.peerAfterAttach; self.peerAfterAttach = nil;
+            if (action) action();
         }
     } else if ([type isEqualToString:@"connection-error"]) {
         [self showPeerError:event[@"detail"] ?: @"The workstation is unreachable."];
@@ -507,6 +514,19 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
     self.peerControlButton.enabled = !self.sessionClient.ended && !self.sessionClient.synchronizing;
     self.peerControlButton.title = self.sessionClient.ended ? @"Session Ended" : self.sessionClient.snapshotFailed ? @"Reconnect" : self.sessionClient.synchronizing ? @"Synchronizing" : self.sessionClient.inputUncertain ? @"Review Input" : !self.sessionClient.connected ? @"Reconnect" :
         (self.sessionClient.controlling ? @"Controlling" : @"Take Control");
+}
+
+- (void)openPeerAccountTab:(NSString *)accountID login:(BOOL)login {
+    [self.claudeStatusBar dismissUsagePanel:nil];
+    AppDelegate *tab = [[self rootController] newTerminalTabFromWindow:self.window];
+    __weak AppDelegate *weakTab = tab;
+    tab.peerAfterAttach = ^{
+        [weakTab.sessionClient request:@"account.select" payload:@{@"accountId": accountID} completion:^(NSDictionary *result) {
+            if (result[@"error"]) return;
+            if (login) [weakTab.sessionClient request:@"account.login" payload:@{@"accountId": accountID} completion:^(NSDictionary *response) {}];
+            else [weakTab.claudeStatusBar presentUsageWindow];
+        }];
+    };
 }
 
 - (void)takePeerControl:(id)sender {
