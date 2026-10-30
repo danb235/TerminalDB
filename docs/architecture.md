@@ -64,7 +64,7 @@ The terminal itself does not send telemetry. Network access occurs when the user
 uses:
 
 - Bonjour LAN discovery and connections to explicitly paired Macs
-- configured internet paths and enabled paired forwarding
+- internal LAN/VPN addresses, network changes and sleep/wake recovery
 - Anthropic API chat and model discovery
 - a Claude Code subscription session
 - Claude usage refresh

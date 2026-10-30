@@ -24,6 +24,7 @@ enum PeerLAN {
             defer { current = item.pointee.ifa_next }
             guard let address = item.pointee.ifa_addr, let mask = item.pointee.ifa_netmask,
                   Int32(address.pointee.sa_family) == family else { continue }
+            if item.pointee.ifa_flags & UInt32(IFF_POINTOPOINT) != 0 { continue }
             if item.pointee.ifa_flags & UInt32(IFF_LOOPBACK) != 0 &&
                 ProcessInfo.processInfo.environment["TERMINALDB_PEER_EPHEMERAL_IDENTITY"] != "1" { continue }
             if family == AF_INET {
@@ -47,16 +48,19 @@ struct PeerEndpoint: Codable, Equatable {
     var host: String
     var port: Int
     var scope: String
-    static func parse(_ text: String, scope: String = "internet") throws -> PeerEndpoint {
+    static func parse(_ text: String, scope: String = "manual") throws -> PeerEndpoint {
         guard let components = URLComponents(string: "tls://" + text),
               let host = components.host, !host.isEmpty, host.utf8.count <= 253,
               components.user == nil, components.password == nil,
               components.path.isEmpty, components.query == nil, components.fragment == nil else {
-            throw PeerFailure("Enter an address and port, for example 203.0.113.10:49377 or [2001:db8::1]:49377.")
+            throw PeerFailure("Enter an internal address, for example 192.168.1.10:49377, mac-mini.local, or [fd00::10]:49377.")
         }
         let port = components.port ?? PeerProtocol.defaultPort
         guard (1...65535).contains(port) else { throw PeerFailure("The port must be between 1 and 65535.") }
         let normalizedHost = host.hasPrefix("[") && host.hasSuffix("]") ? String(host.dropFirst().dropLast()) : host
+        guard !PrivateNetwork.isNumeric(normalizedHost) || PrivateNetwork.allows(normalizedHost) else {
+            throw PeerFailure("Use the workstation’s internal LAN or VPN address. Public addresses are not supported.")
+        }
         return PeerEndpoint(host: normalizedHost, port: port, scope: scope)
     }
     var display: String { (host.contains(":") ? "[\(host)]" : host) + ":\(port)" }
@@ -72,8 +76,6 @@ struct TrustedPeer: Codable {
 struct PeerSettings: Codable {
     var peers: [String: TrustedPeer] = [:]
     var listenPort = PeerProtocol.defaultPort
-    var allowForwarding = false
-    var publicEndpoints: [PeerEndpoint] = []
     var pendingRevocations: [String: [String]]?
 }
 
@@ -85,6 +87,14 @@ final class PeerTrustStore {
         if let data = try? Data(contentsOf: PeerPaths.file("trust.json")) {
             value = try JSONDecoder().decode(PeerSettings.self, from: data)
         } else { value = PeerSettings() }
+        // Preserve approved keys while dropping obsolete internet configuration.
+        for id in value.peers.keys {
+            value.peers[id]?.endpoints.removeAll {
+                !["lan", "manual"].contains($0.scope) ||
+                    (PrivateNetwork.isNumeric($0.host) && !PrivateNetwork.allows($0.host))
+            }
+        }
+        try PeerPaths.save(try JSONEncoder().encode(value), name: "trust.json")
     }
     var settings: PeerSettings { lock.lock(); defer { lock.unlock() }; return value }
     func contains(_ id: String) -> Bool { settings.peers[id] != nil }

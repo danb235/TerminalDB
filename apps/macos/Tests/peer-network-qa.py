@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real agent + host pairing and routing checks using disposable native peers.
+"""Real agent + host pairing and private-network checks using disposable native peers.
 
 Requires Bonjour/Local Network permission. Supplements physical visible QA;
 never prints identities, launch secrets or terminal payloads.
@@ -32,7 +32,7 @@ def main():
                 reservation = socket.socket(); reservation.bind(("127.0.0.1", 0))
                 port = reservation.getsockname()[1]; reservation.close()
                 config = root / "trust.json"
-                config.write_text(json.dumps(dict(peers={}, listenPort=port, allowForwarding=False, publicEndpoints=[])))
+                config.write_text(json.dumps(dict(peers={}, listenPort=port)))
                 config.chmod(0o600)
                 env = dict(os.environ, TERMINALDB_PEER_STATE_DIR=str(root), TERMINALDB_PEER_EPHEMERAL_IDENTITY="1")
                 for role in ["--session-host", "--peer-agent"]:
@@ -64,6 +64,15 @@ def main():
             assert "error" not in managers[1].request("peers.approve", candidate=candidates[1]["id"], fingerprint=fingerprints[0])
             wait_for(lambda: all(state(i)["peers"] for i in range(2)))
             for manager in managers: manager.request("peers.pairing.close")
+            checks += 1
+            assert "error" in managers[0].request("peers.endpoint", peerId=fingerprints[1], address="203.0.113.10:49377")
+            assert "error" in managers[0].request("peers.forwarding", enabled=True)
+            assert "error" in managers[0].request("peers.publicEndpoint", address="203.0.113.10:49377")
+            checks += 1
+            target_port = state(1)["port"]
+            assert "error" not in managers[0].request("peers.endpoint", peerId=fingerprints[1], address=f"localhost:{target_port}")
+            assert managers[0].request("peers.testAddress", peerId=fingerprints[1]).get("testResult")
+            assert "publicAddress" not in state(0) and "forwarding" not in state(0)
             checks += 1
             remote = Client(roots[0], peer_id=fingerprints[1]); clients.append(remote)
             assert remote.path == "Direct LAN"

@@ -3,7 +3,7 @@
 TerminalDB has one macOS application bundle and two per-user background helpers.
 `TerminalDBSessionHost` owns persistent PTYs, shells, shell hooks, SwiftTerm state,
 bounded scrollback, Claude credentials and execution-related product services.
-`TerminalDBPeerAgent` owns discovery, TLS connections and optional forwarding.
+`TerminalDBPeerAgent` owns Bonjour discovery and direct TLS connections over the LAN or VPN.
 The interface uses the same typed session protocol for This Mac and paired Macs.
 Restarting networking does not restart shells.
 
@@ -27,13 +27,22 @@ The pin is SHA-256 of the certificate public key. Certificates are renewed with
 the same key. Changing keys requires pairing again. No early application data
 or custom encryption handshake is used.
 
-Connection attempts prefer saved LAN endpoints, then configured internet
-endpoints, then known paired gateways. A gateway connects only to saved paired
-destinations. A second TLS session runs end to end inside the gateway stream;
-the gateway cannot read terminal traffic or impersonate either endpoint.
-There is no STUN, TURN, Nostr, DHT, public rendezvous, vendor relay or coordinator.
-TetrisGO informed bounded queues, monotonic deadlines and generation fencing;
-its public signaling and game-specific authority migration are not reused.
+Connections use authenticated Bonjour address hints on the local LAN and saved
+internal addresses or internal DNS names over the user's VPN. DNS answers are
+checked once and the client connects to that exact private sockaddr; public
+answers are rejected. Listeners bind only assigned private/link-local/loopback
+addresses, never wildcard or globally routable interfaces. Accepted sources must
+also be private. RFC 1918, IPv6 ULA/link-local and shared VPN address space are
+supported. Private routing and DNS are the VPN's responsibility.
+
+There are no public endpoints, router changes, NAT traversal, mesh routing,
+forwarding, public rendezvous or vendor relay. Existing paired keys survive the
+removal of legacy endpoint and forwarding settings. Closing the viewing laptop
+or changing networks closes its old views, never the execution shell. Debounced
+network notifications and wake recovery refresh private listeners/discovery and
+reconnect using new connection generations. Saved internal addresses work without
+Bonjour crossing the VPN. TetrisGO informed bounded queues and monotonic recovery,
+not connectivity dependencies or execution migration.
 
 ## Session protocol
 

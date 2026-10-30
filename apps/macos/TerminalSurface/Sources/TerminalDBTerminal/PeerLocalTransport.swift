@@ -169,15 +169,20 @@ final class PeerLocalListener {
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         let path = PeerPaths.file(name + ".sock").path
-        guard path.utf8.count < 104 else { throw PeerFailure("The session socket path is too long.") }
+        let temporary = PeerPaths.file(".s" + UUID().uuidString.prefix(6)).path
+        defer { unlink(temporary) }
+        guard path.utf8.count < 104, temporary.utf8.count < 104 else { throw PeerFailure("The session socket path is too long.") }
         withUnsafeMutablePointer(to: &address.sun_path) {
-            $0.withMemoryRebound(to: CChar.self, capacity: 104) { _ = strlcpy($0, path, 104) }
+            $0.withMemoryRebound(to: CChar.self, capacity: 104) { _ = strlcpy($0, temporary, 104) }
         }
         unlink(path)
         let bound = withUnsafePointer(to: &address) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
         }
-        guard bound == 0, chmod(path, 0o600) == 0, listen(fd, 16) == 0 else {
+        // Publish the canonical path only after permissions and listen are
+        // ready. Clients never observe a half-created service socket.
+        guard bound == 0, chmod(temporary, 0o600) == 0, listen(fd, 16) == 0,
+              rename(temporary, path) == 0 else {
             throw PeerFailure("Could not listen for native session clients.")
         }
         fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)

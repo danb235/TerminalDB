@@ -29,8 +29,8 @@ networking, TLS, and certificate libraries; no Xcode project is required.
 
 TerminalDB connections run entirely between explicitly paired Macs. Native
 windows attach to persistent sessions owned by a background helper on the
-execution workstation. LAN traffic stays on the LAN; internet access uses
-configured endpoints and optional encrypted forwarding through your own Macs.
+execution workstation. Terminal connections stay on your LAN or VPN. No public
+endpoints, router port forwarding, mesh routing or relay service are used.
 No TerminalDB cloud account or browser terminal is required.
 
 - [Peer architecture](docs/remote-architecture.md)
@@ -230,10 +230,10 @@ certificate used by the installed release.
 4. Closing a tab or quitting the interface detaches the view. Use **End Session**
    to stop the shell. Multiple views can watch; **Take Control** transfers typing,
    terminal sizing, and changes to the session.
-5. For internet access, configure a router TCP forwarding rule or IPv6 firewall
-   rule to a paired Mac (default port 49377), save its public endpoint, and test
-   from a paired Mac on another network. Your Macs can optionally forward opaque
-   encrypted connections for one another. There is no public discovery service.
+5. When away, connect your VPN to the LAN first. If discovery does not cross the
+   VPN, select the paired workstation in **Paired Workstations**, save its internal
+   IP address or internal DNS name, and use **Test Connection**. TerminalDB does
+   not require an internet-facing terminal port or configure your router.
 
 New tabs and splits inherit the current workstation; new windows use This Mac.
 Workspaces retain workstation and session references. Offline sessions remain
@@ -241,8 +241,10 @@ reconnectable placeholders. Work never migrates to a different execution Mac.
 
 Hosts must stay awake, powered on, and logged in. Sessions survive interface
 exits and networking restarts, but not logout, reboot, or session-host failure.
-If every known public endpoint changes while all peers are unreachable, update
-an endpoint manually. Automatic file synchronization is outside this feature.
+A viewing laptop can sleep and reconnect to the same session after waking and
+restoring its LAN or VPN connection. The execution Mac itself must remain awake.
+Update a saved internal address if it changes. Automatic file synchronization is
+outside this feature.
 
 ## Configure AI chat
 

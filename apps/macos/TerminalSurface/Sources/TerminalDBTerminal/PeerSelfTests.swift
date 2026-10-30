@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import NIO
 
 @objc(TDBPeerSelfTests)
 public final class TDBPeerSelfTests: NSObject {
@@ -75,11 +76,32 @@ public final class TDBPeerSelfTests: NSObject {
             receipts.remember(principal: "first", request: "same", result: ["accepted": true])
             try check(receipts.result(principal: "first", request: "same")?["accepted"] as? Bool == true)
             try check(receipts.result(principal: "second", request: "same") == nil)
-            try check(try PeerEndpoint.parse("[2001:db8::1]:49377").host == "2001:db8::1")
+            try check(try PeerEndpoint.parse("[fd00::1]:49377").host == "fd00::1")
             try check(try PeerEndpoint.parse("example.invalid").port == PeerProtocol.defaultPort)
             var credentialsRejected = false
             do { _ = try PeerEndpoint.parse("user:password@example.invalid") } catch { credentialsRejected = true }
             try check(credentialsRejected)
+            for host in ["10.1.2.3", "172.16.0.1", "172.31.255.254", "192.168.1.10", "169.254.10.1", "100.64.0.1", "100.127.255.254", "127.0.0.1", "::1", "fd12::1", "fe80::1%en0", "::ffff:192.168.1.10"] {
+                try check(PrivateNetwork.allows(host))
+            }
+            for host in ["8.8.8.8", "203.0.113.10", "172.15.255.254", "172.32.0.1", "100.63.255.254", "100.128.0.1", "0.0.0.0", "224.0.0.1", "::", "2001:db8::1", "ff02::1", "::ffff:8.8.8.8"] {
+                try check(!PrivateNetwork.allows(host))
+                var rejected = false
+                do { _ = try PeerEndpoint.parse(host.contains(":") ? "[\(host)]" : host) } catch { rejected = true }
+                try check(rejected)
+            }
+            try check(try PrivateNetwork.resolve(PeerEndpoint.parse("localhost")).allSatisfy { PrivateNetwork.allows($0.ipAddress ?? "") })
+            try check(PrivateNetwork.interfaceAddresses().allSatisfy(PrivateNetwork.allows))
+            let legacyID = String(repeating: "a", count: 64)
+            let oldSettings: [String: Any] = ["peers": [legacyID: ["id": legacyID, "name": "Synthetic migration", "pairedAt": 0,
+                "endpoints": [["host": "192.168.1.10", "port": 49377, "scope": "lan"], ["host": "203.0.113.10", "port": 49377, "scope": "internet"]]]],
+                "listenPort": 49377, "allowForwarding": true, "publicEndpoints": [["host": "203.0.113.10", "port": 49377, "scope": "internet"]]]
+            try PeerPaths.save(JSONSerialization.data(withJSONObject: oldSettings), name: "trust.json")
+            let migrated = try PeerTrustStore()
+            try check(migrated.settings.peers[legacyID]?.endpoints.count == 1)
+            let stored = try JSONSerialization.jsonObject(with: Data(contentsOf: PeerPaths.file("trust.json"))) as! [String: Any]
+            try check(stored["allowForwarding"] == nil && stored["publicEndpoints"] == nil)
+            try migrated.update { $0.peers.removeAll() }
             let nativeServer = TDBSessionServer()
             let nativeSession = UUID().uuidString
             var deliveredInput = Data()
@@ -124,19 +146,16 @@ public final class TDBPeerSelfTests: NSObject {
             } else { a = try PeerDeviceIdentity() }
             let b = try PeerDeviceIdentity(), c = try PeerDeviceIdentity()
             try check(a.fingerprint != b.fingerprint && b.fingerprint != c.fingerprint)
-            let ta = try PeerTrustStore(), tb = try PeerTrustStore(), tc = try PeerTrustStore()
+            let ta = try PeerTrustStore(), tb = try PeerTrustStore()
             func trusted(_ identity: PeerDeviceIdentity) -> TrustedPeer {
                 TrustedPeer(id: identity.fingerprint, name: "Test", endpoints: [], pairedAt: Date())
             }
             try ta.update { $0.peers[b.fingerprint] = trusted(b); $0.peers[c.fingerprint] = trusted(c) }
             try tb.update { $0.peers[a.fingerprint] = trusted(a) }
-            try tc.update { $0.peers[a.fingerprint] = trusted(a) }
             let na = PeerTLSNetwork(identity: a, trust: ta, gate: PeerPairingGate())
             let nb = PeerTLSNetwork(identity: b, trust: tb, gate: PeerPairingGate())
-            let nc = PeerTLSNetwork(identity: c, trust: tc, gate: PeerPairingGate())
             var listeners = 0, failure = false
             try nb.listen(port: 0) { if $0 != nil { failure = true }; listeners += 1 }
-            try nc.listen(port: 0) { if $0 != nil { failure = true }; listeners += 1 }
             func spin(_ done: () -> Bool, timeout: TimeInterval = 15) -> Bool {
                 let end = PeerClock.now + timeout
                 while !done() && PeerClock.now < end {
@@ -144,9 +163,8 @@ public final class TDBPeerSelfTests: NSObject {
                 }
                 return done()
             }
-            try check(spin { listeners == 2 } && !failure)
+            try check(spin { listeners == 1 } && !failure)
             let eb = PeerEndpoint(host: "127.0.0.1", port: nb.listeningPort, scope: "lan")
-            let ec = PeerEndpoint(host: "127.0.0.1", port: nc.listeningPort, scope: "lan")
             var received = false, direct: PeerTLSLink?
             nb.accepted = { link in link.receive = { link.send($0) } }
             na.connect(endpoint: eb, expected: b.fingerprint, pairing: false) { result in
@@ -163,31 +181,13 @@ public final class TDBPeerSelfTests: NSObject {
                 if case .failure = result { wrongPinRejected = true }
             }
             try check(spin { wrongPinRejected })
-            nb.accepted = { link in
-                link.receive = { message in
-                    if message["type"] as? String == "tunnel.open", message["target"] as? String == c.fingerprint {
-                        nb.forward(link, endpoints: [ec])
-                    } else { link.close() }
-                }
-            }
-            var destinationSeesOrigin = false, forwarded: PeerTLSLink?, forwardedEcho = false
-            nc.accepted = { link in
-                destinationSeesOrigin = link.peerID == a.fingerprint
-                link.receive = { link.send($0) }
-            }
-            na.connectForwarded(endpoint: eb, gateway: b.fingerprint, target: c.fingerprint) { result in
-                if case .success(let link) = result {
-                    forwarded = link
-                    link.receive = { forwardedEcho = $0["probe"] as? String == "end-to-end" }
-                    link.send(["probe": "end-to-end"])
-                } else { failure = true }
-            }
-            try check(spin { forwardedEcho || failure } && forwardedEcho && destinationSeesOrigin)
-            forwarded?.close()
+            var rebound = false
+            nb.refreshListeners { error in rebound = error == nil }
+            try check(spin { rebound })
             var recovered = 0
             for index in 0..<35 {
                 var echoed = false
-                na.connectForwarded(endpoint: eb, gateway: b.fingerprint, target: c.fingerprint) { result in
+                na.connect(endpoint: eb, expected: b.fingerprint, pairing: false) { result in
                     if case .success(let link) = result {
                         link.receive = { message in
                             if message["recovery"] as? Int == index { echoed = true; link.close() }
@@ -195,16 +195,30 @@ public final class TDBPeerSelfTests: NSObject {
                         link.send(["recovery": index])
                     }
                 }
-                // Wait for closure through all forwarding hops before starting
-                // the next recovery. Echo receipt alone precedes asynchronous
-                // close propagation and can overlap the admission limit on CI.
-                if spin({ echoed && na.activeConnectionCount == 0 && nb.activeConnectionCount == 0 && nc.activeConnectionCount == 0 }) {
+                if spin({ echoed && na.activeConnectionCount == 0 && nb.activeConnectionCount == 0 }) {
                     recovered += 1
-                } else {
-                    throw PeerFailure("Forwarded recovery \(index + 1) did not finish: origin \(na.activeConnectionCount), gateway \(nb.activeConnectionCount), destination \(nc.activeConnectionCount) connections remain.")
-                }
+                } else { throw PeerFailure("Private-network recovery did not finish.") }
             }
             try check(recovered == 35)
+            let rawGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+            var unauthenticated: [Channel] = []
+            defer {
+                for channel in unauthenticated { channel.close(promise: nil) }
+                try? rawGroup.syncShutdownGracefully()
+            }
+            for _ in 0..<40 {
+                let channel = try ClientBootstrap(group: rawGroup)
+                    .connectTimeout(.seconds(3))
+                    .connect(to: SocketAddress(ipAddress: "127.0.0.1", port: nb.listeningPort)).wait()
+                unauthenticated.append(channel)
+            }
+            try check(spin { nb.activeConnectionCount == PeerProtocol.maximumConnections })
+            try check(spin({ unauthenticated.allSatisfy { !$0.isActive } && nb.activeConnectionCount == 0 }, timeout: 15))
+            var publicRejected = false
+            na.connect(endpoint: PeerEndpoint(host: "203.0.113.10", port: 49377, scope: "manual"), expected: b.fingerprint, pairing: false) { result in
+                if case .failure = result { publicRejected = true }
+            }
+            try check(spin { publicRejected } && na.activeConnectionCount == 0)
             try tb.update { $0.peers.removeValue(forKey: a.fingerprint) }
             var revocationRejected = false
             var unauthorizedAccepted = false

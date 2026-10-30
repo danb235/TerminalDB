@@ -5,11 +5,11 @@ All notable changes to TerminalDB are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [Unreleased]
 
 - Replace browser terminals and TerminalDB cloud accounts with explicitly paired
-  native Macs, LAN-first connections, configured internet endpoints and optional
-  end-to-end encrypted forwarding through paired Macs.
+  native Macs connected directly over the LAN or your existing VPN, with saved
+  internal addresses and sleep/wake recovery. No public endpoints or forwarding.
 - Keep shells running in a per-user session helper when views close; add
   workstation/session selection, shared viewing, Take Control and End Session.
 - Run terminal tools, history and Claude services on the selected workstation,
@@ -17,8 +17,6 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Remove the obsolete cloud/browser source and account bridge while preserving
   the marketing site, updater, release automation and Claude integrations.
 
-
-## [Unreleased]
 
 ## [0.5.6] - 2026-09-25
 

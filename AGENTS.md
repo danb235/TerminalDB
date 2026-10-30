@@ -31,8 +31,9 @@ requested and approved.
 Report user-visible scenarios and outcomes separately from automated test
 counts. For native peer work, cover pairing approval on both Macs, fingerprint
 mismatch, unpaired denial, revocation, new and existing sessions, multiple
-viewers and takeover, app exits, network recovery, offline LAN, configured
-internet endpoints, and forwarding through a third paired Mac. Exercise the
+viewers and takeover, app exits, sleep/wake recovery, offline LAN, saved
+internal addresses, and VPN disconnect/reconnect. Public internet endpoints,
+router port forwarding and relays are outside the product. Exercise the
 normal native controls. Report unavailable physical or network scenarios as
 pending; automated fixtures do not substitute for them.
 

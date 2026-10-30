@@ -245,6 +245,7 @@ public final class TDBSessionClient: NSObject {
     private var hostClock = 0.0
     private var hostClockReceived = 0.0
     private var wakeObserver: NSObjectProtocol?
+    private var networkObserver: NSObjectProtocol?
     @objc public private(set) var inputUncertain = false
     private var recoveryKey: String { (workstationID.isEmpty ? "local" : workstationID) + ":" + sessionID }
     private func markUncertain() {
@@ -258,10 +259,17 @@ public final class TDBSessionClient: NSObject {
             object: nil, queue: .main) { [weak self] _ in
                 guard let self, !self.deliberatelyClosed else { return }; self.reconnect()
             }
+        _ = PrivateNetworkChanges.shared
+        networkObserver = NotificationCenter.default.addObserver(forName: PrivateNetworkChanges.notification, object: nil, queue: .main) { [weak self] note in
+            guard let self, !self.deliberatelyClosed, !self.connected, !self.workstationID.isEmpty,
+                  note.userInfo?["available"] as? Bool == true else { return }
+            self.reconnect()
+        }
     }
     deinit {
         healthTimer?.invalidate()
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
+        if let networkObserver { NotificationCenter.default.removeObserver(networkObserver) }
         connection?.close()
     }
 

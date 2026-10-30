@@ -188,8 +188,7 @@ def main():
             checks += 1
             reservation = socket.socket(); reservation.bind(("127.0.0.1", 0))
             port = reservation.getsockname()[1]; reservation.close()
-            (root / "trust.json").write_text(json.dumps(dict(peers={}, listenPort=port,
-                allowForwarding=False, publicEndpoints=[])))
+            (root / "trust.json").write_text(json.dumps(dict(peers={}, listenPort=port)))
             agent = subprocess.Popen([str(app), "--peer-agent"], env=env,
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             wait_for(lambda: (root / "peer.sock").exists())

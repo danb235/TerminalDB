@@ -44,12 +44,10 @@ public final class TDBPeerPanel: NSObject, NSTableViewDataSource, NSTableViewDel
     @objc public private(set) var peerInventory: NSDictionary = [:]
     @objc public var changed: (() -> Void)?
     private let client = TDBSessionClient()
-    private let status = NSTextField(wrappingLabelWithString: "Connecting to the peer service…")
+    private let status = NSTextField(wrappingLabelWithString: "Connecting to the workstation service…")
     private let fingerprint = NSTextField(wrappingLabelWithString: "")
     private let table = NSTableView()
     private let address = NSTextField()
-    private let publicAddress = NSTextField()
-    private let forwarding = NSButton(checkboxWithTitle: "Allow this Mac to forward encrypted connections for paired Macs", target: nil, action: nil)
     private var rows: [[String: Any]] = []
     private var timer: Timer?
 
@@ -74,23 +72,15 @@ public final class TDBPeerPanel: NSObject, NSTableViewDataSource, NSTableViewDel
         addButton("Verify & Approve", x: 409, y: 282, width: 155, action: #selector(approve))
         addButton("Remove Pairing", x: 572, y: 282, width: 150, action: #selector(remove))
         address.frame = NSRect(x: 20, y: 238, width: 548, height: 26)
-        address.placeholderString = "Selected Mac's public address:port (IPv6: [address]:port)"
-        address.setAccessibilityLabel("Workstation internet address")
+        address.placeholderString = "Internal address:port, workstation.local, or [fd00::10]:49377"
+        address.setAccessibilityLabel("Workstation LAN or VPN address")
         view.addSubview(address)
         addButton("Save Address", x: 580, y: 236, width: 142, action: #selector(saveAddress))
-        forwarding.frame = NSRect(x: 20, y: 199, width: 780, height: 26)
-        forwarding.target = self; forwarding.action = #selector(setForwarding)
-        view.addSubview(forwarding)
-        publicAddress.frame = NSRect(x: 20, y: 150, width: 548, height: 26)
-        publicAddress.placeholderString = "This Mac’s public address:port (optional)"
-        publicAddress.setAccessibilityLabel("This Mac internet address")
-        view.addSubview(publicAddress)
-        addButton("Save This Address", x: 580, y: 148, width: 180, action: #selector(savePublicAddress))
-        addButton("Test From Selected Mac", x: 20, y: 108, width: 235, action: #selector(testEndpoint))
-        addButton("Retry Pending Removals", x: 275, y: 108, width: 235, action: #selector(retryRemovals))
+        addButton("Test Connection", x: 20, y: 188, width: 190, action: #selector(testAddress))
+        addButton("Retry Pending Removals", x: 230, y: 188, width: 235, action: #selector(retryRemovals))
         let help = NSTextField(wrappingLabelWithString:
-            "Pair on the same LAN and compare the full device fingerprints on both Macs. For access away from home, forward TCP port 49377 to a paired Mac, or allow it through your IPv6 firewall. Test from another network. If its public address changes and no saved path works, update that address. No public discovery or relay service is used.")
-        help.frame = NSRect(x: 20, y: 14, width: 780, height: 74)
+            "Pair on the same LAN and compare both complete device fingerprints. When away, connect your VPN first. Bonjour discovery may not cross a VPN: select the paired Mac and save its internal IP address or internal DNS name. No router port forwarding, public endpoint or relay is used. The execution Mac must remain awake and logged in; after your viewing laptop wakes, the same session reconnects.")
+        help.frame = NSRect(x: 20, y: 40, width: 780, height: 122)
         help.font = .systemFont(ofSize: 11)
         view.addSubview(help)
         client.eventHandler = { [weak self] event in
@@ -116,17 +106,15 @@ public final class TDBPeerPanel: NSObject, NSTableViewDataSource, NSTableViewDel
     private func apply(_ result: NSDictionary) {
         guard result["error"] == nil else { status.stringValue = result["error"] as? String ?? "Unavailable"; return }
         if let test = result["testResult"] as? String {
-            let alert = NSAlert(); alert.messageText = "Internet reachability"; alert.informativeText = test; alert.runModal(); return
+            let alert = NSAlert(); alert.messageText = "Workstation connection"; alert.informativeText = test; alert.runModal(); return
         }
         peerInventory = result
-        if publicAddress.currentEditor() == nil { publicAddress.stringValue = result["publicAddress"] as? String ?? "" }
         let open = result["pairingOpen"] as? Bool ?? false
         status.stringValue = "\(result["status"] as? String ?? "Ready") · \(open ? "Pairing is open" : "Pairing is closed")\n\(result["detail"] as? String ?? "")"
         if let pending = result["pendingRemovals"] as? [String], !pending.isEmpty {
             status.stringValue += "\nRemoval pending on: " + pending.joined(separator: ", ")
         }
         fingerprint.stringValue = "THIS MAC’S DEVICE FINGERPRINT (\(result["hardwareBacked"] as? Bool == true ? "Secure Enclave" : "software Keychain"))\n" + (result["fingerprint"] as? String ?? "")
-        forwarding.state = result["forwarding"] as? Bool == true ? .on : .off
         // Discovery and pending approvals can reorder while the panel is open.
         // Preserve the selected device, never the old numeric row position.
         func identity(_ row: [String: Any]) -> String {
@@ -141,6 +129,7 @@ public final class TDBPeerPanel: NSObject, NSTableViewDataSource, NSTableViewDel
         if let selection, let index = rows.firstIndex(where: { identity($0) == selection }) {
             table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
         } else { table.deselectAll(nil) }
+        updateAddressField()
         changed?()
     }
     public func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
@@ -194,17 +183,21 @@ public final class TDBPeerPanel: NSObject, NSTableViewDataSource, NSTableViewDel
     }
     @objc private func saveAddress() {
         guard let selected, selected["kind"] as? String == "peer", let id = selected["id"] as? String else {
-            status.stringValue = "Select a paired workstation before saving its internet address."; return
+            status.stringValue = "Select a paired workstation before saving its LAN or VPN address."; return
         }
         perform("peers.endpoint", payload: ["peerId": id, "address": address.stringValue])
     }
     @objc private func retryRemovals() { perform("peers.retryRemovals", payload: [:]) }
-    @objc private func savePublicAddress() { perform("peers.publicEndpoint", payload: ["address": publicAddress.stringValue]) }
-    @objc private func testEndpoint() {
+    @objc private func testAddress() {
         guard let selected, selected["kind"] as? String == "peer", let id = selected["id"] as? String else {
-            status.stringValue = "Select a paired Mac on another network to test this Mac’s saved public address."; return
+            status.stringValue = "Select a paired workstation to test its saved internal address."; return
         }
-        perform("peers.testEndpoint", payload: ["peerId": id])
+        perform("peers.testAddress", payload: ["peerId": id])
     }
-    @objc private func setForwarding() { perform("peers.forwarding", payload: ["enabled": forwarding.state == .on]) }
+    public func tableViewSelectionDidChange(_ notification: Notification) { updateAddressField() }
+    private func updateAddressField() {
+        guard address.currentEditor() == nil else { return }
+        let endpoints = selected?["endpoints"] as? [[String: String]] ?? []
+        address.stringValue = endpoints.first(where: { $0["scope"] == "manual" })?["address"] ?? ""
+    }
 }

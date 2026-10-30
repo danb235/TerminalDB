@@ -1,117 +1,108 @@
-# Native peer acceptance plan and evidence
+# Private workstation acceptance plan and evidence
+
+## Current scope
+
+Terminal connectivity is LAN/VPN only. Public endpoints, port forwarding,
+third-Mac forwarding and NAT traversal were removed at the user's request.
+The unsaved UniFi drafts were discarded; no TerminalDB router rules were saved.
+Existing independent device approvals remain valid. The old unusable VPN profile
+is excluded from testing; the user has configured a WireGuard tunnel instead.
 
 ## Visible acceptance plan
 
-Use disposable sessions and synthetic text on installed native bundles. Preserve
-all active legacy work. Never record terminal contents, private fingerprints,
-credentials or pairing material in screenshots, logs or public reports.
+Use installed native bundles, disposable sessions and synthetic text. Preserve
+active legacy work. Never record terminal contents, fingerprints, credentials,
+pairing material or provider configuration in screenshots, logs or public reports.
 
-1. On two physical Macs, open Paired Workstations using the normal toolbar/menu.
-   Verify minimal discovery, closed pairing denial, open pairing on both Macs,
-   fingerprint comparison and both approvals. Cancel a mismatch and expired pair.
-2. Use Shell → New Tab to select a workstation, create a terminal and attach to
-   an existing one. Verify host identity, independent selected tabs, inherited
-   tabs/splits, This Mac windows and unavailable workspace placeholders.
-3. Type Unicode, paste a large synthetic document, use Ctrl-C, scrollback and a
-   full-screen program. Attach two viewers, transfer control, resize both, and
-   confirm old controller input and sizing are rejected.
-4. Exercise host history/bookmarks, private sessions, playbooks, monitors,
-   workspace save/restore, project file previews, Claude profiles/provider/models,
-   assistant inspection, command review and patch actions. Verify execution and
-   saved state stay on the selected workstation; appearance remains local.
-5. Close views and quit through the app menu. Reattach to the same shell and
-   running work. Restart only networking and repeat. Explicitly End Session.
-6. Disconnect internet while retaining LAN and repeat pairing/terminal actions.
-   Test Local Network/background denial, sleep/offline states and visible recovery.
-7. Use a paired Mac on another network to verify a configured public endpoint.
-   Use a third physical Mac as an enabled gateway; force forwarding, remove a
-   gateway, change an endpoint, and test alternate paths without shell migration.
-8. Remove a peer, check immediate denial, apply removal to other Macs and verify
-   unreachable hosts remain pending until retried. Confirm no unpaired inventory.
-9. Observe configured-peer connections only, excluding separately enabled Claude
-   and updater requests. Measure unloaded LAN input-to-display p95, target <50ms.
-10. After merge and primary install, reopen /Applications/TerminalDB.app, verify
-    About 0.6.0 and background-service operation, then retire dedicated cloud
-    resources. Publish no release tag.
+1. Pair through Paired Workstations: open pairing on both physical Macs, compare
+   full fingerprints, cancel a mismatch, approve both and verify unapproved denial.
+   Use the third Mac to check that trust is not inherited through another Mac.
+2. Create and attach through New Tab. Verify workstation labels, independent
+   selected tabs, inherited tabs/splits, This Mac windows, workspace restore and
+   unavailable session placeholders without creating replacement shells.
+3. Exercise real keyboard punctuation, Unicode, large paste, Ctrl-C, scrollback
+   and a full-screen program. Share views, take control and resize; verify passive
+   input, stale controllers and passive geometry cannot change the host.
+4. Exercise remote history/bookmarks, private sessions, playbooks, monitors,
+   workspaces, project previews/assistant context, profiles/models, inspections,
+   command review and patch apply/revert. Confirm execution and state stay on the
+   selected Mac and appearance stays on the viewing Mac.
+5. Close tabs and quit the interface during running work. Reattach to the same
+   shell. Restart networking without restarting the session host. End Session
+   must explicitly stop work.
+6. Save an internal address through the normal settings field, test it and try a
+   rejected public address. Confirm the public endpoint and forwarding controls
+   are absent. Test a changed internal address and practical recovery instructions.
+7. Test LAN with internet unavailable. Activate the user's WireGuard tunnel from
+   another network, attach using an internal address, interrupt/restore the VPN,
+   close/open the viewing laptop's lid and confirm the original shell continues.
+   Bonjour crossing the VPN is not required. The execution Mac must stay awake.
+8. Revoke a device, check immediate disconnect/denial, apply independent removals
+   to other Macs and check pending status when a host is unreachable.
+9. Audit connection destinations and private listener bindings, excluding
+   separately enabled Claude/updater traffic. Measure LAN keypress-to-rendered
+   frame latency on idle test Macs, targeting p95 below 50 ms. Retain timing only.
+10. Complete checks, merge the feature PR, update the primary checkout, install
+    with make install and verify installed About 0.6.0. Retire only inventoried
+    TerminalDB cloud resources after acceptance. Publish no release tag.
 
 ## Automated evidence
 
-Current native pass: 92 terminal-surface checks, 32 peer checks and 18
-persistent-session integration checks passed. An additional 12 checks exercise
-real peer agents, Bonjour discovery, fingerprint mismatch, bilateral approval,
-unpaired denial, remote PTYs, takeover, product services, reconnect and revocation.
-The optional production-Keychain TLS pass completed 34 checks with a stable
-hardware-backed identity and a non-exportable software fallback signing check. These pass along with native product self-tests,
-background-tab QA, signature/icon/secret checks and Claude shell-hook checks. Native protocol tests cover framing,
-Unicode, large-message assembly, malformed fragments, queue budgets, control
-fencing, receipt namespaces, pinned mutual TLS, wrong-key rejection, revocation
-and real nested TLS forwarding. Persistent-helper tests exercise real PTYs and
-protected IPC, duplicate create receipts, stale/expired input, passive inspection
-denial, takeover, shell identity, interface disconnects and peer-agent restarts. Busy-session account creation
-leaves the active job and selected account intact; login is redirected into a
-new tab on that workstation.
-SwiftTerm tests cover single-authority query replies, headless parsing, snapshots,
-selection, Unicode and large-paste backpressure. These supplement visible QA.
+The LAN/VPN implementation passed 92 terminal-surface checks, 75 native protocol
+and security checks, and 18 persistent-session integration checks, plus product,
+background-tab, signature, icon, secret and Claude shell-hook checks. An additional 14 real-agent checks passed for pairing, internal addresses, public
+address/obsolete-operation rejection, remote sessions and revocation. Both Mac
+architectures build successfully. Network restoration notifies disconnected
+views immediately; unauthenticated handshakes expire and cannot exceed admission
+limits.
 
-Applicable former JavaScript fault contracts were ported: duplicate mutation
-receipts, stale generations, lost-ack uncertainty/no replay, bounded snapshot
-assembly, ordered pipelined input and bounded reconnect generations. API Gateway
-rotation, Cognito, browser viewport and cloud cost tests are obsolete and removed.
-TCP/TLS provides ordered delivery; malformed native fragments fail closed.
+Current tests cover framing/fragment assembly, budgets, exact byte ordering,
+controller fencing, receipt namespaces, expired input and no replay, mutual pinned
+TLS, wrong-key rejection, revocation, repeated direct reconnection, private IPv4
+and IPv6 boundaries, public-address rejection, DNS answer filtering and migration
+that discards obsolete internet settings while retaining paired keys. A startup
+race was fixed by publishing local sockets only after chmod and listen succeed.
 
-## Visible evidence to date
+Persistent-helper tests use real PTYs: duplicate create receipts, stale/expired
+input, passive inspection/reveal denial, takeover, shell identity, interface
+exits, networking restarts and host-owned product actions. SwiftTerm tests cover
+single-authority query replies, snapshots, Unicode, query/mouse behavior and paste
+backpressure. Applicable former JavaScript fault contracts were ported; obsolete
+Cognito, browser relay and AWS rotation contracts were removed.
 
-- Local disposable native interface: opened Paired Workstations, opened the
-  pairing window, toggled forwarding, and closed the panel through normal controls.
-- Quit through TerminalDB → Quit: both background helpers remained running.
-- New Tab: workstation and session sheets opened through the normal Shell menu;
-  New Terminal and existing-session choices opened native tabs after the fallback fix.
-- Normal Edit → Paste executes exact synthetic commands. Physical keyboard key
-  events preserve letters, digits, hyphens, underscores and slashes. The separate
-  automation method that sends Unicode strings as key events is unreliable;
-  it is excluded from keyboard acceptance evidence.
-- A full-screen synthetic Unicode program accepts a physical key and returns
-  to its original shell. An 84,000-byte synthetic Unicode paste arrives exactly.
-  Ctrl-C interrupts a running command and the same shell accepts the next one.
-- Remote history bookmarking, playbook save and reviewed execution, monitor
-  display and workspace save run through normal controls and persist on the mini.
-  Linked project roots exposed a file-listing bug; the regression now passes.
-- Direct LAN: a tab selected the mini, created a session and ran a command there.
-  The mini’s selected tab stayed unchanged. A new tab inherited the mini.
-- Existing-session attach, shared viewing, takeover, stale-view input rejection,
-  passive resize fencing and controller resizing passed on two physical Macs.
-- Closing a tab and quitting the mini’s interface preserved running work. Reattach
-  and networking-helper restart recovered the same shell; End Session stopped it.
-- The MBP is now reachable. It paired independently with this Mac. Before its
-  separate pairing with the mini, inherited access through this Mac was denied.
-- All three Macs have now approved their separate bilateral pairings. The MBP
-  connects directly to the mini, attaches to its project session, takes control,
-  and displays the mini's synthetic README preview through the normal tools panel.
-- New Split Right inherits the mini and its project directory. A private session
-  created on the MBP executes on the mini without recording its command in history.
-  New Window opens on This Mac while the mini tabs remain available.
-- The MBP's pending macOS Local Network permission produced an Unreachable state;
-  approving the native permission restored Direct LAN using its existing identity.
-- Sampled peer/helper TCP connections used only the two configured LAN Macs.
-  Full offline/WAN contact audit and latency measurement remain pending.
-- Updated QA apps load persistent Secure Enclave identities after Keychain approval.
-  SSH Accessibility permission and the mini’s native incoming-connections firewall
-  prompt were exercised. Both physical Macs discover each other through Bonjour.
-- Two physical Macs paired through the native controls: compared both complete
-  displayed fingerprints, cancelled a confirmation, then approved on both Macs.
-- Marketing: normal navigation, FAQ toggles, current download links and three
-  viewport sizes passed in a visible browser, with no script errors or requests to the retired
-  app/auth domains. No cloud account bridge remains.
-- Three-Mac forwarding, remaining remote host tools, offline LAN, actual internet path,
-  gateway failover, latency and final installed About checks remain pending.
-- All three Macs have side-by-side test bundles; original installed apps and
-  active legacy work on this Mac and the mini remains untouched. The MBP's
-  original app had exited; its app and local data were backed up before a native
-  candidate was installed in /Applications/TerminalDB.app. Both bundled helpers
-  are enabled and running under macOS Service Management. This exposed and fixed
-  initial registration when macOS reports the new services as "not found".
-  The new peer helper still needs its separate Keychain approval. Final merged
-  installation and About verification remain pending.
+A prior optional Keychain pass verified stable hardware identity and a
+non-exportable software fallback signing key. It predates the LAN/VPN transport
+simplification; final installed identity and trust continuity remain acceptance
+checks. Automated counts do not substitute for the physical scenarios above.
 
-No visible physical/WAN pass or security certification is claimed by automated
-counts. Cloud retirement and repository merge/install remain pending these gates.
+## Visible outcomes already observed
+
+- All three physical Macs independently approved their bilateral pairings through
+  native controls. Cancelled confirmation and expired pairing were exercised.
+  Access to the mini was denied before the MBP paired with it independently.
+- Direct LAN new/existing sessions, independent selected tabs, shared viewers,
+  takeover, passive input/resize fencing and controller sizing passed.
+- Tabs/splits inherit the mini and project directory. New windows use This Mac.
+  Private commands execute on the mini without entering persisted history.
+  Workspace restore reattaches the existing shells and split layout.
+- Remote bookmarks, reviewed playbook execution, monitor display, workspace save
+  and the mini's synthetic project preview passed through normal controls.
+- Physical key events preserve punctuation. An 84,000-byte Unicode paste arrives
+  exactly. Ctrl-C recovers and a full-screen Unicode program returns to the shell.
+- Tab close, interface quit and networking-helper restart preserve running work
+  and shell identity. End Session stops the shell.
+- Pending Local Network permission produced Unreachable; native approval restored
+  Direct LAN with the same key. Firewall/Accessibility approvals were exercised.
+- The MBP runs an installed candidate with both helpers enabled and running under
+  macOS Service Management. Its Keychain approval is complete. The previous app
+  and local data are backed up locally. Fresh-service registration was corrected
+  for the initial macOS "not found" state.
+- Marketing navigation, FAQ and downloads passed in a visible browser at three
+  viewport sizes. Its updated LAN/VPN copy is being rechecked.
+
+These outcomes include the earlier direct-LAN implementation. The final reduced
+transport still needs a fresh installed pass for private bindings, settings,
+network changes, remaining product actions, revocation, offline LAN, WireGuard
+outside the LAN, lid recovery, latency and final About verification. Original
+active legacy work on the primary Mac and mini remains running and protected.
+Cloud retirement, repository merge and final installation are pending acceptance.

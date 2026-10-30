@@ -30,6 +30,7 @@ final class PeerTLSLink: ChannelInboundHandler, RemovableChannelHandler, PeerCon
     var disconnected: (() -> Void)?
     private var decoder = PeerFrameDecoder()
     private var handshake = false
+    var handshakeComplete: Bool { handshake }
     private var closeDelivered = false
     private var queuedBytes = 0
     private let sendBudget = PeerQueueBudget()
@@ -42,8 +43,7 @@ final class PeerTLSLink: ChannelInboundHandler, RemovableChannelHandler, PeerCon
 
     func handlerAdded(context: ChannelHandlerContext) {
         channel = context.channel
-        // Forwarding replaces this application handler. Channel closure must
-        // still release the original agent link and its callbacks.
+        // Channel closure releases the agent link and callbacks exactly once.
         context.channel.closeFuture.whenComplete { _ in self.deliverClose() }
     }
     private func deliverClose() {
@@ -106,17 +106,21 @@ final class PeerTLSNetwork {
     private let identity: PeerDeviceIdentity
     private let trust: PeerTrustStore
     private let gate: PeerPairingGate
-    private var listener: Channel?
+    private var listeners: [String: Channel] = [:]
+    private var port = 0
+    private var listenerGeneration = 0
+    private let resolver = OperationQueue()
     private let admissionLock = NSLock()
     private var admitted = 0
     var accepted: ((PeerTLSLink) -> Void)?
-    var listeningPort: Int { listener?.localAddress?.port ?? 0 }
+    var listeningPort: Int { port }
     var activeConnectionCount: Int {
         admissionLock.lock(); defer { admissionLock.unlock() }; return admitted
     }
 
     init(identity: PeerDeviceIdentity, trust: PeerTrustStore, gate: PeerPairingGate) {
         self.identity = identity; self.trust = trust; self.gate = gate
+        resolver.maxConcurrentOperationCount = 4
     }
 
     private func reserveConnection() -> (() -> Void)? {
@@ -139,188 +143,133 @@ final class PeerTLSNetwork {
                 promise.succeed(.failed); return
             }
             state.peerID = fingerprint
-            // A successful TLS CertificateVerify proves possession of the
-            // pinned key. Unknown keys may enter only the pairing handler;
-            // the agent separately denies every session operation until both
-            // local users have approved the full device fingerprints.
             promise.succeed(.certificateVerified)
         }
     }
 
     func listen(port: Int, completion: @escaping (Error?) -> Void) throws {
-        let context = try identity.context(server: true)
-        ServerBootstrap(group: group)
-            .serverChannelOption(ChannelOptions.backlog, value: 32)
-            .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-            .childChannelOption(ChannelOptions.socketOption(.tcp_nodelay), value: 1)
-            .childChannelInitializer { channel in
-                guard let release = self.reserveConnection() else { return channel.eventLoop.makeFailedFuture(PeerFailure("Peer connection capacity reached.")) }
-                channel.closeFuture.whenComplete { _ in release() }
-                let state = PeerTLSState()
-                state.localPeer = PeerLAN.contains(channel.remoteAddress?.ipAddress ?? "")
-                let link = PeerTLSLink(state: state)
-                let tls = NIOSSLServerHandler(context: context,
-                    customVerificationCallback: self.verifier(state: state, expected: nil, pairing: false))
-                link.connected = { [weak self, weak link] in
-                    guard let self, let link else { return }
-                    self.accepted?(link)
+        self.port = port
+        refreshListeners(completion: completion)
+    }
+
+    func refreshListeners(completion: @escaping (Error?) -> Void) {
+        listenerGeneration += 1
+        let generation = listenerGeneration
+        let hosts = PrivateNetwork.interfaceAddresses()
+        for host in Array(listeners.keys) where !hosts.contains(host) {
+            listeners.removeValue(forKey: host)?.close(promise: nil)
+        }
+        do {
+            let context = try identity.context(server: true)
+            func bind(_ remaining: ArraySlice<String>, error: Error? = nil) {
+                guard generation == self.listenerGeneration else { return }
+                guard let host = remaining.first else {
+                    completion(self.listeners.isEmpty ? (error ?? PeerFailure("No internal network interface is available.")) : nil)
+                    return
                 }
-                return channel.pipeline.addHandlers(tls, link)
-            }.bind(host: "::", port: port).whenComplete { result in
-                DispatchQueue.main.async {
-                    switch result {
-                    case .success(let channel): self.listener = channel; completion(nil)
-                    case .failure(let error): completion(error)
+                if self.listeners[host] != nil { bind(remaining.dropFirst(), error: error); return }
+                ServerBootstrap(group: self.group)
+                    .serverChannelOption(ChannelOptions.backlog, value: 32)
+                    .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+                    .childChannelOption(ChannelOptions.socketOption(.tcp_nodelay), value: 1)
+                    .childChannelInitializer { channel in
+                        guard PrivateNetwork.allows(channel.remoteAddress?.ipAddress ?? ""),
+                              let release = self.reserveConnection() else {
+                            return channel.eventLoop.makeFailedFuture(PeerFailure("This connection is not permitted on the private network."))
+                        }
+                        channel.closeFuture.whenComplete { _ in release() }
+                        let state = PeerTLSState()
+                        state.localPeer = PeerLAN.contains(channel.remoteAddress?.ipAddress ?? "")
+                        let link = PeerTLSLink(state: state)
+                        let deadline = channel.eventLoop.scheduleTask(in: .seconds(10)) { [weak link] in
+                            if link?.handshakeComplete != true { channel.close(promise: nil) }
+                        }
+                        channel.closeFuture.whenComplete { _ in deadline.cancel() }
+                        let tls = NIOSSLServerHandler(context: context,
+                            customVerificationCallback: self.verifier(state: state, expected: nil, pairing: false))
+                        link.connected = { [weak self, weak link] in
+                            guard let self, let link else { return }
+                            self.accepted?(link)
+                        }
+                        return channel.pipeline.addHandlers(tls, link)
+                    }.bind(host: host, port: self.port).whenComplete { result in
+                        DispatchQueue.main.async {
+                            guard generation == self.listenerGeneration else {
+                                if case .success(let channel) = result { channel.close(promise: nil) }
+                                return
+                            }
+                            switch result {
+                            case .success(let channel):
+                                self.listeners[host] = channel
+                                self.port = channel.localAddress?.port ?? self.port
+                                bind(remaining.dropFirst(), error: error)
+                            case .failure(let failure): bind(remaining.dropFirst(), error: failure)
+                            }
+                        }
                     }
-                }
             }
+            bind(hosts[...])
+        } catch { completion(error) }
     }
 
     func connect(endpoint: PeerEndpoint, expected: String?, pairing: Bool,
                  completion: @escaping (Result<PeerTLSLink, Error>) -> Void) {
-        guard let release = reserveConnection() else { completion(.failure(PeerFailure("Peer connection capacity reached."))); return }
-        do {
-            let context = try identity.context(server: false)
-            let state = PeerTLSState()
-            state.localPeer = PeerLAN.contains(endpoint.host)
-            let link = PeerTLSLink(state: state)
-            link.pathLabel = endpoint.scope == "lan" ? "Direct LAN" : "Direct Internet"
-            var completed = false
-            let finish: (Result<PeerTLSLink, Error>) -> Void = { result in
-                guard !completed else { return }; completed = true
-                if case .failure = result { release() }
-                completion(result)
-            }
-            link.connected = { finish(.success(link)) }
-            link.disconnected = { finish(.failure(PeerFailure("The workstation rejected or closed the connection."))) }
-            let tls = try NIOSSLClientHandler(context: context, serverHostname: nil,
-                customVerificationCallback: verifier(state: state, expected: expected, pairing: pairing))
-            let future = ClientBootstrap(group: group)
-                .connectTimeout(.seconds(5))
-                .channelOption(ChannelOptions.socketOption(.tcp_nodelay), value: 1)
-                .channelInitializer { $0.pipeline.addHandlers(tls, link) }
-                .connect(host: endpoint.host, port: endpoint.port)
-            future.whenSuccess { channel in channel.closeFuture.whenComplete { _ in release() } }
-            future.whenFailure { error in
-                    DispatchQueue.main.async { finish(.failure(error)) }
-                }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
-                if !completed { link.close(); finish(.failure(PeerFailure("The workstation did not complete its secure handshake."))) }
-            }
-        } catch { release(); completion(.failure(error)) }
-    }
-
-    // A forwarding Mac removes only its application framing. The original
-    // TLS hop remains, and an additional TLS handshake runs end to end inside
-    // that stream. No intermediary receives terminal plaintext or authority.
-    func connectForwarded(endpoint: PeerEndpoint, gateway: String, target: String,
-                          completion: @escaping (Result<PeerTLSLink, Error>) -> Void) {
-        connect(endpoint: endpoint, expected: gateway, pairing: false) { result in
-            guard case .success(let outer) = result, let channel = outer.channel else { completion(result); return }
-            var completed = false
-            let finish: (Result<PeerTLSLink, Error>) -> Void = { result in
-                guard !completed else { return }; completed = true; completion(result)
-            }
-            outer.receive = { message in
-                guard message["type"] as? String == "tunnel.ready" else {
-                    outer.close(); finish(.failure(PeerFailure("The paired Mac declined forwarding."))); return
-                }
+        guard let release = reserveConnection() else { completion(.failure(PeerFailure("Workstation connection capacity reached."))); return }
+        var completed = false, resolving = true
+        var current: PeerTLSLink?
+        let finish: (Result<PeerTLSLink, Error>) -> Void = { result in
+            guard !completed else { return }; completed = true
+            if case .success(let link) = result {
+                link.channel?.closeFuture.whenComplete { _ in release() }
+            } else if !resolving { release() }
+            completion(result)
+        }
+        // Keep the admission slot until an outstanding lookup returns, even if
+        // its caller has timed out. Slow DNS cannot create an unbounded queue.
+        resolver.addOperation {
+            let result = Result { try PrivateNetwork.resolve(endpoint) }
+            DispatchQueue.main.async {
+                resolving = false
+                guard !completed else { release(); return }
                 do {
+                    let addresses = try result.get()
                     let context = try self.identity.context(server: false)
-                    let state = PeerTLSState()
-                    let inner = PeerTLSLink(state: state)
-                    inner.pathLabel = "Via paired Mac"
-                    let tls = try NIOSSLClientHandler(context: context, serverHostname: nil,
-                        customVerificationCallback: self.verifier(state: state, expected: target, pairing: false))
-                    inner.connected = { finish(.success(inner)) }
-                    inner.disconnected = { finish(.failure(PeerFailure("The destination could not authenticate through this Mac."))) }
-                    channel.pipeline.removeHandler(outer).flatMap {
-                        channel.pipeline.addHandlers(tls, inner)
-                    }.whenFailure { error in DispatchQueue.main.async { finish(.failure(error)) } }
-                } catch { outer.close(); finish(.failure(error)) }
-            }
-            outer.send(["type": "tunnel.open", "target": target])
-            DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
-                if !completed { outer.close(); finish(.failure(PeerFailure("The forwarding connection timed out."))) }
-            }
-        }
-    }
-
-    func forward(_ source: PeerTLSLink, endpoints: [PeerEndpoint]) {
-        guard let channel = source.channel else { return }
-        guard let acknowledgement = try? PeerProtocol.encode(["type": "tunnel.ready"]) else { source.close(); return }
-        guard let release = reserveConnection() else { source.close(); return }
-        channel.closeFuture.whenComplete { _ in release() }
-        func attempt(_ remaining: ArraySlice<PeerEndpoint>) {
-            guard channel.isActive else { return }
-            guard let endpoint = remaining.first else {
-                source.send(["type": "error", "detail": "The destination is unreachable from this Mac."]); source.close(); return
-            }
-            ClientBootstrap(group: group).connectTimeout(.seconds(4))
-                .channelOption(ChannelOptions.socketOption(.tcp_nodelay), value: 1)
-                .channelOption(ChannelOptions.autoRead, value: false)
-                .connect(host: endpoint.host, port: endpoint.port).whenComplete { result in
-                    switch result {
-                    case .failure: DispatchQueue.main.async { attempt(remaining.dropFirst()) }
-                    case .success(let destination):
-                        guard channel.isActive else { destination.close(promise: nil); return }
-                        let outbound = PeerTunnelPipe(other: channel)
-                        let inbound = PeerTunnelPipe(other: destination)
-                        destination.pipeline.addHandler(outbound).flatMap {
-                            channel.pipeline.removeHandler(source)
-                        }.flatMap {
-                            channel.pipeline.addHandler(inbound)
-                        }.flatMap {
-                            // Install the opaque pipe before inviting the origin
-                            // to send its inner TLS ClientHello. Otherwise a fast
-                            // response can reach the old JSON decoder mid-swap.
-                            // Outbound writes still pass through the hop's TLS.
-                            var buffer = channel.allocator.buffer(capacity: 64)
-                            buffer.writeBytes(acknowledgement)
-                            return channel.writeAndFlush(buffer)
-                        }.flatMap {
-                            channel.setOption(ChannelOptions.autoRead, value: true)
-                        }.flatMap {
-                            destination.setOption(ChannelOptions.autoRead, value: true)
-                        }.whenFailure { _ in
-                            channel.close(promise: nil); destination.close(promise: nil)
+                    func attempt(_ remaining: ArraySlice<SocketAddress>) {
+                        guard !completed else { return }
+                        guard let address = remaining.first else {
+                            finish(.failure(PeerFailure("The workstation is unreachable. Connect your VPN or check its internal address and power."))); return
                         }
+                        let state = PeerTLSState()
+                        state.localPeer = PeerLAN.contains(address.ipAddress ?? "")
+                        let link = PeerTLSLink(state: state)
+                        link.pathLabel = state.localPeer ? "Direct LAN" : "LAN / VPN"
+                        current = link
+                        var attemptFinished = false
+                        let failed: () -> Void = {
+                            guard !attemptFinished, !completed else { return }; attemptFinished = true
+                            link.close(); attempt(remaining.dropFirst())
+                        }
+                        link.connected = { [weak link] in
+                            guard let link, !attemptFinished, !completed else { return }
+                            attemptFinished = true; finish(.success(link))
+                        }
+                        link.disconnected = failed
+                        do {
+                            let tls = try NIOSSLClientHandler(context: context, serverHostname: nil,
+                                customVerificationCallback: self.verifier(state: state, expected: expected, pairing: pairing))
+                            ClientBootstrap(group: self.group)
+                                .connectTimeout(.seconds(3))
+                                .channelOption(ChannelOptions.socketOption(.tcp_nodelay), value: 1)
+                                .channelInitializer { $0.pipeline.addHandlers(tls, link) }
+                                .connect(to: address).whenFailure { _ in DispatchQueue.main.async { failed() } }
+                        } catch { failed() }
                     }
-                }
-        }
-        channel.setOption(ChannelOptions.autoRead, value: false).whenComplete { result in
-            switch result {
-            case .success: attempt(endpoints[...])
-            case .failure: source.close()
+                    attempt(addresses.prefix(8))
+                } catch { finish(.failure(error)) }
             }
         }
-    }
-}
-
-private final class PeerTunnelPipe: ChannelInboundHandler, @unchecked Sendable {
-    typealias InboundIn = ByteBuffer
-    let other: Channel
-    private var queued = 0
-    init(other: Channel) { self.other = other }
-    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        let buffer = unwrapInboundIn(data)
-        queued += buffer.readableBytes
-        guard queued <= PeerProtocol.maximumQueuedBytes else {
-            context.close(promise: nil); other.close(promise: nil); return
-        }
-        let source = context.channel
-        if !other.isWritable { source.setOption(ChannelOptions.autoRead, value: false).whenFailure { _ in source.close(promise: nil) } }
-        other.writeAndFlush(buffer).whenComplete { result in
-            source.eventLoop.execute {
-                self.queued -= buffer.readableBytes
-                if case .failure = result { source.close(promise: nil) }
-            }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+            if !completed { current?.close(); finish(.failure(PeerFailure("The workstation did not complete its secure connection. Check the VPN and internal address."))) }
         }
     }
-    func channelWritabilityChanged(context: ChannelHandlerContext) {
-        other.setOption(ChannelOptions.autoRead, value: context.channel.isWritable).whenFailure { _ in self.other.close(promise: nil) }
-        context.fireChannelWritabilityChanged()
-    }
-    func channelInactive(context: ChannelHandlerContext) { other.close(promise: nil); context.fireChannelInactive() }
-    func errorCaught(context: ChannelHandlerContext, error: Error) { context.close(promise: nil); other.close(promise: nil) }
 }

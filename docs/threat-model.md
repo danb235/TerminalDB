@@ -1,14 +1,14 @@
 # Threat model
 
 The execution workstation, logged-in macOS user and approved peer devices are
-trusted. A paired Mac has user-level terminal authority. The LAN, internet,
-Bonjour names, saved addresses and forwarding intermediaries are not trusted
+trusted. A paired Mac has user-level terminal authority. The LAN, VPN,
+Bonjour names and saved internal addresses are not trusted
 for endpoint identity or terminal confidentiality. The operating system,
 Keychain, Secure Enclave, SwiftTerm and pinned TLS/certificate dependencies are
 part of the trusted implementation.
 
 See [native security](remote-security.md) for authentication, revocation,
-forwarding, resource bounds, controller fencing and credential residency, and
+private-network boundaries, resource bounds, controller fencing and credential residency, and
 [architecture](remote-architecture.md) for protocol limits. These are design
 properties to test, not an assertion of perfect security.
 

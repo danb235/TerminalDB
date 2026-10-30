@@ -30,13 +30,21 @@ access; revocation cannot undo work it performed before removal.
 
 ## Network exposure
 
-LAN pairing is time limited. A configured internet listener accepts only pinned
-peers outside a pairing window. Handshake admission, frame size, logical message
-size, pending receipts, forwarding buffers and queued deliveries are bounded.
-Forwarding requires an explicitly enabled paired Mac and a saved paired target;
-it is not a general proxy. The destination authenticates the origin through an
-additional end-to-end TLS connection. Gateways see addresses, timing and byte
-counts but not terminal plaintext.
+LAN pairing is time limited. Terminal listeners bind only assigned internal
+addresses: RFC 1918 IPv4, link-local, IPv6 ULA and shared VPN space, plus loopback.
+Globally routable interfaces and wildcard binds are excluded. Remote sources and
+resolved destination addresses must pass the private-address policy. DNS is
+resolved off the main thread; connection uses the exact validated sockaddr, so
+there is no second DNS lookup that could rebind to a public destination. Internal
+DNS names are supported for routed VPNs. VPN client routing and private address
+assignment must be configured in the VPN itself.
+
+Public endpoints, endpoint announcements, NAT traversal and forwarding are removed.
+No peer can request a tunnel, proxy or public reachability probe. Legacy internet
+and forwarding settings are dropped while independently approved keys remain.
+Handshake admission, DNS work, frame size, logical messages, receipts and queued
+deliveries are bounded. LAN/VPN transport still requires pinned mutual TLS; access
+to the network alone never grants terminal authority.
 
 Typing, resizing, Claude operations and mutations require the current controller
 generation. Read-only viewers cannot run arbitrary project inspections. Expired

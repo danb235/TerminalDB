@@ -13,38 +13,36 @@ existing session. New windows default to This Mac; tabs and splits inherit their
 workstation. Closing a tab detaches it; End Session stops its shell and work.
 Use Take Control to transfer typing, sizing and session changes between viewers.
 
-## Internet access
+## LAN and VPN access
 
-At least one paired Mac must have a reachable configured endpoint. Forward TCP
-49377 from the router to that Mac's fixed LAN address, or permit that port in its
-IPv6 firewall. Restrict firewall exposure where practical. Save its public
-address in Paired Workstations. Custom external ports can map to the normal
-listener. Do not open a public pairing window or expose local IPC sockets.
+When away, connect your existing VPN to the LAN before opening a workstation.
+TerminalDB does not configure the VPN or router and needs no public terminal port.
+Pair the Macs initially on the same LAN; VPN membership alone does not grant trust.
 
-Save This Address advertises this Mac's configured public endpoint to paired
-Macs over authenticated connections. Save Address stores an address for the
-selected paired Mac. Test From Selected Mac asks that paired Mac to connect
-back and verify the actual pinned identity. Run it from a different network;
-a LAN test cannot establish outside reachability, as the result explains. There is no third-party
-connectivity test server.
+Bonjour discovery may not cross routed VPNs. In Paired Workstations, select the
+paired Mac, enter its internal IP address or internal DNS name in the LAN/VPN
+address field, and click Save Address. Test Connection checks that exact saved
+address and verifies the pinned key. Leave the field empty and save to remove a
+manual override. Discovered LAN addresses remain available independently.
 
-Enable forwarding only on Macs that should carry encrypted traffic for other
-paired Macs. The origin, destination and gateway need the appropriate independent
-pairings. Multiple reachable Macs provide redundancy without a fixed coordinator.
-LAN connections are tried first and remain usable without internet.
+Use a stable internal address or internal DNS name. Supported networks include
+RFC 1918 IPv4, IPv6 ULA/link-local and shared VPN space (100.64.0.0/10). Public
+addresses are rejected; listeners do not bind public interfaces. The VPN must
+route the execution Mac's private subnet and, for internal DNS names, provide
+working internal DNS. Avoid overlapping home/remote LAN subnets in VPN routing.
+TerminalDB never relays traffic through another workstation. Each selected Mac
+is reached directly over the current LAN or VPN route.
 
-Some NAT and firewall combinations need a reachable intermediary. Here it must
-be your paired Mac. TerminalDB does not automatically open router rules. If all
-known public addresses change while every peer is unreachable, update an address
-manually. This is the deliberate cost of avoiding public discovery infrastructure.
-See [RFC 8656](https://www.rfc-editor.org/info/rfc8656/) for the general relay
-connectivity problem; TerminalDB does not use TURN.
+Trusted LAN access works without internet. Keep the execution Mac powered on,
+awake and logged in. Closing the viewing laptop disconnects its views; waking it
+and restoring LAN/VPN connectivity reattaches to the same shell. TerminalDB does
+not wake a sleeping execution Mac or move its work elsewhere.
 
 ## Recovery
 
-Direct LAN, Direct Internet and Via [Mac] identify the current path. Reconnecting
+Direct LAN or LAN / VPN identifies a direct authenticated connection. Reconnecting
 keeps work on its original Mac. Check power, sleep, login state, network permission,
-background activity, saved endpoints and firewall rules. Wake recovery establishes
+background activity, the saved internal address and VPN routing. Wake recovery establishes
 a new connection; it does not restart a shell elsewhere. If input delivery is
 uncertain, inspect the terminal and acknowledge the warning before continuing.
 It will not be repeated automatically.

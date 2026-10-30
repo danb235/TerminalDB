@@ -24,11 +24,13 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
     private var nearby: [String: PeerEndpoint] = [:]
     private var pendingPairs: [String: PendingPeerPair] = [:]
     private var links: [String: PeerTLSLink] = [:]
-    private var forwardedTargets: [String: String] = [:]
-    private var outgoingGateways: [String: String] = [:]
     private var localClients: [String: PeerLocalConnection] = [:]
     private var hostLinks: [String: PeerLocalConnection] = [:]
     private var wakeObserver: NSObjectProtocol?
+    private var sleepObserver: NSObjectProtocol?
+    private var networkObserver: NSObjectProtocol?
+    private var networkGeneration = 0
+    private var sleeping = false
     private var applyingRevocations = false
     private var status = "Starting"
     private var statusDetail = ""
@@ -49,21 +51,57 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
         try network.listen(port: trust.settings.listenPort) { [weak self] error in
             guard let self else { return }
             self.status = error == nil ? "Ready" : "Unavailable"
-            self.statusDetail = error == nil ? "Paired Macs connect directly. No cloud service is used." : "The peer listener could not start. Check the configured port and macOS network permissions."
+            self.statusDetail = error == nil ? "Paired Macs connect directly over your LAN or VPN. No internet ports or cloud service are needed." : "The peer listener could not start. Check the configured port and macOS network permissions."
             if error == nil { self.advertise() }
             self.broadcastState()
         }
         browser.delegate = self
         browser.searchForServices(ofType: PeerProtocol.serviceType, inDomain: "local.")
+        sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            self.sleeping = true; self.gate.close(); self.expirePairing()
+            self.disconnectNetworkViews()
+        }
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
-            self.gate.close(); self.expirePairing()
-            self.browser.stop(); self.services.removeAll(); self.nearby.removeAll()
-            self.advertise(); self.browser.searchForServices(ofType: PeerProtocol.serviceType, inDomain: "local.")
-            self.broadcastState()
+            self.sleeping = false; self.scheduleNetworkRefresh()
+        }
+        _ = PrivateNetworkChanges.shared
+        networkObserver = NotificationCenter.default.addObserver(forName: PrivateNetworkChanges.notification, object: nil, queue: .main) { [weak self] _ in
+            guard let self, !self.sleeping else { return }
+            self.scheduleNetworkRefresh()
         }
     }
-    deinit { if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) } }
+    deinit {
+        if let networkObserver { NotificationCenter.default.removeObserver(networkObserver) }
+        for observer in [wakeObserver, sleepObserver].compactMap({ $0 }) {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
+    }
+
+    private func disconnectNetworkViews() {
+        for link in Array(links.values) { link.close() }
+    }
+    private func scheduleNetworkRefresh() {
+        networkGeneration += 1
+        let generation = networkGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self, !self.sleeping, generation == self.networkGeneration else { return }
+            self.gate.close(); self.expirePairing()
+            self.disconnectNetworkViews()
+            self.browser.stop(); self.services.removeAll(); self.nearby.removeAll()
+            self.network.refreshListeners { [weak self] error in
+                guard let self else { return }
+                self.status = error == nil ? "Ready" : "Unavailable"
+                self.statusDetail = error == nil
+                    ? "Direct connections over your LAN or VPN. Sleeping workstations must be woken before reconnecting."
+                    : "Connect your LAN or VPN, then check Local Network permission and the workstation’s internal address."
+                if error == nil { self.advertise() }
+                self.broadcastState()
+            }
+            self.browser.searchForServices(ofType: PeerProtocol.serviceType, inDomain: "local.")
+        }
+    }
 
     private func advertise() {
         advertisement?.stop()
@@ -87,25 +125,20 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
                     guard !closed else { if case .success(let link) = result { link.close() }; return }
                     switch result {
                     case .failure:
-                        connection.send(["type": "error", "detail": "The paired Mac is unreachable. Check its saved address, power, and firewall settings."])
+                        connection.send(["type": "error", "detail": "The paired Mac is unreachable. Connect your LAN or VPN, then check its internal address, power, and Local Network permission."])
                         connection.close()
                     case .success(let link):
                         remote = link
-                        link.receive = { [weak self] message in
-                            guard let self else { return }
+                        link.receive = { message in
                             var message = message
                             if message["type"] as? String == "ready" {
                                 message["connectionPath"] = link.pathLabel
-                                self.acceptEndpoints(message["peerEndpoints"], from: link.peerID)
-                            } else if message["type"] as? String == "peer.endpoints" {
-                                self.acceptEndpoints(message["endpoints"], from: link.peerID); return
                             }
                             connection.send(message)
                         }
                         link.disconnected = { [weak self] in self?.links.removeValue(forKey: link.id); connection.close() }
                         link.send(["type": "hello", "version": PeerProtocol.version,
-                                   "clientId": hello["clientId"] as? String ?? UUID().uuidString,
-                                   "endpoints": self.endpointAdvertisement()])
+                                   "clientId": hello["clientId"] as? String ?? UUID().uuidString])
                     }
                 }
             } else if let remote { remote.send(message) }
@@ -178,43 +211,26 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
             case "peers.retryRemovals": applyPendingRevocations(); reply(state())
             case "peers.endpoint":
                 let id = message["peerId"] as? String ?? ""
-                let endpoint = try PeerEndpoint.parse(message["address"] as? String ?? "")
-                try trust.update {
-                    guard var peer = $0.peers[id] else { throw PeerFailure("Pair this workstation before saving its address.") }
-                    peer.endpoints.removeAll { $0.scope == "internet" }
-                    peer.endpoints.append(endpoint); $0.peers[id] = peer
-                }
-                reply(state()); broadcastState()
-            case "peers.publicEndpoint":
                 let text = (message["address"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 let endpoints = text.isEmpty ? [] : [try PeerEndpoint.parse(text)]
-                try trust.update { $0.publicEndpoints = endpoints }
-                for link in links.values where trust.contains(link.peerID) && hostLinks[link.id] != nil {
-                    link.send(["type": "peer.endpoints", "endpoints": endpointAdvertisement()])
+                try trust.update {
+                    guard var peer = $0.peers[id] else { throw PeerFailure("Pair this workstation before saving its address.") }
+                    peer.endpoints.removeAll { $0.scope == "manual" }
+                    peer.endpoints.append(contentsOf: endpoints); $0.peers[id] = peer
                 }
                 reply(state()); broadcastState()
-            case "peers.testEndpoint":
-                guard let peerID = message["peerId"] as? String,
-                      let endpoint = trust.settings.publicEndpoints.first else {
-                    throw PeerFailure("Save this Mac’s public address, then select a paired Mac on another network to test it.")
+            case "peers.testAddress":
+                guard let id = message["peerId"] as? String, let peer = trust.settings.peers[id],
+                      let endpoint = peer.endpoints.first(where: { $0.scope == "manual" }) ?? peer.endpoints.first else {
+                    throw PeerFailure("Select a paired workstation and save its internal LAN or VPN address first.")
                 }
-                connect(peerID: peerID) { result in
-                    guard case .success(let link) = result else { reply(["error": "The testing Mac is unreachable."]); return }
-                    var finished = false
-                    let finish: ([String: Any]) -> Void = { response in
-                        guard !finished else { return }; finished = true; link.close(); reply(response)
+                network.connect(endpoint: endpoint, expected: id, pairing: false) { result in
+                    if case .success(let link) = result {
+                        link.close(); reply(["testResult": "This Mac reached the workstation’s internal address and verified its paired device key."])
+                    } else {
+                        reply(["error": "The workstation is unreachable. Connect your VPN or LAN, then check its internal address, power and Local Network permission."])
                     }
-                    link.receive = { response in
-                        guard response["type"] as? String == "endpoint.result" else { return }
-                        finish(["testResult": response["detail"] as? String ?? "Test finished."])
-                    }
-                    link.disconnected = { [weak self] in self?.links.removeValue(forKey: link.id); finish(["error": "The testing Mac disconnected before verification finished."]) }
-                    link.send(["type": "endpoint.check", "address": endpoint.display])
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 15) { finish(["error": "Endpoint verification timed out."]) }
                 }
-            case "peers.forwarding":
-                try trust.update { $0.allowForwarding = message["enabled"] as? Bool ?? false }
-                reply(state()); broadcastState()
             default: reply(["error": "This peer management operation is unsupported."])
             }
         } catch { reply(["error": error.localizedDescription]) }
@@ -247,9 +263,6 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
         link.receive = { [weak self, weak link] message in
             guard let self, let link else { return }
             guard self.trust.contains(link.peerID) else { link.close(); return }
-            if message["type"] as? String == "peer.endpoints" {
-                self.acceptEndpoints(message["endpoints"], from: link.peerID); return
-            }
             if let host = self.hostLinks[link.id] { host.send(message); return }
             if message["type"] as? String == "revocation.apply" {
                 applicationAccepted = true
@@ -263,40 +276,16 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
                 } catch { link.close() }
                 return
             }
-            if message["type"] as? String == "endpoint.check" {
-                applicationAccepted = true
-                // The target is the authenticated requester's key. This can
-                // never be used to open a terminal or proxy to a third party.
-                link.receive = { _ in link.close() }
-                do {
-                    let endpoint = try PeerEndpoint.parse(message["address"] as? String ?? "")
-                    self.network.connect(endpoint: endpoint, expected: link.peerID, pairing: false) { result in
-                        let detail: String
-                        if case .success(let probe) = result {
-                            probe.close()
-                            detail = "The selected paired Mac reached this address and verified the device key. This verifies internet reachability only when that testing Mac is on another network; a LAN test may use router loopback."
-                        } else { detail = "The paired Mac could not reach and authenticate this address. Check the router or IPv6 firewall rule, address, and port." }
-                        link.send(["type": "endpoint.result", "detail": detail])
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { link.close() }
-                    }
-                } catch { link.close() }
-                return
-            }
-            if message["type"] as? String == "tunnel.open" {
-                applicationAccepted = true
-                self.forward(message, link: link); return
-            }
             guard message["type"] as? String == "hello", message["version"] as? Int == PeerProtocol.version,
                   let client = message["clientId"] as? String, UUID(uuidString: client) != nil else { link.close(); return }
             applicationAccepted = true
-            self.acceptEndpoints(message["endpoints"], from: link.peerID)
             do {
                 let host = try PeerLocalConnection.connect("host")
                 self.hostLinks[link.id] = host
                 host.receive = { response in
                     var response = response
                     if response["type"] as? String == "ready" {
-                        response["peerConnected"] = true; response["peerEndpoints"] = self.endpointAdvertisement()
+                        response["peerConnected"] = true
                     }
                     link.send(response)
                 }
@@ -361,11 +350,15 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
         guard let peer = trust.settings.peers[peerID] else {
             completion(.failure(PeerFailure("This workstation is not paired."))); return
         }
-        let endpoints = peer.endpoints.sorted { $0.scope == "lan" && $1.scope != "lan" }
+        func priority(_ endpoint: PeerEndpoint) -> Int {
+            if endpoint.scope == "lan" && PeerLAN.contains(endpoint.host) { return 0 }
+            return endpoint.scope == "manual" ? 1 : 2
+        }
+        let endpoints = peer.endpoints.sorted { priority($0) < priority($1) }
         func attempt(_ remaining: ArraySlice<PeerEndpoint>) {
             guard !cancelled() else { completion(.failure(PeerFailure("Connection cancelled."))); return }
             guard let endpoint = remaining.first else {
-                self.connectThroughPeer(target: peerID, cancelled: cancelled, completion: completion); return
+                completion(.failure(PeerFailure("The workstation is unreachable. Connect your LAN or VPN and check its saved internal address."))); return
             }
             network.connect(endpoint: endpoint, expected: peerID, pairing: false) { result in
                 switch result {
@@ -379,56 +372,19 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
         attempt(endpoints[...])
     }
 
-    private func connectThroughPeer(target: String, cancelled: @escaping () -> Bool = { false }, completion: @escaping (Result<PeerTLSLink, Error>) -> Void) {
-        let candidates = trust.settings.peers.values.filter { $0.id != target }.flatMap { peer in
-            peer.endpoints.map { (peer.id, $0) }
-        }
-        func attempt(_ remaining: ArraySlice<(String, PeerEndpoint)>) {
-            guard !cancelled() else { completion(.failure(PeerFailure("Connection cancelled."))); return }
-            guard let candidate = remaining.first else {
-                completion(.failure(PeerFailure("No direct or paired forwarding path is reachable."))); return
-            }
-            network.connectForwarded(endpoint: candidate.1, gateway: candidate.0, target: target) { result in
-                switch result {
-                case .success(let link):
-                    if cancelled() { link.close(); completion(.failure(PeerFailure("Connection cancelled."))); return }
-                    link.pathLabel = "Via " + (self.trust.settings.peers[candidate.0]?.name ?? "paired Mac")
-                    self.track(link, gateway: candidate.0); completion(.success(link))
-                case .failure: attempt(remaining.dropFirst())
-                }
-            }
-        }
-        attempt(candidates[...])
-    }
-
-    private func forward(_ message: [String: Any], link: PeerTLSLink) {
-        guard trust.settings.allowForwarding,
-              let target = message["target"] as? String, target != link.peerID,
-              let peer = trust.settings.peers[target], links.count <= PeerProtocol.maximumConnections else {
-            link.send(["type": "error", "detail": "This Mac does not permit that forwarding path."]); link.close(); return
-        }
-        forwardedTargets[link.id] = target
-        network.forward(link, endpoints: peer.endpoints)
-    }
-
-    private func track(_ link: PeerTLSLink, gateway: String? = nil) {
+    private func track(_ link: PeerTLSLink) {
         links[link.id] = link
-        if let gateway { outgoingGateways[link.id] = gateway }
         link.channel?.closeFuture.whenComplete { [weak self] _ in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.links.removeValue(forKey: link.id)
-                self.forwardedTargets.removeValue(forKey: link.id)
-                self.outgoingGateways.removeValue(forKey: link.id)
                 self.hostLinks.removeValue(forKey: link.id)?.close()
                 self.pendingPairs.removeValue(forKey: link.id)
             }
         }
     }
     private func disconnectPeer(_ id: String) {
-        for link in links.values where link.peerID == id || forwardedTargets[link.id] == id || outgoingGateways[link.id] == id {
-            link.close()
-        }
+        for link in Array(links.values) where link.peerID == id { link.close() }
     }
 
     private func applyPendingRevocations() {
@@ -461,32 +417,13 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
         next(work[...])
     }
 
-    private func endpointAdvertisement() -> [[String: Any]] {
-        trust.settings.publicEndpoints.prefix(8).map { ["address": $0.display] }
-    }
-    private func acceptEndpoints(_ value: Any?, from peerID: String) {
-        guard trust.contains(peerID), let entries = value as? [[String: Any]], entries.count <= 8 else { return }
-        let endpoints = entries.compactMap { item -> PeerEndpoint? in
-            guard let address = item["address"] as? String else { return nil }
-            return try? PeerEndpoint.parse(address, scope: "internet-announced")
-        }
-        guard endpoints.count == entries.count else { return }
-        // Only this device's pinned TLS identity can announce its addresses.
-        // Pairing and access to other peers are never inherited.
-        try? trust.update { settings in
-            settings.peers[peerID]?.endpoints.removeAll { $0.scope == "internet-announced" }
-            settings.peers[peerID]?.endpoints.append(contentsOf: endpoints)
-        }
-    }
-
     private func state() -> [String: Any] {
         let peers: [[String: Any]] = trust.settings.peers.values.sorted { $0.name < $1.name }.map {
             ["id": $0.id, "name": $0.name, "endpoints": $0.endpoints.map { ["address": $0.display, "scope": $0.scope] }]
         }
         return ["status": status, "detail": statusDetail, "fingerprint": identity.fingerprint,
                 "hardwareBacked": identity.hardwareBacked, "pairingOpen": gate.isOpen, "port": trust.settings.listenPort,
-                "forwarding": trust.settings.allowForwarding, "peers": peers,
-                "publicAddress": trust.settings.publicEndpoints.first?.display ?? "",
+                "peers": peers,
                 "pendingRemovals": (trust.settings.pendingRevocations ?? [:]).keys.sorted().map { trust.settings.peers[$0]?.name ?? "Unavailable Mac" },
                 "nearby": nearby.keys.sorted().map { ["service": $0, "address": nearby[$0]!.display] },
                 "candidates": pendingPairs.values.map { ["id": $0.link.id, "name": $0.name,
@@ -528,17 +465,19 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
                 return getnameinfo(base.assumingMemoryBound(to: sockaddr.self), socklen_t(data.count), &name,
                                    socklen_t(name.count), nil, 0, NI_NUMERICHOST)
             }
-            if result == 0 { resolved = String(cString: name); break }
+            if result == 0, PrivateNetwork.allows(String(cString: name)) { resolved = String(cString: name); break }
         }
         guard let host = resolved else { return }
         let endpoint = PeerEndpoint(host: host, port: sender.port, scope: "lan")
         nearby[sender.name] = endpoint
+        let generation = networkGeneration
         // Service names are address hints only. Only refresh a saved address
         // after a pinned-key handshake, never by matching this public prefix.
         for peer in trust.settings.peers.values where sender.name == "tdb-" + peer.id.prefix(12) {
             network.connect(endpoint: endpoint, expected: peer.id, pairing: false) { [weak self] result in
                 guard let self, case .success(let link) = result else { return }
                 link.close()
+                guard generation == self.networkGeneration else { return }
                 try? self.trust.update {
                     $0.peers[peer.id]?.endpoints.removeAll { $0.scope == "lan" }
                     $0.peers[peer.id]?.endpoints.insert(endpoint, at: 0)
