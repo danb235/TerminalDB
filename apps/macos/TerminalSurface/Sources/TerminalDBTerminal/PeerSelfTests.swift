@@ -134,6 +134,18 @@ public final class TDBPeerSelfTests: NSObject {
             for byte in burst { acceptedBurst = nativeClient.sendInput(Data([byte])) && acceptedBurst }
             while deliveredInput.count < burst.count && PeerClock.now < nativeDeadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
             try check(acceptedBurst && deliveredInput == burst && !nativeClient.inputUncertain)
+            // Queued typing must resume when unrelated requests fill and then
+            // drain the callback window, even without a terminal-input ACK.
+            var completedRequests = 0
+            for _ in 0..<256 {
+                nativeClient.request("host.state", payload: [:]) { _ in completedRequests += 1 }
+            }
+            let suffix = Data("after-request-pressure".utf8)
+            let acceptedSuffix = nativeClient.sendInput(suffix)
+            while (completedRequests < 256 || deliveredInput.count < burst.count + suffix.count) && PeerClock.now < nativeDeadline {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+            }
+            try check(acceptedSuffix && completedRequests == 256 && deliveredInput == burst + suffix && !nativeClient.inputUncertain)
             nativeClient.close(); nativeServer.requestHandler = nil
             let a: PeerDeviceIdentity
             if ProcessInfo.processInfo.environment["TERMINALDB_PEER_VERIFY_KEYCHAIN"] == "1" {

@@ -431,7 +431,11 @@ public final class TDBSessionClient: NSObject {
         guard !flushScheduled, !stagedInput.isEmpty else { return }
         flushScheduled = true
         let connectionID = connectionGeneration
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.004) { [weak self] in
+        // Batch this event-loop turn without adding a timer to every key.
+        // Only a full delivery window needs a bounded retry timer, avoiding a
+        // busy loop while acknowledgements or other requests are outstanding.
+        let delay = pendingInput >= 64 || callbacks.count >= 255 ? 0.004 : 0
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.connectionGeneration == connectionID else { return }
             self.flushScheduled = false
             self.flushInput()

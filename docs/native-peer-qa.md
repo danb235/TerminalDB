@@ -48,13 +48,17 @@ pairing material or provider configuration in screenshots, logs or public report
 
 ## Automated evidence
 
-The LAN/VPN implementation passed 92 terminal-surface checks, 81 native protocol
+The LAN/VPN implementation passed 92 terminal-surface checks, 82 native protocol
 and security checks, and 20 persistent-session integration checks, plus product,
 background-tab, signature, icon, secret and Claude shell-hook checks. An additional 14 real-agent checks passed for pairing, internal addresses, public
 address/obsolete-operation rejection, remote sessions and revocation. Both Mac
 architectures build successfully. Network restoration notifies disconnected
 views immediately; unauthenticated handshakes expire and cannot exceed admission
 limits.
+
+The native client also drains queued typing after 256 unrelated requests fill
+and then release its callback window. Ordinary input batches on the next event
+loop turn; only backpressure uses a short retry timer.
 
 Current tests cover framing/fragment assembly, budgets, exact byte ordering,
 controller fencing, receipt namespaces, expired input and no replay, mutual pinned
@@ -136,12 +140,21 @@ checks. Automated counts do not substitute for the physical scenarios above.
 - TCP listener and destination audits of all three networking helpers found only
   private addresses. Claude, updater and the preserved legacy cloud agents were
   excluded from this networking-helper audit.
+- The viewing Mac joined an iPhone hotspot and connected WireGuard Home. Its
+  route to the mini used the VPN interface. The native tab showed LAN / VPN,
+  accepted visible input on the original mini shell, and reattached after a
+  deliberate tunnel disconnect/reconnect. The same shell and background task
+  continued throughout; this is an actual outside-LAN pass.
+- On the LAN, 80 physical key-event-to-captured-frame samples measured median
+  39.2 ms, p95 44.3 ms and maximum 55.5 ms. The p95 target below 50 ms passed.
+  ScreenCaptureKit inspected one synthetic background pixel in RAM and retained
+  timing only. The measurement includes capture-callback delay. Earlier runs
+  with heavy QA browser activity did not meet the target; the completed browser
+  session was closed before this pass.
 
 These outcomes include the earlier direct-LAN implementation. Remaining physical
 acceptance includes the mini's updated-helper approval and reconnection/revocation
-pass, re-saving a layout containing an unavailable pane, WireGuard from an outside
-network, viewing-laptop lid recovery, LAN display latency and final primary/mini
-installed About verification. The latency helper
-did not produce a valid measurement; no latency percentile is claimed. Original
+pass, re-saving a layout containing an unavailable pane, viewing-laptop lid recovery
+and final primary/mini installed About verification. Original
 active legacy work on the primary Mac and mini remains running and protected.
 Cloud retirement, repository merge and final installation are pending acceptance.
