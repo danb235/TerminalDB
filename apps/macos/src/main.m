@@ -1206,7 +1206,8 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         @"workstation_id": controller.peerTarget.length > 0
             ? controller.peerTarget
             : ([self rootController].peerPanel.peerInventory[@"fingerprint"] ?: @""),
-        @"terminal_session_id": controller.sessionClient.sessionID ?: @"",
+        @"terminal_session_id": controller.sessionClient.sessionID.length > 0
+            ? controller.sessionClient.sessionID : controller.peerAttachSession ?: @"",
         @"account_id" : controller.selectedProfile.identifier ?: @"",
         @"account_label" : controller.selectedProfile.label ?: @"",
         @"assistant_open" : @(!controller.assistantView.hidden),

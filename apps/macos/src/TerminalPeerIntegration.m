@@ -431,7 +431,8 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
     NSString *path = self.sessionClient.connected ? self.sessionClient.connectionPath :
         ([message.lowercaseString containsString:@"unreachable"] ? @"Unreachable" : @"Reconnecting");
     [self.claudeStatusBar showEnvironment:path host:self.sessionClient.workstationName detail:message];
-    self.peerControlButton.title = @"Reconnect";
+    self.peerControlButton.title = self.sessionClient.ended ? @"Session Ended" : @"Reconnect";
+    self.peerControlButton.enabled = !self.sessionClient.ended && !self.sessionClient.synchronizing;
     self.peerControlButton.toolTip = message;
 }
 

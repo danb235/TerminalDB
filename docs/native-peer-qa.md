@@ -116,10 +116,29 @@ checks. Automated counts do not substitute for the physical scenarios above.
 - A mixed-workstation layout saved through the MBP's native workspace controls
   contains absolute device references for both Macs and their existing sessions.
   Legacy empty references resolve relative to the workspace collection's host.
+- Restoring that layout through the native controls reattached both existing
+  sessions without creating extra shells. Reviewed input from the restored view
+  still executed on the original workstation.
+- Native End Session stopped a disposable shell. Restoring its saved workspace
+  kept an ended-session placeholder without creating a replacement shell. Its
+  control now reads Session Ended; saving a layout retains unavailable references.
+- The installed MBP candidate's normal About window reported 0.6.0.
+- The actual WireGuard Home profile was activated temporarily. The MBP's native
+  Test Connection verified the paired key at the tunnel's private address. With
+  the direct LAN terminal address blocked, New Tab attached an existing session
+  through that VPN address and showed LAN / VPN. Visible input executed there.
+  Stopping the tunnel and restoring the LAN route reattached the same live shell;
+  its background work completed. Temporary test rules and manual address were
+  cleared, and WireGuard was returned to its original inactive state. Both Macs
+  were physically on the home network; this does not prove outside-network access.
+- TCP listener and destination audits of all three networking helpers found only
+  private addresses. Claude, updater and the preserved legacy cloud agents were
+  excluded from this networking-helper audit.
 
-These outcomes include the earlier direct-LAN implementation. The final reduced
-transport still needs a fresh installed pass for private bindings, settings,
-network changes, remaining product actions, revocation, offline LAN, WireGuard
-outside the LAN, lid recovery, latency and final About verification. Original
+These outcomes include the earlier direct-LAN implementation. Remaining physical
+acceptance includes the mini's updated-helper approval and reconnection/revocation
+pass, WireGuard from an outside network, viewing-laptop lid recovery, LAN display
+latency and final primary/mini installed About verification. The latency helper
+did not produce a valid measurement; no latency percentile is claimed. Original
 active legacy work on the primary Mac and mini remains running and protected.
 Cloud retirement, repository merge and final installation are pending acceptance.
