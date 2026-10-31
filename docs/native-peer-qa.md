@@ -197,11 +197,26 @@ withdrawn after pairing closes. Three simultaneous two-sided initiation rounds
 converged on a single connection and still required independent approval by both
 Macs. This prevents the two native screens from waiting on different requests.
 
-Final primary/mini canonical installation and About verification remain in the
-repository handoff. Original active legacy work on those Macs is still running;
-private on-device backups of the original apps, saved settings and data are
-complete. The MBP’s eight native shells had no foreground non-shell processes at
-preflight. Replacing the old GUI-owned sessions requires finishing their work or
-explicit authorization to stop them; stored-data backups cannot preserve running
-processes. Cloud retirement, repository merge and final installation are pending.
-Remote DNS cleanup is explicitly deferred by the user.
+## Installed handoff — October 31, 2026
+
+PR #57 merged as e7282c7. The clean primary checkout was fast-forwarded to
+origin/main, built as a universal app and installed with make install. The same
+verified build was installed on the mini and MBP. The normal About panel reported
+0.6.0 on all three Macs. Both per-user services are enabled and running, each Mac
+retained its original device identity, and all three retained two independently
+approved peers. No public release tag was published.
+
+The original GUI-owned sessions were stopped only after the user explicitly
+authorized it. Private on-device backups preserve the prior apps and saved data.
+The installed primary/MBP terminal connection executed on the MBP. Quitting and
+reopening the installed interface, then using Resume Session, returned to that
+same shell without creating an extra remote shell. The mini's installed identity,
+mutual connection and private execution also passed. Its final command check used
+the native protocol after the viewing Mac locked again; this supplements the
+separate visible mini pairing, keyboard and workstation checks above.
+
+Only disposable private QA sessions were ended during cleanup. Claude credentials,
+preferences and history remain on their own Macs. The final installed build is
+unchanged by this documentation update. Dedicated AWS retirement is recorded in
+the [handoff PR](https://github.com/danb235/TerminalDB/pull/57); remote DNS cleanup
+remains explicitly deferred by the user.

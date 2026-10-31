@@ -78,6 +78,8 @@ GitHub releases, Claude integrations and shared infrastructure.
 
 The October 2026 inventory found TerminalDBRemote-dev in us-west-2 (78 resources)
 and TerminalDBRemote-dev-Edge in us-east-1 (5 resources). Resource identifiers are
-kept in an operator-only inventory outside Git. Retirement is pending acceptance
-QA. Cloudflare remote DNS removal also requires valid DNS-edit authorization.
-No stack or DNS deletion is implied by this document.
+kept in an operator-only inventory outside Git. The native replacement passed acceptance and 0.6.0 was installed on all three
+workstations. The [handoff record](https://github.com/danb235/TerminalDB/pull/57)
+tracks the dedicated stacks' retirement and remaining resources separately from
+source removal. Cloudflare remote DNS cleanup is explicitly deferred by the user.
+No DNS change is implied by this runbook.
