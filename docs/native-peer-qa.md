@@ -121,7 +121,9 @@ checks. Automated counts do not substitute for the physical scenarios above.
   still executed on the original workstation.
 - Native End Session stopped a disposable shell. Restoring its saved workspace
   kept an ended-session placeholder without creating a replacement shell. Its
-  control now reads Session Ended; saving a layout retains unavailable references.
+  control now reads Session Ended. Snapshot creation also retains the attachment
+  ID of unavailable panes; the visible re-save check was interrupted by screen
+  lock and remains pending.
 - The installed MBP candidate's normal About window reported 0.6.0.
 - The actual WireGuard Home profile was activated temporarily. The MBP's native
   Test Connection verified the paired key at the tunnel's private address. With
@@ -137,8 +139,9 @@ checks. Automated counts do not substitute for the physical scenarios above.
 
 These outcomes include the earlier direct-LAN implementation. Remaining physical
 acceptance includes the mini's updated-helper approval and reconnection/revocation
-pass, WireGuard from an outside network, viewing-laptop lid recovery, LAN display
-latency and final primary/mini installed About verification. The latency helper
+pass, re-saving a layout containing an unavailable pane, WireGuard from an outside
+network, viewing-laptop lid recovery, LAN display latency and final primary/mini
+installed About verification. The latency helper
 did not produce a valid measurement; no latency percentile is claimed. Original
 active legacy work on the primary Mac and mini remains running and protected.
 Cloud retirement, repository merge and final installation are pending acceptance.
