@@ -45,9 +45,15 @@ def main():
             wait_for(lambda: all(any(item["service"] == "tdb-" + fingerprints[1-i][:12]
                                      for item in state(i)["nearby"]) for i in range(2)), timeout=20)
             checks += 1
+            def discovered(i):
+                return next((item for item in state(i)["nearby"] if item["service"] == "tdb-" + fingerprints[1-i][:12]), {"pairingReady": False, "name": "Nearby Mac"})
+            assert all(not discovered(i)["pairingReady"] and discovered(i)["name"] == "Nearby Mac" for i in range(2))
+            checks += 1
             for manager in managers: assert "error" not in manager.request("peers.pairing.open")
+            wait_for(lambda: all(discovered(i)["pairingReady"] and discovered(i)["name"] != "Nearby Mac" for i in range(2)))
+            checks += 1
             assert "error" not in managers[0].request("peers.pair", service="tdb-"+fingerprints[1][:12])
-            wait_for(lambda: all(state(i)["candidates"] for i in range(2)))
+            wait_for(lambda: all(state(i)["candidates"] and state(i)["candidates"][0].get("ready") for i in range(2)))
             checks += 1
             candidates = [state(i)["candidates"][0] for i in range(2)]
             assert all(candidates[i]["fingerprint"] == fingerprints[1-i] for i in range(2))
@@ -64,6 +70,8 @@ def main():
             assert "error" not in managers[1].request("peers.approve", candidate=candidates[1]["id"], fingerprint=fingerprints[0])
             wait_for(lambda: all(state(i)["peers"] for i in range(2)))
             for manager in managers: manager.request("peers.pairing.close")
+            checks += 1
+            wait_for(lambda: all(not discovered(i)["pairingReady"] and discovered(i)["name"] == "Nearby Mac" for i in range(2)))
             checks += 1
             assert "error" in managers[0].request("peers.endpoint", peerId=fingerprints[1], address="203.0.113.10:49377")
             assert "error" in managers[0].request("peers.forwarding", enabled=True)
@@ -107,6 +115,31 @@ def main():
             else: raise AssertionError("Revoked connection stayed open")
             assert observer.request("session.end").get("accepted")
             checks += 1
+            assert "error" not in managers[0].request("peers.remove", peerId=fingerprints[1])
+            # Both people may select the other Mac at the same time. Their
+            # approvals must converge on one connection, without trust shortcuts.
+            from concurrent.futures import ThreadPoolExecutor
+            import threading
+            for _ in range(3):
+                for manager in managers: manager.request("peers.pairing.open")
+                wait_for(lambda: all(discovered(i)["pairingReady"] for i in range(2)))
+                barrier = threading.Barrier(2)
+                def start_pairing(i):
+                    barrier.wait()
+                    return managers[i].request("peers.pair", service="tdb-"+fingerprints[1-i][:12])
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    results = list(pool.map(start_pairing, range(2)))
+                assert all("error" not in result for result in results)
+                wait_for(lambda: all(len(state(i)["candidates"]) == 1 and state(i)["candidates"][0]["ready"] for i in range(2)))
+                for i in range(2):
+                    candidate = state(i)["candidates"][0]
+                    assert candidate["fingerprint"] == fingerprints[1-i]
+                    assert "error" not in managers[i].request("peers.approve", candidate=candidate["id"], fingerprint=fingerprints[1-i])
+                wait_for(lambda: all(state(i)["peers"] for i in range(2)))
+                for i in range(2):
+                    managers[i].request("peers.pairing.close")
+                    managers[i].request("peers.remove", peerId=fingerprints[1-i])
+                checks += 1
             print(f"TerminalDB native agent integration checks: {checks} passed")
         finally:
             for client in clients: client.close()

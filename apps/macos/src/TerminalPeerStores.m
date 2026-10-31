@@ -106,6 +106,13 @@
     NSMutableDictionary *payload = [fields mutableCopy]; payload[@"action"] = action;
     [self.client request:@"product.invoke" payload:payload completion:^(NSDictionary *result) {
         if (!result[@"error"]) [self invalidate];
+        if (self.operationFeedback) {
+            NSString *host = self.client.workstationName ?: @"the workstation";
+            NSString *message = result[@"error"]
+                ? [NSString stringWithFormat:@"Couldn’t save changes on %@. %@", host, result[@"error"]]
+                : [NSString stringWithFormat:@"Changes saved on %@.", host];
+            self.operationFeedback(message, result[@"error"] != nil);
+        }
     }];
 }
 - (NSDictionary *)saveRunbookNamed:(NSString *)name command:(NSString *)command directory:(NSString *)directory {

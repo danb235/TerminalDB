@@ -21,6 +21,10 @@ public final class TDBPeerSelfTests: NSObject {
             try? FileManager.default.removeItem(at: directory)
         }
         do {
+            try check(TDBWorkstationPresentation.tabTitle(workstation: "Office Mac", session: "project") == "Office Mac · project")
+            try check(PeerProtocol.displayName("  Office\nMac\u{202e}  ") == "OfficeMac")
+            try check(PeerProtocol.displayName("\n\t ") == "Mac")
+            try check(PeerProtocol.displayName(String(repeating: "界", count: 200)).unicodeScalars.count == 80)
             try check(TDBWorkspaceReferences.resolveWorkstation("local-device", owner: "remote-device", localDevice: "local-device") == "")
             try check(TDBWorkspaceReferences.resolveWorkstation("remote-device", owner: "", localDevice: "local-device") == "remote-device")
             try check(TDBWorkspaceReferences.resolveWorkstation("", owner: "remote-device", localDevice: "local-device") == "remote-device")

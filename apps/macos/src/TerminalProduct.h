@@ -56,6 +56,8 @@ typedef NS_ENUM(NSInteger, TerminalProductSection) {
 @interface TerminalProductWindowController : NSWindowController
 
 @property(nonatomic, strong, readonly) NSView *panelView;
+@property(nonatomic, copy, nullable) NSString *executionWorkstation;
+- (void)showOperationMessage:(NSString *)message failed:(BOOL)failed;
 @property(nonatomic, copy, nullable) void (^dismissHandler)(void);
 
 @property(nonatomic, copy, nullable) void (^runCommandHandler)(NSString *command);

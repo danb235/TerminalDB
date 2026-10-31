@@ -12,6 +12,7 @@
 
 @interface TerminalPeerProductStore : TerminalProductStore
 @property(nonatomic, copy) void (^didChange)(void);
+@property(nonatomic, copy) void (^operationFeedback)(NSString *message, BOOL failed);
 - (instancetype)initWithClient:(TDBSessionClient *)client;
 - (void)invalidate;
 @end

@@ -74,7 +74,7 @@ one native window:
 - UTF-8, ANSI/256/truecolor output, alternate-screen programs, bracketed paste,
   cursor modes, and xterm navigation keys
 - Native macOS windows, tabs, and independent right/down split panes
-- In-window control panels for Paired Workstations, settings, project workflows,
+- In-window control panels for Workstations, settings, project workflows,
   Claude account usage, and AI provider configuration; dismiss with the visible
   X or Escape without creating another app window
 - Event-driven tab titles for shell commands and Claude Code lifecycle states
@@ -222,20 +222,24 @@ certificate used by the installed release.
 
 ### Work across your Macs
 
-1. Open **Paired Workstations** on both Macs while they share a LAN.
-2. Open pairing on both, select the nearby Mac, and compare the complete device
-   fingerprints displayed on the two screens. Approve on both Macs.
-3. Choose **Shell → New Tab**, select a workstation, and choose **New Terminal**
-   or an existing session. The tab always identifies its execution Mac.
-4. Closing a tab or quitting the interface detaches the view. Use **End Session**
+1. Open **Workstations → Manage Macs → Add Mac** on both Macs while they share
+   a LAN. Choose the nearby Mac, compare both complete fingerprints on the two
+   screens, and select **Fingerprints Match — Pair** on each Mac. Cancel if they differ.
+2. **⌘T** or **+** immediately opens a terminal on **This Mac**. To work elsewhere,
+   open the workstation menu in the toolbar and choose **New Terminal on [Mac]**.
+   The hosting Mac appears first in the tab and in the toolbar. **Resume Session**
+   opens an existing session without changing the other Mac's selected tab.
+3. Closing a tab or quitting the interface detaches its view. Use **End Session**
    to stop the shell. Multiple views can watch; **Take Control** transfers typing,
    terminal sizing, and changes to the session.
-5. When away, connect your VPN to the LAN first. If discovery does not cross the
-   VPN, select the paired workstation in **Paired Workstations**, save its internal
-   IP address or internal DNS name, and use **Test Connection**. TerminalDB does
+4. When away, connect your VPN to the LAN first. If discovery does not cross the
+   VPN, choose the paired Mac in **Manage Macs → Connection**, enter its internal
+   IP address or internal DNS name, and choose **Save & Test**. TerminalDB does
    not require an internet-facing terminal port or configure your router.
 
-New tabs and splits inherit the current workstation; new windows use This Mac.
+New tabs, private sessions and windows default to This Mac. Splits stay on their
+parent pane's Mac and inherit its directory. Opening a saved workspace preserves
+the current layout and opens its saved tabs and splits in a new window.
 Workspaces retain workstation and session references. Offline sessions remain
 reconnectable placeholders. Work never migrates to a different execution Mac.
 

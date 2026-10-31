@@ -573,6 +573,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
 @property(nonatomic, strong) NSTextField *eyebrowLabel;
 @property(nonatomic, strong) NSTextField *titleLabel;
 @property(nonatomic, strong) NSTextField *subtitleLabel;
+@property(nonatomic, strong) NSTextField *operationLabel;
 @property(nonatomic, strong) NSButton *createButton;
 @property(nonatomic, strong) NSButton *primaryButton;
 @property(nonatomic, strong) NSButton *secondaryButton;
@@ -864,6 +865,19 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     self.deleteButton.frame = NSMakeRect(976, 62, 122, 32);
     self.deleteButton.autoresizingMask = NSViewMinXMargin;
     [content addSubview:self.deleteButton];
+    self.operationLabel = [self labelWithSize:12 weight:NSFontWeightRegular
+                                      color:self.theme.statusBarActiveForeground];
+    self.operationLabel.frame = NSMakeRect(28, 14, 1070, 36);
+    self.operationLabel.autoresizingMask = NSViewWidthSizable;
+    self.operationLabel.maximumNumberOfLines = 2;
+    self.operationLabel.lineBreakMode = NSLineBreakByWordWrapping;
+    [content addSubview:self.operationLabel];
+}
+
+- (void)showOperationMessage:(NSString *)message failed:(BOOL)failed {
+    self.operationLabel.stringValue = message ?: @"";
+    self.operationLabel.textColor = failed ? self.theme.ansiColors[1]
+        : self.theme.statusBarActiveForeground;
 }
 
 - (void)showSection:(TerminalProductSection)section
@@ -1164,7 +1178,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
             self.eyebrowLabel.stringValue = @"RESTORABLE CONTEXT";
             self.titleLabel.stringValue = @"Workspaces";
             self.subtitleLabel.stringValue =
-                @"Restore the path, account, and conversation purpose together.";
+                @"Open saved tabs and splits in a new window. Sessions stay on their original Macs.";
             self.items = self.store.workspaces.count > 0
                 ? self.store.workspaces
                 : @[@{@"id":@"empty-workspace",
@@ -1172,7 +1186,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
                        @"detail":@"Capture the current path, account, and chat purpose.",
                        @"directory":self.directory, @"empty":@YES}];
             self.createButton.title = @"Save current";
-            self.primaryButton.title = @"Restore";
+            self.primaryButton.title = @"Open Workspace";
             self.secondaryButton.title = @"Copy path";
             self.tertiaryButton.title = @"Rename…";
             self.tertiaryButton.hidden = NO;
@@ -1233,6 +1247,10 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
             @"Nothing here yet.\n\nCreate an item or clear the search field.";
     }
     self.window.title = self.titleLabel.stringValue;
+    if (self.executionWorkstation.length > 0 && self.section <= TerminalProductSectionWorkspaces) {
+        self.eyebrowLabel.stringValue = [NSString stringWithFormat:@"%@ · %@",
+            self.executionWorkstation, self.eyebrowLabel.stringValue];
+    }
 }
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {

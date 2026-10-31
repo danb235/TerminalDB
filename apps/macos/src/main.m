@@ -16,6 +16,7 @@
 #import "TerminalDBTerminal-Swift.h"
 #define TerminalView TDBTerminalSurface
 #import "TerminalApplication.h"
+#import "TerminalPeerStores.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -280,6 +281,11 @@ static BOOL TerminalDBReapShell(pid_t pid) {
             if ([alert runModal] == NSAlertFirstButtonReturn) [TDBPeerServices openBackgroundSettings];
         }
         self.peerPanel = [[TDBPeerPanel alloc] init];
+        self.peerPanel.changed = ^{
+            for (AppDelegate *controller in weakRoot.windowControllers) {
+                [controller updateWindowTitle];
+            }
+        };
     }
     [self installApplicationMenu];
     if (visualQA) {
@@ -728,7 +734,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                             keyEquivalent:@","];
     settings.target = self;
     NSMenuItem *workstations =
-        [applicationMenu addItemWithTitle:@"Paired Workstations…"
+        [applicationMenu addItemWithTitle:@"Workstations…"
                                    action:@selector(showPairedWorkstations:)
                             keyEquivalent:@""];
     workstations.target = self;
@@ -801,6 +807,10 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     privateSession.target = self;
     privateSession.keyEquivalentModifierMask =
         NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    NSMenuItem *remoteTerminal = [shellMenu addItemWithTitle:@"New Terminal on Another Mac…" action:@selector(showWorkstationMenu:) keyEquivalent:@""];
+    remoteTerminal.target = self;
+    NSMenuItem *resumeSession = [shellMenu addItemWithTitle:@"Resume Session…" action:@selector(resumePeerSession:) keyEquivalent:@""];
+    resumeSession.target = self;
     NSMenuItem *workspaces =
         [shellMenu addItemWithTitle:@"Open Workspace…"
                              action:@selector(showWorkspacesFromMenu:)
@@ -1153,6 +1163,12 @@ static BOOL TerminalDBReapShell(pid_t pid) {
             ? (NSView *)focusedWindow.firstResponder : nil;
     if (focusedView != nil) {
         for (AppDelegate *controller in root.windowControllers) {
+            if (!controller.utilityPanelView.hidden &&
+                [focusedView isDescendantOf:controller.utilityPanelView]) {
+                return controller.peerFocusedPane ?: controller;
+            }
+        }
+        for (AppDelegate *controller in root.windowControllers) {
             NSView *candidate = focusedView;
             while (candidate != nil) {
                 if (candidate == controller.workspaceView ||
@@ -1169,7 +1185,8 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         if (![candidate isKindOfClass:NSWindow.class]) continue;
         id delegate = candidate.delegate;
         if ([delegate isKindOfClass:AppDelegate.class]) {
-            return (AppDelegate *)delegate;
+            AppDelegate *controller = (AppDelegate *)delegate;
+            return controller.peerFocusedPane ?: controller;
         }
     }
     for (AppDelegate *controller in root.windowControllers.reverseObjectEnumerator) {
@@ -1206,6 +1223,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         @"workstation_id": controller.peerTarget.length > 0
             ? controller.peerTarget
             : ([self rootController].peerPanel.peerInventory[@"fingerprint"] ?: @""),
+        @"workstation_name": [controller peerWorkstationLabel],
         @"terminal_session_id": controller.sessionClient.sessionID.length > 0
             ? controller.sessionClient.sessionID : controller.peerAttachSession ?: @"",
         @"account_id" : controller.selectedProfile.identifier ?: @"",
@@ -1292,27 +1310,9 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                 while (active.embeddedSplitOwner != nil) {
                     active = active.embeddedSplitOwner;
                 }
-                BOOL hasCurrentLayout =
-                    active.window.tabGroup.windows.count > 1 ||
-                    active.splitControllers.count > 0 ||
-                    active.ledgerStore.records.count > 0;
-                if (hasCurrentLayout) {
-                    NSAlert *conflict = [[NSAlert alloc] init];
-                    conflict.messageText = [NSString stringWithFormat:
-                        @"Restore “%@”?", workspace[@"name"] ?: @"workspace"];
-                    conflict.informativeText =
-                        @"Open it in a new window to preserve the current "
-                         "layout, or reuse the active terminal.";
-                    [conflict addButtonWithTitle:@"Open in New Window"];
-                    [conflict addButtonWithTitle:@"Use Current Terminal"];
-                    [conflict addButtonWithTitle:@"Cancel"];
-                    NSModalResponse response = [conflict runModal];
-                    if (response == NSAlertThirdButtonReturn) return;
-                    if (response == NSAlertFirstButtonReturn) {
-                        active = [rootController createTerminalController];
-                        [rootController presentTerminalController:active];
-                    }
-                }
+                // Opening a saved layout preserves every current view and its work.
+                active = [rootController createTerminalController];
+                [rootController presentTerminalController:active];
                 NSArray *savedTabs =
                     [workspace[@"tabs"] isKindOfClass:NSArray.class]
                         ? workspace[@"tabs"] : nil;
@@ -1335,6 +1335,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                         target.peerTarget = [TDBWorkspaceReferences resolveWorkstation:saved
                             owner:weakProductOwner.peerTarget ?: @""
                             localDevice:rootController.peerPanel.peerInventory[@"fingerprint"] ?: @""];
+                        target.peerWorkstationName = [pane[@"workstation_name"] isKindOfClass:NSString.class] ? pane[@"workstation_name"] : nil;
                         target.peerAttachSession = [pane[@"terminal_session_id"] isKindOfClass:NSString.class] ? pane[@"terminal_session_id"] : @"";
                         target.peerStartDirectory = pane[@"directory"] ?: @"";
                         target.peerRestoreState = target.peerAttachSession.length > 0 ? nil : pane;
@@ -1424,7 +1425,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                     AppDelegate *target = index == 0
                         ? active : [rootController createTerminalController];
                     if (index > 0) {
-                        [active.window addTabbedWindow:target.window
+                        [restored.lastObject.window addTabbedWindow:target.window
                                                ordered:NSWindowAbove];
                     }
                     [restored addObject:target];
@@ -1531,7 +1532,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
             ^NSDictionary *{
                 AppDelegate *rootController = weakRoot;
                 if (![rootController.peerPanel.peerInventory[@"fingerprint"] length]) {
-                    return @{@"error": @"The workstation identity is still loading. Wait for Paired Workstations to become ready, then save again."};
+                    return @{@"error": @"The workstation identity is still loading. Wait for Workstations to become ready, then save again."};
                 }
                 AppDelegate *active =
                     [rootController activeTerminalController];
@@ -1587,6 +1588,12 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     __weak AppDelegate *weakController = controller;
     __weak TerminalProductWindowController *weakProduct =
         root.productWindowController;
+    root.productWindowController.executionWorkstation = [controller peerWorkstationLabel];
+    if ([controller.productStore isKindOfClass:TerminalPeerProductStore.class]) {
+        ((TerminalPeerProductStore *)controller.productStore).operationFeedback = ^(NSString *message, BOOL failed) {
+            [weakProduct showOperationMessage:message failed:failed];
+        };
+    }
     root.productWindowController.dismissHandler = ^{
         [weakController hideUtilityPanel:nil];
     };
@@ -1594,7 +1601,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         prepareSection:section
               directory:[controller currentAssistantDirectory]
            accountLabel:controller.selectedProfile.label
-                inWindow:controller.window];
+                inWindow:[controller peerPresentationWindow]];
     [controller showUtilityPanelView:root.productWindowController.panelView
                                title:@"TerminalDB"
                            fullWidth:YES
@@ -1659,8 +1666,14 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     AppDelegate *controller = [root activeTerminalController];
     if (!controller) return;
     if (!root.peerPanel) root.peerPanel = [[TDBPeerPanel alloc] init];
+    __weak AppDelegate *weakRoot = root;
+    root.peerPanel.openTerminalHandler = ^(NSString *target, NSString *name) {
+        AppDelegate *active = [weakRoot activeTerminalController];
+        [weakRoot openPeerTabOn:target name:name session:nil directory:nil private:NO window:[active peerPresentationWindow]];
+    };
+    root.peerPanel.openSessionsHandler = ^(NSString *target) { [weakRoot showSessionsOnWorkstation:target]; };
     [root.peerPanel refresh];
-    [controller showUtilityPanelView:root.peerPanel.view title:@"Paired Workstations"
+    [controller showUtilityPanelView:root.peerPanel.view title:@"Workstations"
                           fullWidth:YES dismissHandler:nil];
 }
 
@@ -1777,16 +1790,18 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     (void)sender;
     AppDelegate *root = [self rootController];
     AppDelegate *host = [root activeTerminalController];
-    root.peerTarget = host.peerTarget; root.peerPrivateRequested = YES;
+    root.peerTarget = @""; root.peerWorkstationName = @"This Mac"; root.peerPrivateRequested = YES;
+    root.peerStartDirectory = host.peerTarget.length == 0 ? [host currentAssistantDirectory] : nil;
     AppDelegate *controller = [root createTerminalController];
-    root.peerTarget = nil; root.peerPrivateRequested = NO;
+    root.peerTarget = nil; root.peerWorkstationName = nil; root.peerStartDirectory = nil; root.peerPrivateRequested = NO;
     controller.privateSession = YES;
     controller.peerPrivateRequested = YES;
-    controller.window.title = @"TerminalDB — Private Session";
+    [controller updateWindowTitle];
     [controller.ledgerBar showReadyInDirectory:[NSString stringWithFormat:
         @"PRIVATE · %@", [controller currentAssistantDirectory]]];
-    if (host.window != nil) {
-        [host.window addTabbedWindow:controller.window
+    NSWindow *visibleWindow = [host peerPresentationWindow];
+    if (visibleWindow != nil) {
+        [visibleWindow addTabbedWindow:controller.window
                              ordered:NSWindowAbove];
         controller.window.tabGroup.selectedWindow = controller.window;
     }
@@ -2941,6 +2956,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     controller.selectedProfile = root.profileManager.lastSelectedProfile;
     if (TerminalDBUsesPeerSessions()) controller.selectedProfile = nil;
     controller.peerTarget = root.peerTarget;
+    controller.peerWorkstationName = root.peerWorkstationName;
     controller.peerAttachSession = root.peerAttachSession;
     controller.peerStartDirectory = root.peerStartDirectory;
     controller.peerPrivateRequested = root.peerPrivateRequested;
@@ -3319,8 +3335,8 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                 isEqualToString:@"Show AI Chat"] &&
             second.workstationsButton.image != nil &&
             [[second.workstationsButton accessibilityLabel]
-                isEqualToString:@"Paired Workstations"] &&
-            second.workstationsButton.action == @selector(showPairedWorkstations:);
+                isEqualToString:@"Workstations"] &&
+            second.workstationsButton.action == @selector(showWorkstationMenu:);
         [second showAssistantPane];
         BOOL chatExpanded =
             !second.assistantView.hidden &&
@@ -3394,7 +3410,13 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         [root newTerminalWindow:nil];
         return;
     }
-    if (TerminalDBUsesPeerSessions()) { [root showPeerPicker:hostWindow]; return; }
+    if (TerminalDBUsesPeerSessions()) {
+        AppDelegate *active = [root activeTerminalController];
+        [root openPeerTabOn:@"" name:@"This Mac" session:nil
+            directory:active.peerTarget.length == 0 ? [active currentAssistantDirectory] : nil
+            private:NO window:hostWindow];
+        return;
+    }
     [root newTerminalTabFromWindow:hostWindow];
 }
 
@@ -3402,9 +3424,12 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     AppDelegate *root = [self rootController];
     AppDelegate *parent = [hostWindow.delegate isKindOfClass:AppDelegate.class]
         ? (AppDelegate *)hostWindow.delegate : [root activeTerminalController];
+    AppDelegate *active = [root activeTerminalController];
+    if ([active peerPresentationWindow] == hostWindow) parent = active;
     root.peerTarget = parent.peerTarget;
+    root.peerWorkstationName = [parent peerWorkstationLabel];
     AppDelegate *controller = [root createTerminalController];
-    root.peerTarget = nil;
+    root.peerTarget = nil; root.peerWorkstationName = nil;
     if (hostWindow != nil) {
         [hostWindow addTabbedWindow:controller.window ordered:NSWindowAbove];
         controller.window.tabGroup.selectedWindow = controller.window;
@@ -3435,9 +3460,10 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     if (host.workspaceView == nil || host.workspaceView.superview == nil) return;
     if (!host.assistantView.hidden) [host hideAssistantPane];
     root.peerTarget = host.peerTarget;
+    root.peerWorkstationName = [host peerWorkstationLabel];
     root.peerStartDirectory = [host currentAssistantDirectory];
     AppDelegate *child = [root createTerminalController];
-    root.peerTarget = nil; root.peerStartDirectory = nil;
+    root.peerTarget = nil; root.peerWorkstationName = nil; root.peerStartDirectory = nil;
     child.embeddedSplitOwner = host;
     child.embeddedSplitVertical = vertical;
     if (host.splitControllers == nil) {
@@ -3775,34 +3801,38 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     self.assistantToggleButton.action = @selector(toggleAssistantPane:);
     self.assistantToggleButton.toolTip =
         @"Open AI Chat (Command-Shift-L)";
-    self.assistantToggleButton.frame = NSMakeRect(72, 1, 30, 26);
+    self.assistantToggleButton.frame = NSMakeRect(332, 1, 30, 26);
     NSView *assistantAccessoryView =
-        [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 218, 28)];
+        [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 366, 28)];
     self.peerControlButton = [NSButton buttonWithTitle:@"Connecting…" target:self action:@selector(takePeerControl:)];
-    self.peerControlButton.frame = NSMakeRect(108, 1, 108, 26);
+    self.peerControlButton.frame = NSMakeRect(182, 1, 108, 26);
     self.peerControlButton.bezelStyle = NSBezelStyleRounded;
+    self.peerControlButton.font = [NSFont systemFontOfSize:11];
     [assistantAccessoryView addSubview:self.peerControlButton];
     self.workstationsButton =
-        [[NSButton alloc] initWithFrame:NSMakeRect(4, 1, 30, 26)];
-    self.workstationsButton.title = @"";
-    self.workstationsButton.bordered = NO;
+        [[NSButton alloc] initWithFrame:NSMakeRect(0, 1, 176, 26)];
+    self.workstationsButton.title = @"This Mac ▾";
+    self.workstationsButton.bezelStyle = NSBezelStyleRounded;
+    self.workstationsButton.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+    self.workstationsButton.cell.lineBreakMode = NSLineBreakByTruncatingMiddle;
     self.workstationsButton.controlSize = NSControlSizeSmall;
     NSImage *workstationsImage =
-        [NSImage imageWithSystemSymbolName:@"globe"
-                  accessibilityDescription:@"Paired Workstations"];
+        [NSImage imageWithSystemSymbolName:@"desktopcomputer"
+                  accessibilityDescription:@"Workstations"];
     workstationsImage = [workstationsImage imageWithSymbolConfiguration:
         [NSImageSymbolConfiguration configurationWithPointSize:14
                                                         weight:NSFontWeightMedium]];
     self.workstationsButton.image = workstationsImage;
-    self.workstationsButton.imagePosition = NSImageOnly;
-    [self.workstationsButton setAccessibilityLabel:@"Paired Workstations"];
+    self.workstationsButton.imagePosition = NSImageLeft;
+    [self.workstationsButton setAccessibilityLabel:@"Workstations"];
+    [self.workstationsButton setAccessibilityIdentifier:@"workstation-menu"];
     self.workstationsButton.contentTintColor = self.theme.ansiColors[6];
     self.workstationsButton.target = self;
-    self.workstationsButton.action = @selector(showPairedWorkstations:);
-    self.workstationsButton.toolTip = @"Manage Paired Workstations";
+    self.workstationsButton.action = @selector(showWorkstationMenu:);
+    self.workstationsButton.toolTip = @"This session is on This Mac. Open the Workstations menu to start or resume work on a Mac.";
 
     self.commandBarToggleButton =
-        [[NSButton alloc] initWithFrame:NSMakeRect(38, 1, 30, 26)];
+        [[NSButton alloc] initWithFrame:NSMakeRect(296, 1, 30, 26)];
     self.commandBarToggleButton.title = @"";
     self.commandBarToggleButton.bordered = NO;
     self.commandBarToggleButton.controlSize = NSControlSizeSmall;
@@ -4068,10 +4098,11 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     if (dismissHandler != nil) dismissHandler();
     host.assistantView.hidden = !restoreAssistant;
     [host layoutWorkspace];
-    if (restoreAssistant) {
-        [host.assistantView focusComposer];
+    AppDelegate *focus = host.peerFocusedPane ?: host;
+    if (!focus.assistantView.hidden) {
+        [focus.assistantView focusComposer];
     } else {
-        [host.window makeFirstResponder:host.terminalView];
+        [host.window makeFirstResponder:focus.terminalView];
     }
 }
 
@@ -6034,11 +6065,14 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 
 - (void)updateWindowTitle {
     if (self.sessionClient) {
-        NSString *title = self.peerState[@"title"] ?: @"Terminal";
-        NSString *host = self.sessionClient.workstationName ?: @"This Mac";
-        self.window.tab.title = [NSString stringWithFormat:@"%@ · %@", title, host];
-        self.window.title = [@"TerminalDB — " stringByAppendingString:self.window.tab.title];
-        [self refreshTabToolTip]; return;
+        AppDelegate *owner = self;
+        while (owner.embeddedSplitOwner) owner = owner.embeddedSplitOwner;
+        AppDelegate *shown = owner.peerFocusedPane ?: owner;
+        NSString *title = shown.peerState[@"title"] ?: shown.peerStartDirectory.lastPathComponent ?: @"Terminal";
+        owner.window.tab.title = [TDBWorkstationPresentation tabTitleForWorkstation:[shown peerWorkstationLabel] session:title];
+        owner.window.title = [@"TerminalDB — " stringByAppendingString:owner.window.tab.title];
+        [shown refreshPeerToolbar];
+        [owner refreshTabToolTip]; return;
     }
     NSString *base = self.reportedWindowTitle.length > 0
         ? self.reportedWindowTitle
@@ -6360,10 +6394,21 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     (void)notification;
     [self restoreDesktopTerminalGeometry];
 
-    if (!self.assistantView.hidden) {
-        [self.assistantView focusComposer];
+    AppDelegate *focus = self.peerFocusedPane ?: self;
+    if (!focus.assistantView.hidden) {
+        [focus.assistantView focusComposer];
     } else {
-        [self.window makeFirstResponder:self.terminalView];
+        [self.window makeFirstResponder:focus.terminalView];
+    }
+}
+
+- (void)windowDidUpdate:(NSNotification *)notification {
+    (void)notification;
+    if (!self.sessionClient || !self.window.isKeyWindow || !self.utilityPanelView.hidden) return;
+    AppDelegate *active = [[self rootController] activeTerminalController];
+    if (active && active.terminalView.window == self.window && self.peerFocusedPane != active) {
+        self.peerFocusedPane = active;
+        [self updateWindowTitle];
     }
 }
 

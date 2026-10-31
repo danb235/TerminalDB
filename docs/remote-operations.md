@@ -5,12 +5,16 @@
 Install TerminalDB on each Mac and keep its user logged in, awake and powered on.
 Allow TerminalDB background activity in System Settings → General → Login Items
 & Extensions, and Local Network access in Privacy & Security when requested.
-Open Paired Workstations on both Macs on the same LAN. Open pairing, select the
-nearby Mac, compare complete fingerprints, and approve on both screens.
+Open Workstations → Manage Macs → Add Mac on both Macs on the same LAN. Select
+the nearby Mac, compare both complete fingerprints, and approve on both screens.
+Cancel if either fingerprint differs. Names are hints; keys establish trust.
 
-Use Shell → New Tab to choose This Mac or a paired workstation and then a new or
-existing session. New windows default to This Mac; tabs and splits inherit their
-workstation. Closing a tab detaches it; End Session stops its shell and work.
+Use ⌘T or + to open a terminal on This Mac immediately. New windows and private
+sessions also use This Mac. In the toolbar workstation menu, choose New Terminal
+on [Mac] to work elsewhere, or Resume Session to reopen existing work. The
+hosting Mac appears first in each tab and in the toolbar. Splits inherit their
+parent pane’s Mac. Opening a workspace preserves the current layout in another
+window. Closing a tab detaches it; End Session stops its shell and work.
 Use Take Control to transfer typing, sizing and session changes between viewers.
 
 ## LAN and VPN access
@@ -19,9 +23,9 @@ When away, connect your existing VPN to the LAN before opening a workstation.
 TerminalDB does not configure the VPN or router and needs no public terminal port.
 Pair the Macs initially on the same LAN; VPN membership alone does not grant trust.
 
-Bonjour discovery may not cross routed VPNs. In Paired Workstations, select the
-paired Mac, enter its internal IP address or internal DNS name in the LAN/VPN
-address field, and click Save Address. Test Connection checks that exact saved
+Bonjour discovery may not cross routed VPNs. In Workstations → Manage Macs, select the
+paired Mac and open Connection. Enter its internal IP address or internal DNS
+name and click Save & Test. This checks that exact saved
 address and verifies the pinned key. Leave the field empty and save to remove a
 manual override. Discovered LAN addresses remain available independently.
 
@@ -57,6 +61,11 @@ Unavailable saved sessions remain reconnectable. An ended session must be
 replaced explicitly with New Terminal. A session-host failure, reboot or logout
 ends sessions. Restarting only the peer agent preserves sessions. Preserve active
 legacy sessions before updating the old GUI-owned PTY implementation.
+
+Removing a Mac immediately blocks it here. The default applies to This Mac only;
+select the optional checkbox to request removal from other paired Macs. Hosts
+that cannot be reached remain visibly pending and can be retried. To pair again,
+remove the old pairing on both Macs first.
 
 ## Legacy cloud retirement
 

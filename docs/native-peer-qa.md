@@ -14,11 +14,13 @@ Use installed native bundles, disposable sessions and synthetic text. Preserve
 active legacy work. Never record terminal contents, fingerprints, credentials,
 pairing material or provider configuration in screenshots, logs or public reports.
 
-1. Pair through Paired Workstations: open pairing on both physical Macs, compare
+1. Pair through Workstations → Manage Macs → Add Mac on both physical Macs, compare
    full fingerprints, cancel a mismatch, approve both and verify unapproved denial.
    Use the third Mac to check that trust is not inherited through another Mac.
-2. Create and attach through New Tab. Verify workstation labels, independent
-   selected tabs, inherited tabs/splits, This Mac windows, workspace restore and
+2. Open immediate local tabs with + and ⌘T, including from remote tabs. Use the
+   workstation menu for direct remote creation and Resume Session for existing
+   work. Verify host-first labels, active split context, independent selected tabs,
+   inherited splits, local private sessions/windows, workspace order/restore and
    unavailable session placeholders without creating replacement shells.
 3. Exercise real keyboard punctuation, Unicode, large paste, Ctrl-C, scrollback
    and a full-screen program. Share views, take control and resize; verify passive
@@ -48,9 +50,9 @@ pairing material or provider configuration in screenshots, logs or public report
 
 ## Automated evidence
 
-The LAN/VPN implementation passed 92 terminal-surface checks, 82 native protocol
-and security checks, and 20 persistent-session integration checks, plus product,
-background-tab, signature, icon, secret and Claude shell-hook checks. An additional 14 real-agent checks passed for pairing, internal addresses, public
+The LAN/VPN implementation passed 92 terminal-surface checks, 86 native protocol
+and security checks, and 21 persistent-session integration checks, plus product,
+background-tab, signature, icon, secret and Claude shell-hook checks. An additional 20 real-agent checks passed for pairing, internal addresses, public
 address/obsolete-operation rejection, remote sessions and revocation. Both Mac
 architectures build successfully. Network restoration notifies disconnected
 views immediately; unauthenticated handshakes expire and cannot exceed admission
@@ -86,8 +88,9 @@ checks. Automated counts do not substitute for the physical scenarios above.
   Access to the mini was denied before the MBP paired with it independently.
 - Direct LAN new/existing sessions, independent selected tabs, shared viewers,
   takeover, passive input/resize fencing and controller sizing passed.
-- Tabs/splits inherit the mini and project directory. New windows use This Mac.
-  Private commands execute on the mini without entering persisted history.
+- In the earlier interface, tabs/splits inherited the mini and project directory.
+  New windows used This Mac. That tab default is superseded by the local-first
+  simplification below. Private commands on the mini stayed out of persisted history.
   Workspace restore reattaches the existing shells and split layout.
 - Remote bookmarks, reviewed playbook execution, monitor display, workspace save
   and the mini's synthetic project preview passed through normal controls.
@@ -125,9 +128,8 @@ checks. Automated counts do not substitute for the physical scenarios above.
   still executed on the original workstation.
 - Native End Session stopped a disposable shell. Restoring its saved workspace
   kept an ended-session placeholder without creating a replacement shell. Its
-  control now reads Session Ended. Snapshot creation also retains the attachment
-  ID of unavailable panes; the visible re-save check was interrupted by screen
-  lock and remains pending.
+  control now reads Session Ended. Snapshot creation retains the attachment ID of
+  unavailable panes; the later visible re-save pass preserved those references.
 - The installed MBP candidate's normal About window reported 0.6.0.
 - The actual WireGuard Home profile was activated temporarily. The MBP's native
   Test Connection verified the paired key at the tunnel's private address. With
@@ -152,9 +154,42 @@ checks. Automated counts do not substitute for the physical scenarios above.
   with heavy QA browser activity did not meet the target; the completed browser
   session was closed before this pass.
 
-These outcomes include the earlier direct-LAN implementation. Remaining physical
-acceptance includes the mini's updated-helper approval and reconnection/revocation
-pass, re-saving a layout containing an unavailable pane, viewing-laptop lid recovery
-and final primary/mini installed About verification. Original
-active legacy work on the primary Mac and mini remains running and protected.
-Cloud retirement, repository merge and final installation are pending acceptance.
+- After the viewing laptop actually slept and woke, its native view reattached to
+  the same original mini shell. A bounded synthetic heartbeat on the mini kept
+  progressing during the viewer's sleep with a maximum scheduling gap of 1.01 s.
+  The viewer then returned to LAN Wi-Fi and WireGuard Home was left inactive.
+- Native removal on the mini immediately disconnected the MBP and rejected its
+  next connection before session inventory. Other bilateral trust stayed intact.
+  The Macs then re-paired through normal controls with full fingerprint checks.
+- A removal requested from the MBP while the primary was unreachable showed
+  pending status. After restoring that path, Retry Pending Removals applied the
+  independent removal on the primary. All three bilateral pairings were then
+  restored through native verification. Temporary test firewall rules were removed.
+
+## Local-first interface acceptance
+
+The updated interface makes + and ⌘T immediate local actions, names the hosting
+Mac first in tabs and the toolbar, offers direct remote creation from one menu,
+and combines existing-session selection in one browser. Add Mac guides discovery,
+full fingerprint comparison and bilateral approval in one sheet. Connection
+addresses stay behind an optional Connection control. Removal defaults to this
+Mac; propagation is an explicit checkbox. Saved workspaces open in a new window.
+The mini’s visible native controls passed immediate local New Tab and +, local
+private sessions opened from remote work, direct creation on another Mac, the
+combined Resume Session browser, host-first title/toolbar labels, same-host splits,
+Add Mac cancellation, optional Connection settings and default local removal.
+Opening a saved layout created no extra shells. Saving it again from a live pane
+retained the ordered references for every workstation/session, including the ended
+pane. The updated panel showed a successful save on the named host and a rejected save
+with a visible Take Control instruction after another viewer took control.
+Final two-Mac pairing through the simplified sheet is pending. Earlier network
+results do not substitute for that check.
+
+The real-agent tests additionally verify that the pairing-only discovery name is
+withdrawn after pairing closes. Three simultaneous two-sided initiation rounds
+converged on a single connection and still required independent approval by both
+Macs. This prevents the two native screens from waiting on different requests.
+
+Remaining physical acceptance includes the final bilateral pairing flow and final primary/mini installed About verification. Original active legacy work on the primary Mac and mini remains
+running and protected. Cloud retirement, repository merge and final installation
+are pending acceptance. Remote DNS cleanup is explicitly deferred by the user.

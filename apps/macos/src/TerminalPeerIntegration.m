@@ -385,11 +385,11 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
 - (void)connectToWorkstation {
     self.sessionClient = [[TDBSessionClient alloc] init];
     self.sessionClient.workstationID = self.peerTarget ?: @"";
-    NSString *workstationName = self.peerTarget.length > 0 ? @"Paired Mac" : @"This Mac";
+    NSString *workstationName = self.peerTarget.length > 0 ? @"Saved Mac" : @"This Mac";
     for (NSDictionary *peer in [self rootController].peerPanel.peerInventory[@"peers"] ?: @[])
         if ([peer[@"id"] isEqual:self.peerTarget]) workstationName = peer[@"name"] ?: workstationName;
-    self.sessionClient.workstationName = workstationName;
-    [self.claudeStatusBar showEnvironment:@"Reconnecting" host:workstationName detail:@"Connecting to the session service…"];
+    self.sessionClient.workstationName = self.peerWorkstationName.length > 0 ? self.peerWorkstationName : workstationName;
+    [self.claudeStatusBar showEnvironment:@"Reconnecting" host:self.sessionClient.workstationName detail:@"Connecting to the session service…"];
     [self updateWindowTitle];
     self.ledgerStore = [[TerminalPeerLedgerStore alloc] initWithClient:self.sessionClient];
     self.productStore = [[TerminalPeerProductStore alloc] initWithClient:self.sessionClient];
@@ -431,9 +431,7 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
     NSString *path = self.sessionClient.connected ? self.sessionClient.connectionPath :
         ([message.lowercaseString containsString:@"unreachable"] ? @"Unreachable" : @"Reconnecting");
     [self.claudeStatusBar showEnvironment:path host:self.sessionClient.workstationName detail:message];
-    self.peerControlButton.title = self.sessionClient.ended ? @"Session Ended" : @"Reconnect";
-    self.peerControlButton.enabled = !self.sessionClient.ended && !self.sessionClient.synchronizing;
-    self.peerControlButton.toolTip = message;
+    [self refreshPeerToolbar];
 }
 
 - (void)acceptPeerEvent:(NSDictionary *)event {
@@ -448,8 +446,9 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
         [self.ledgerStore replacePeerRecords:self.peerState[@"records"] ?: @[]];
         [[self rootController].productWindowController refresh];
         self.terminalSessionIdentifier = self.peerState[@"sessionId"] ?: self.terminalSessionIdentifier;
-        NSString *host = self.peerTarget.length > 0 ? self.peerState[@"host"] ?: @"Mac" : @"This Mac";
+        NSString *host = self.peerTarget.length > 0 ? [TDBWorkstationPresentation displayName:self.peerState[@"host"] ?: @"Mac"] : @"This Mac";
         self.sessionClient.workstationName = host;
+        if (self.peerTarget.length > 0 && self.peerWorkstationName.length == 0) self.peerWorkstationName = host;
         [self updateWindowTitle];
         [self.claudeStatusBar showEnvironment:self.peerTarget.length > 0 ? self.sessionClient.connectionPath : @"LOCAL" host:host detail:self.peerState[@"directory"]];
         [self.claudeStatusBar showDirectory:self.peerState[@"directory"] ?: @"~" model:self.peerState[@"model"]];
@@ -523,14 +522,12 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
         [self showPeerError:@"This session has ended. Open a new terminal to continue."];
     }
     self.terminalView.inputEnabled = self.sessionClient.connected && self.sessionClient.controlling && !self.sessionClient.synchronizing && !self.sessionClient.snapshotFailed && !self.sessionClient.inputUncertain;
-    self.peerControlButton.enabled = !self.sessionClient.ended && !self.sessionClient.synchronizing;
-    self.peerControlButton.title = self.sessionClient.ended ? @"Session Ended" : self.sessionClient.snapshotFailed ? @"Reconnect" : self.sessionClient.synchronizing ? @"Synchronizing" : self.sessionClient.inputUncertain ? @"Review Input" : !self.sessionClient.connected ? @"Reconnect" :
-        (self.sessionClient.controlling ? @"Controlling" : @"Take Control");
+    [self refreshPeerToolbar];
 }
 
 - (void)openPeerAccountTab:(NSString *)accountID login:(BOOL)login {
     [self.claudeStatusBar dismissUsagePanel:nil];
-    AppDelegate *tab = [[self rootController] newTerminalTabFromWindow:self.window];
+    AppDelegate *tab = [[self rootController] newTerminalTabFromWindow:[self peerPresentationWindow]];
     __weak AppDelegate *weakTab = tab;
     tab.peerAfterAttach = ^{
         [weakTab.sessionClient request:@"account.select" payload:@{@"accountId": accountID} completion:^(NSDictionary *result) {
@@ -542,12 +539,13 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
 }
 
 - (void)takePeerControl:(id)sender {
-    (void)sender;
+    AppDelegate *active = [[self rootController] activeTerminalController];
+    if (active && active != self) { [active takePeerControl:sender]; return; }
     if (self.sessionClient.ended) return;
     if (self.sessionClient.inputUncertain) {
-        NSAlert *alert = [[NSAlert alloc] init]; alert.messageText = @"Review uncertain input";
-        alert.informativeText = @"The last input may have reached the workstation. Check the terminal before continuing. TerminalDB will not repeat it.";
-        [alert addButtonWithTitle:@"I Have Reviewed It"]; [alert addButtonWithTitle:@"Cancel"];
+        NSAlert *alert = [[NSAlert alloc] init]; alert.messageText = @"Check your last input";
+        alert.informativeText = [NSString stringWithFormat:@"Your last input may have reached %@ before the connection was interrupted. Check the terminal before continuing. It will not be sent again.", [self peerWorkstationLabel]];
+        [alert addButtonWithTitle:@"I’ve Checked — Continue"]; [alert addButtonWithTitle:@"Cancel"];
         if ([alert runModal] == NSAlertFirstButtonReturn) [self.sessionClient acknowledgeUncertainInput];
         return;
     }
@@ -568,7 +566,7 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
         TerminalCommandRisk risk = [TerminalPermissionCenter riskForCommand:command environment:environment];
         if ([result[@"permissionMode"] isEqual:@"read-only"] && risk == TerminalCommandRiskReadOnly) { commit(); return; }
         [self.permissionCenter requestPermissionForCommand:command directory:result[@"directory"]
-            host:result[@"host"] environment:environment parentWindow:self.window
+            host:result[@"host"] environment:environment parentWindow:[self peerPresentationWindow]
             completion:^(TerminalCommandPermissionDecision decision) {
                 if (decision != TerminalCommandPermissionCancel) commit();
             }];
@@ -589,67 +587,102 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
     }];
 }
 
-- (void)showPeerPicker:(NSWindow *)hostWindow {
+- (NSWindow *)peerPresentationWindow {
+    AppDelegate *owner = self;
+    while (owner.embeddedSplitOwner) owner = owner.embeddedSplitOwner;
+    return owner.window;
+}
+
+- (NSString *)peerWorkstationLabel {
+    if (self.peerTarget.length == 0) return @"This Mac";
+    for (NSDictionary *peer in [self rootController].peerPanel.peerInventory[@"peers"] ?: @[]) {
+        if ([peer[@"id"] isEqual:self.peerTarget]) return [TDBWorkstationPresentation displayName:peer[@"name"] ?: @"Mac"];
+    }
+    NSString *name = self.peerWorkstationName ?: self.peerState[@"host"];
+    return name.length > 0 ? [TDBWorkstationPresentation displayName:name] : @"Saved Mac";
+}
+
+- (void)refreshPeerToolbar {
+    AppDelegate *owner = self;
+    while (owner.embeddedSplitOwner) owner = owner.embeddedSplitOwner;
+    AppDelegate *shown = owner.peerFocusedPane ?: owner;
+    TDBSessionClient *client = shown.sessionClient;
+    NSString *host = [shown peerWorkstationLabel];
+    owner.workstationsButton.title = [host stringByAppendingString:@" ▾"];
+    [owner.workstationsButton setAccessibilityValue:host];
+    owner.workstationsButton.toolTip = [NSString stringWithFormat:@"This session is on %@. Open this menu to start or resume a terminal on a Mac.", host];
+    owner.peerControlButton.title = client.ended ? @"Session Ended" : client.snapshotFailed ? @"Retry" : client.synchronizing ? @"Restoring…" : client.inputUncertain ? @"Review Input" : !client.connected ? @"Retry" : client.controlling ? @"You Have Control" : @"Take Control";
+    owner.peerControlButton.enabled = client && !client.ended && !client.synchronizing && (!client.controlling || client.inputUncertain || !client.connected || client.snapshotFailed);
+    owner.peerControlButton.toolTip = client.ended ? @"This shell has ended. Start a new terminal from the Workstations menu."
+        : client.inputUncertain ? @"Check the terminal before typing again. Unconfirmed input is never repeated automatically."
+        : !client.connected ? [NSString stringWithFormat:@"Waiting for %@. Check that it is awake and logged in. When away, connect your VPN. Click Retry to try now.", host]
+        : client.controlling ? @"This view controls typing and terminal size. Other viewers can take control."
+        : @"View only. Take Control to type, resize, and change this session.";
+}
+
+- (AppDelegate *)openPeerTabOn:(NSString *)target name:(NSString *)name session:(NSString *)session directory:(NSString *)directory private:(BOOL)privateSession window:(NSWindow *)window {
     AppDelegate *root = [self rootController];
-    if (!root.peerPanel) root.peerPanel = [[TDBPeerPanel alloc] init];
-    NSArray *peers = root.peerPanel.peerInventory[@"peers"] ?: @[];
-    NSPopUpButton *workstations = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0, 0, 420, 28) pullsDown:NO];
-    [workstations addItemWithTitle:@"This Mac"];
-    for (NSDictionary *peer in peers) [workstations addItemWithTitle:peer[@"name"] ?: @"Mac"];
-    AppDelegate *current = [root activeTerminalController];
-    for (NSUInteger i = 0; i < peers.count; i++) if ([peers[i][@"id"] isEqual:current.peerTarget]) [workstations selectItemAtIndex:i + 1];
-    NSAlert *picker = [[NSAlert alloc] init]; picker.messageText = @"Choose a workstation";
-    picker.informativeText = @"Start a new terminal or resume an existing session on this workstation.";
-    picker.accessoryView = workstations;
-    [picker addButtonWithTitle:@"Continue"]; [picker addButtonWithTitle:@"Cancel"];
-    [picker beginSheetModalForWindow:hostWindow completionHandler:^(NSModalResponse response) {
-        if (response != NSAlertFirstButtonReturn) return;
-        NSString *target = workstations.indexOfSelectedItem == 0 ? @"" : peers[workstations.indexOfSelectedItem - 1][@"id"];
-        TDBSessionClient *browser = [[TDBSessionClient alloc] init]; browser.workstationID = target;
-        __block BOOL finished = NO;
-        NSAlert *progress = [[NSAlert alloc] init]; progress.messageText = @"Connecting to workstation…";
-        progress.informativeText = @"Checking direct paths and your paired Macs. Your existing sessions keep running.";
-        [progress addButtonWithTitle:@"Cancel"];
-        [progress beginSheetModalForWindow:hostWindow completionHandler:^(NSModalResponse response) {
-            if (response == NSAlertFirstButtonReturn && !finished) { finished = YES; [browser close]; }
-        }];
-        void (^failed)(NSString *) = ^(NSString *message) {
-            if (finished) return; finished = YES; [browser close];
-            [NSApp endSheet:progress.window returnCode:NSAlertSecondButtonReturn];
-            NSAlert *error = [[NSAlert alloc] init]; error.messageText = @"The selected workstation is unreachable";
-            error.informativeText = message; [error addButtonWithTitle:@"OK"];
-            [error beginSheetModalForWindow:hostWindow completionHandler:nil];
-        };
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-            failed(@"Unreachable. Check that the Mac is awake and logged in, then check its saved address and firewall rule.");
-        });
-        [browser connectWithCompletion:^(NSDictionary *connected) {
-            if (finished) return;
-            if (connected[@"error"]) { failed(connected[@"error"]); return; }
-            [browser request:@"session.list" payload:@{} completion:^(NSDictionary *result) {
-                if (finished) return;
-                if (result[@"error"]) { failed(result[@"error"]); return; }
-                finished = YES; [NSApp endSheet:progress.window returnCode:NSAlertSecondButtonReturn];
-                NSArray *sessions = result[@"sessions"] ?: @[];
-                NSPopUpButton *choices = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0, 0, 460, 28) pullsDown:NO];
-                [choices addItemWithTitle:@"New Terminal"];
-                for (NSDictionary *session in sessions) [choices addItemWithTitle:[NSString stringWithFormat:@"%@ · %@", session[@"title"], session[@"directory"]]];
-                NSAlert *sessionPicker = [[NSAlert alloc] init]; sessionPicker.messageText = @"Open a terminal session";
-                sessionPicker.accessoryView = choices;
-                [sessionPicker addButtonWithTitle:@"Open"]; [sessionPicker addButtonWithTitle:@"Cancel"];
-                [sessionPicker beginSheetModalForWindow:hostWindow completionHandler:^(NSModalResponse selected) {
-                    [browser close];
-                    if (selected != NSAlertFirstButtonReturn) return;
-                    root.peerTarget = target;
-                    root.peerAttachSession = choices.indexOfSelectedItem == 0 ? nil : sessions[choices.indexOfSelectedItem - 1][@"sessionId"];
-                    AppDelegate *controller = [root createTerminalController];
-                    root.peerTarget = nil; root.peerAttachSession = nil;
-                    [hostWindow addTabbedWindow:controller.window ordered:NSWindowAbove];
-                    hostWindow.tabGroup.selectedWindow = controller.window;
-                    [root presentTerminalController:controller];
-                }];
-            }];
-        }];
+    root.peerTarget = target; root.peerWorkstationName = name;
+    root.peerAttachSession = session; root.peerStartDirectory = directory;
+    root.peerPrivateRequested = privateSession;
+    AppDelegate *controller = [root createTerminalController];
+    root.peerTarget = nil; root.peerWorkstationName = nil;
+    root.peerAttachSession = nil; root.peerStartDirectory = nil; root.peerPrivateRequested = NO;
+    if (window) {
+        [window addTabbedWindow:controller.window ordered:NSWindowAbove];
+        controller.window.tabGroup.selectedWindow = controller.window;
+    }
+    [root presentTerminalController:controller];
+    return controller;
+}
+
+- (void)showWorkstationMenu:(id)sender {
+    AppDelegate *root = [self rootController];
+    AppDelegate *active = [root activeTerminalController];
+    if (!active) return;
+    AppDelegate *owner = active;
+    while (owner.embeddedSplitOwner) owner = owner.embeddedSplitOwner;
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Workstations"];
+    NSMenuItem *location = [menu addItemWithTitle:[NSString stringWithFormat:@"This session: %@", [active peerWorkstationLabel]] action:nil keyEquivalent:@""];
+    location.enabled = NO;
+    [menu addItem:NSMenuItem.separatorItem];
+    NSMutableArray *macs = [NSMutableArray arrayWithObject:@{@"id": @"", @"name": @"This Mac"}];
+    [macs addObjectsFromArray:root.peerPanel.peerInventory[@"peers"] ?: @[]];
+    for (NSDictionary *mac in macs) {
+        NSString *name = [TDBWorkstationPresentation displayName:mac[@"name"] ?: @"Mac"];
+        NSMenuItem *item = [menu addItemWithTitle:[@"New Terminal on " stringByAppendingString:name] action:@selector(newPeerTerminalFromMenu:) keyEquivalent:@""];
+        item.target = root; item.representedObject = @{@"id": mac[@"id"] ?: @"", @"name": name};
+    }
+    [menu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *resume = [menu addItemWithTitle:@"Resume Session…" action:@selector(resumePeerSession:) keyEquivalent:@""]; resume.target = root;
+    NSMenuItem *manage = [menu addItemWithTitle:@"Manage Macs…" action:@selector(showPairedWorkstations:) keyEquivalent:@""]; manage.target = root;
+    NSView *anchor = [sender isKindOfClass:NSView.class] ? sender : owner.workstationsButton;
+    [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, 0) inView:anchor];
+}
+
+- (void)newPeerTerminalFromMenu:(NSMenuItem *)item {
+    NSDictionary *mac = item.representedObject;
+    AppDelegate *active = [[self rootController] activeTerminalController];
+    NSString *target = mac[@"id"] ?: @"";
+    NSString *directory = [target isEqualToString:active.peerTarget ?: @""] ? [active currentAssistantDirectory] : nil;
+    [self openPeerTabOn:target name:mac[@"name"] ?: @"Mac" session:nil directory:directory private:NO window:[active peerPresentationWindow]];
+}
+
+- (void)resumePeerSession:(id)sender {
+    (void)sender;
+    [self showSessionsOnWorkstation:[[self rootController] activeTerminalController].peerTarget ?: @""];
+}
+
+- (void)showSessionsOnWorkstation:(NSString *)target {
+    AppDelegate *root = [self rootController];
+    AppDelegate *active = [root activeTerminalController];
+    NSWindow *window = [active peerPresentationWindow];
+    if (!window) return;
+    root.sessionBrowser = [[TDBSessionBrowser alloc] init];
+    __weak AppDelegate *weakRoot = root;
+    [root.sessionBrowser showInWindow:window peers:root.peerPanel.peerInventory[@"peers"] ?: @[] workstation:target completion:^(NSString *workstation, NSString *session, NSString *name) {
+        [weakRoot openPeerTabOn:workstation name:name session:session directory:nil private:NO window:window];
+        weakRoot.sessionBrowser = nil;
     }];
 }
 @end

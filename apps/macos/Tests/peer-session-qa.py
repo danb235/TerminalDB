@@ -154,6 +154,11 @@ def main():
             wait_for(lambda: patch_file.read_text() == "before\n")
             wait_for(lambda: not a.request("host.state")["busy"])
             checks += 1
+            for malformed_path in ({"invalid": True}, ["invalid"]):
+                assert "error" in a.request("project.preview", path=malformed_path)
+            assert "error" in a.request("qa.unsupported")
+            assert helper.poll() is None and a.request("health.ping").get("accepted")
+            checks += 1
             original_account = a.request("host.state")["accountId"]
             assert a.input("/bin/sleep 30\r").get("accepted")
             wait_for(lambda: a.request("host.state")["busy"])

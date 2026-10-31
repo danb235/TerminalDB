@@ -6,6 +6,11 @@ import Darwin
 // trust inherited from a connection's address. The authenticated transport
 // supplies the principal; clients cannot choose it in a request body.
 enum PeerProtocol {
+    static func displayName(_ value: String) -> String {
+        let scalars = value.unicodeScalars.lazy.filter { !CharacterSet.controlCharacters.contains($0) }.prefix(80)
+        let result = String(String.UnicodeScalarView(scalars)).trimmingCharacters(in: .whitespacesAndNewlines)
+        return result.isEmpty ? "Mac" : result
+    }
     static let version = 1
     static let maximumFrame = 1_048_576
     static let maximumMessage = 8 * maximumFrame
