@@ -1500,6 +1500,13 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         if (values.count == 1) {
             NSDictionary *snapshot = self.workspaceSnapshotProvider
                 ? self.workspaceSnapshotProvider() : nil;
+            if ([snapshot[@"error"] isKindOfClass:NSString.class]) {
+                NSAlert *alert = [[NSAlert alloc] init];
+                alert.messageText = @"Could not save the workspace";
+                alert.informativeText = snapshot[@"error"];
+                [alert runModal];
+                return;
+            }
             if (snapshot.count > 0) {
                 [self.store saveWorkspaceNamed:values[0] snapshot:snapshot];
             } else {

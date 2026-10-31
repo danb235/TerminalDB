@@ -43,6 +43,8 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
         @"rows": @(self.terminalRows), @"columns": @(self.terminalColumns),
         @"busy": @(self.tabIsBusy), @"command": self.activeLedgerCommand ?: @"",
         @"private": @(self.privateSession),
+        @"canRevertPatch": @(self.lastAIApplyPatchPath.length > 0 &&
+            [NSFileManager.defaultManager fileExistsAtPath:self.lastAIApplyPatchPath]),
         @"permissionMode": [TerminalDBPreferences() stringForKey:@"TerminalDBPermissionMode"] ?: @"ask",
         @"accountId": self.selectedProfile.identifier ?: @"",
         @"accounts": accounts, @"records": records, @"ledgerCount": @(allRecords.count),
@@ -330,10 +332,12 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
         if (![patch isKindOfClass:NSString.class] || patch.length == 0 || patch.length > 512000) {
             reply(@{@"error": @"The patch is empty or too large."}); return;
         }
+        if (![patch hasSuffix:@"\n"]) patch = [patch stringByAppendingString:@"\n"];
         NSString *path = [controller.windowRuntimeDirectory stringByAppendingPathComponent:[NSUUID.UUID.UUIDString stringByAppendingPathExtension:@"patch"]];
         if (![patch writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil]) { reply(@{@"error": @"The workstation could not stage the patch."}); return; }
         [NSFileManager.defaultManager setAttributes:@{NSFilePosixPermissions: @0600} ofItemAtPath:path error:nil];
         controller.lastAIApplyPatchPath = path;
+        [controller publishPeerState];
         NSString *quoted = [controller shellQuotedString:path];
         reply(@{@"command": [NSString stringWithFormat:@"/usr/bin/git apply --check %@ && /usr/bin/git apply %@", quoted, quoted]}); return;
     } else if ([operation isEqualToString:@"patch.revert"]) {
@@ -400,11 +404,13 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
     };
     self.terminalView.viewer = YES;
     self.terminalView.inputEnabled = NO;
+    TDBSessionClient *client = self.sessionClient;
     [self.sessionClient connectWithCompletion:^(NSDictionary *result) {
         AppDelegate *strongSelf = weakSelf;
-        if (!strongSelf) return;
+        if (!strongSelf || strongSelf.sessionClient != client) return;
         if (result[@"error"]) { [strongSelf showPeerError:result[@"error"]]; return; }
         void (^attached)(NSDictionary *) = ^(NSDictionary *response) {
+            if (strongSelf.sessionClient != client) return;
             if (response[@"error"]) [strongSelf showPeerError:response[@"error"]];
             else if (strongSelf.peerRestoreState && strongSelf.peerAttachSession.length == 0) {
                 NSDictionary *snapshot = strongSelf.peerRestoreState; strongSelf.peerRestoreState = nil;

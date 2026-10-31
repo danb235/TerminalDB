@@ -1203,7 +1203,9 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     return @{
         @"title" : controller.window.tab.title ?: @"Terminal",
         @"directory" : [controller currentAssistantDirectory],
-        @"workstation_id": controller.peerTarget ?: @"",
+        @"workstation_id": controller.peerTarget.length > 0
+            ? controller.peerTarget
+            : ([self rootController].peerPanel.peerInventory[@"fingerprint"] ?: @""),
         @"terminal_session_id": controller.sessionClient.sessionID ?: @"",
         @"account_id" : controller.selectedProfile.identifier ?: @"",
         @"account_label" : controller.selectedProfile.label ?: @"",
@@ -1328,7 +1330,10 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                     if (![pane isKindOfClass:NSDictionary.class]) return;
                     if (target.sessionClient) {
                         [target.sessionClient close];
-                        target.peerTarget = [pane[@"workstation_id"] isKindOfClass:NSString.class] ? pane[@"workstation_id"] : @"";
+                        NSString *saved = [pane[@"workstation_id"] isKindOfClass:NSString.class] ? pane[@"workstation_id"] : @"";
+                        target.peerTarget = [TDBWorkspaceReferences resolveWorkstation:saved
+                            owner:weakProductOwner.peerTarget ?: @""
+                            localDevice:rootController.peerPanel.peerInventory[@"fingerprint"] ?: @""];
                         target.peerAttachSession = [pane[@"terminal_session_id"] isKindOfClass:NSString.class] ? pane[@"terminal_session_id"] : @"";
                         target.peerStartDirectory = pane[@"directory"] ?: @"";
                         target.peerRestoreState = target.peerAttachSession.length > 0 ? nil : pane;
@@ -1524,6 +1529,9 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         root.productWindowController.workspaceSnapshotProvider =
             ^NSDictionary *{
                 AppDelegate *rootController = weakRoot;
+                if (![rootController.peerPanel.peerInventory[@"fingerprint"] length]) {
+                    return @{@"error": @"The workstation identity is still loading. Wait for Paired Workstations to become ready, then save again."};
+                }
                 AppDelegate *active =
                     [rootController activeTerminalController];
                 if (active == nil) return @{};
@@ -2181,8 +2189,9 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                action:@selector(revertLastAIPatchFromMenu:)
         keyEquivalent:@""];
     revertPatch.target = root;
-    revertPatch.enabled =
-        controller.lastAIApplyPatchPath.length > 0 &&
+    revertPatch.enabled = controller.sessionClient
+        ? controller.sessionClient.controlling && [controller.peerState[@"canRevertPatch"] boolValue]
+        : controller.lastAIApplyPatchPath.length > 0 &&
         [NSFileManager.defaultManager
             fileExistsAtPath:controller.lastAIApplyPatchPath];
     [menu addItem:revertPatch];
@@ -5415,6 +5424,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     NSString *path = [NSTemporaryDirectory()
         stringByAppendingPathComponent:[NSString stringWithFormat:
             @"terminaldb-%@.patch", NSUUID.UUID.UUIDString]];
+    if (![reviewedPatch hasSuffix:@"\n"]) reviewedPatch = [reviewedPatch stringByAppendingString:@"\n"];
     NSData *data =
         [reviewedPatch dataUsingEncoding:NSUTF8StringEncoding];
     if (self.sessionClient) {

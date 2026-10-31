@@ -21,6 +21,12 @@ public final class TDBPeerSelfTests: NSObject {
             try? FileManager.default.removeItem(at: directory)
         }
         do {
+            try check(TDBWorkspaceReferences.resolveWorkstation("local-device", owner: "remote-device", localDevice: "local-device") == "")
+            try check(TDBWorkspaceReferences.resolveWorkstation("remote-device", owner: "", localDevice: "local-device") == "remote-device")
+            try check(TDBWorkspaceReferences.resolveWorkstation("", owner: "remote-device", localDevice: "local-device") == "remote-device")
+            try check(TDBWorkspaceReferences.resolveWorkstation("", owner: "", localDevice: "local-device") == "")
+            try check(TDBWorkspaceReferences.resolveWorkstation("old-device", owner: "new-device", localDevice: "new-device") == "old-device")
+            try check(TDBWorkspaceReferences.resolveWorkstation("saved-device", owner: "", localDevice: "") == "saved-device")
             let message: [String: Any] = ["type": "request", "data": "🙂é\u{1b}[31m", "sequence": 7]
             let encoded = try PeerProtocol.encode(message)
             var fragmented = PeerFrameDecoder()

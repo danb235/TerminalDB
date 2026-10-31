@@ -48,8 +48,8 @@ pairing material or provider configuration in screenshots, logs or public report
 
 ## Automated evidence
 
-The LAN/VPN implementation passed 92 terminal-surface checks, 75 native protocol
-and security checks, and 18 persistent-session integration checks, plus product,
+The LAN/VPN implementation passed 92 terminal-surface checks, 81 native protocol
+and security checks, and 20 persistent-session integration checks, plus product,
 background-tab, signature, icon, secret and Claude shell-hook checks. An additional 14 real-agent checks passed for pairing, internal addresses, public
 address/obsolete-operation rejection, remote sessions and revocation. Both Mac
 architectures build successfully. Network restoration notifies disconnected
@@ -104,6 +104,18 @@ checks. Automated counts do not substitute for the physical scenarios above.
   viewport sizes. Updated LAN/VPN copy, navigation, FAQ toggles and download links
   passed at 1440, 768 and 390 pixels without horizontal overflow, script errors or
   contact with retired app/auth domains.
+- The final LAN/VPN settings saved and tested a workstation's internal address,
+  verified its pinned key, and rejected a public address through normal controls.
+- With public internet requests blocked temporarily on the MBP, visible terminal
+  input still reached its original execution Mac. The test firewall rules were
+  removed and internet access verified afterward.
+- The updated MBP interface read the execution Mac's synthetic project file and
+  prepared assistant context through Ask AI. Native inline command review,
+  patch permission review, apply and Revert Last AI Patch passed against that Mac's
+  synthetic file. Markdown patches missing their final newline are normalized.
+- A mixed-workstation layout saved through the MBP's native workspace controls
+  contains absolute device references for both Macs and their existing sessions.
+  Legacy empty references resolve relative to the workspace collection's host.
 
 These outcomes include the earlier direct-LAN implementation. The final reduced
 transport still needs a fresh installed pass for private bindings, settings,

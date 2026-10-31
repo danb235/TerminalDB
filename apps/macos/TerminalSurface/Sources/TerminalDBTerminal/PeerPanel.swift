@@ -2,6 +2,17 @@ import AppKit
 import ServiceManagement
 import Darwin
 
+@objc(TDBWorkspaceReferences)
+public final class TDBWorkspaceReferences: NSObject {
+    // Older workspaces used an empty workstation for the collection's host.
+    // New ones store the pinned device identity, including for This Mac.
+    @objc(resolveWorkstation:owner:localDevice:)
+    public static func resolveWorkstation(_ saved: String, owner: String, localDevice: String) -> String {
+        let identity = saved.isEmpty ? owner : saved
+        return !localDevice.isEmpty && identity == localDevice ? "" : identity
+    }
+}
+
 @objc(TDBPeerServices)
 public final class TDBPeerServices: NSObject {
     private static var children: [Process] = []

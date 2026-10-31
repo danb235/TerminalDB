@@ -138,6 +138,22 @@ def main():
             wait_for(lambda: (root / "first-shell-id").exists())
             checks += 1
             wait_for(lambda: not a.request("host.state")["busy"])
+            # Markdown code fences omit the final LF; git still requires it.
+            subprocess.run(["/usr/bin/git", "init", "-q", str(root)], check=True)
+            patch_file = root / "patch-fixture.txt"
+            patch_file.write_text("before\n")
+            staged = a.request("patch.stage", patch="--- a/patch-fixture.txt\n+++ b/patch-fixture.txt\n@@ -1 +1 @@\n-before\n+after")
+            assert staged.get("command") and a.request("host.state")["canRevertPatch"]
+            assert a.input(staged["command"] + "\r").get("accepted")
+            wait_for(lambda: patch_file.read_text() == "after\n")
+            wait_for(lambda: not a.request("host.state")["busy"])
+            checks += 1
+            reverted = a.request("patch.revert")
+            assert reverted.get("command")
+            assert a.input(reverted["command"] + "\r").get("accepted")
+            wait_for(lambda: patch_file.read_text() == "before\n")
+            wait_for(lambda: not a.request("host.state")["busy"])
+            checks += 1
             original_account = a.request("host.state")["accountId"]
             assert a.input("/bin/sleep 30\r").get("accepted")
             wait_for(lambda: a.request("host.state")["busy"])
