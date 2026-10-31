@@ -5,12 +5,11 @@ dist/
 coverage/
 test-results/
 playwright-report/
-cdk.out/
 .vite/
 .env
 .env.local
-infra/cdk/terminaldb-remote.local.json
 *.tsbuildinfo
 apps/macos/build/
 apps/macos/TerminalSurface/.build/
-design/remote/*.generated.html
+__pycache__/
+*.pyc

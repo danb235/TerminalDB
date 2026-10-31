@@ -1,3 +1,4 @@
+#import "TerminalPreferences.h"
 #import "TerminalUpdater.h"
 
 #import <CommonCrypto/CommonDigest.h>
@@ -42,7 +43,7 @@ static NSTimeInterval const TerminalUpdaterCheckInterval = 24.0 * 60.0 * 60.0;
 
 - (void)checkOnLaunchIfDue {
     NSTimeInterval lastCheck =
-        [NSUserDefaults.standardUserDefaults
+        [TerminalDBPreferences()
             doubleForKey:TerminalUpdaterLastCheckKey];
     if ([NSDate date].timeIntervalSince1970 - lastCheck <
             TerminalUpdaterCheckInterval) {
@@ -63,7 +64,7 @@ static NSTimeInterval const TerminalUpdaterCheckInterval = 24.0 * 60.0 * 60.0;
     if (self.checking || self.downloading) return;
     self.checking = YES;
     [self notifyStatusChanged];
-    [NSUserDefaults.standardUserDefaults
+    [TerminalDBPreferences()
         setDouble:[NSDate date].timeIntervalSince1970
            forKey:TerminalUpdaterLastCheckKey];
 

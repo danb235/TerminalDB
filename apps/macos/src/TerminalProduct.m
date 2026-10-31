@@ -1,3 +1,4 @@
+#import "TerminalPreferences.h"
 #import "TerminalProduct.h"
 
 #import "TerminalTheme.h"
@@ -195,7 +196,24 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     return monitors;
 }
 
+- (instancetype)initInMemory {
+    self = [super init];
+    if (self) {
+        _mutableRunbooks = [NSMutableArray array];
+        _mutableWorkspaces = [NSMutableArray array];
+        _mutableMonitors = [NSMutableArray array];
+    }
+    return self;
+}
+- (void)replacePeerState:(NSDictionary *)state {
+    if (self.storagePath.length > 0) return;
+    self.mutableRunbooks = [state[@"runbooks"] mutableCopy] ?: [NSMutableArray array];
+    self.mutableWorkspaces = [state[@"workspaces"] mutableCopy] ?: [NSMutableArray array];
+    self.mutableMonitors = [state[@"monitors"] mutableCopy] ?: [NSMutableArray array];
+}
+
 - (void)persist {
+    if (self.storagePath.length == 0) return;
     NSDictionary *state = @{
         @"version" : @1,
         @"runbooks" : self.mutableRunbooks,
@@ -555,6 +573,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
 @property(nonatomic, strong) NSTextField *eyebrowLabel;
 @property(nonatomic, strong) NSTextField *titleLabel;
 @property(nonatomic, strong) NSTextField *subtitleLabel;
+@property(nonatomic, strong) NSTextField *operationLabel;
 @property(nonatomic, strong) NSButton *createButton;
 @property(nonatomic, strong) NSButton *primaryButton;
 @property(nonatomic, strong) NSButton *secondaryButton;
@@ -615,6 +634,48 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     controller.section = TerminalProductSectionProject;
     [controller refresh];
     BOOL projectWorks = controller.items.count >= 4;
+    NSString *fixture = [@"/tmp" stringByAppendingPathComponent:
+        [@"terminaldb-project-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+    NSString *physical = [fixture stringByAppendingPathComponent:@"physical"];
+    NSString *logical = [fixture stringByAppendingPathComponent:@"logical"];
+    [NSFileManager.defaultManager createDirectoryAtPath:physical withIntermediateDirectories:YES attributes:nil error:nil];
+    [@"Synthetic project preview\n" writeToFile:[physical stringByAppendingPathComponent:@"README.md"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    [NSFileManager.defaultManager createSymbolicLinkAtPath:logical withDestinationPath:physical error:nil];
+    NSArray *linkedItems = [controller projectItemsForPeerDirectory:logical];
+    projectWorks = projectWorks && [linkedItems indexOfObjectPassingTest:^BOOL(NSDictionary *item, NSUInteger index, BOOL *stop) {
+        (void)index; (void)stop;
+        return [item[@"name"] isEqual:@"README.md"];
+    }] != NSNotFound;
+    NSString *remotePath = [physical stringByAppendingPathComponent:@"README.md"];
+    controller.peerProjectItems = ^NSArray *{
+        return @[@{@"id": @"remote-file", @"name": @"README.md",
+            @"kind": @"file", @"path": remotePath}];
+    };
+    __block NSDictionary *inspected = nil;
+    __block NSString *revealed = nil;
+    controller.peerFilePreview = ^(NSString *path, void (^completion)(NSString *)) {
+        completion([path isEqual:remotePath] ? @"Contents from the execution workstation" : @"");
+    };
+    controller.peerRevealFile = ^(NSString *path) { revealed = path; };
+    controller.askAIHandler = ^(NSDictionary *context, NSString *prompt) {
+        (void)prompt; inspected = context;
+    };
+    [controller refresh];
+    [controller.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+    [controller tableViewSelectionDidChange:nil];
+    [controller primarySelected:nil];
+    [controller tertiarySelected:nil];
+    projectWorks = projectWorks &&
+        [inspected[@"output"] isEqual:@"Contents from the execution workstation"] &&
+        [inspected[@"environment"] isEqual:@"WORKSTATION"] &&
+        [revealed isEqual:remotePath] &&
+        [controller.tertiaryButton.title isEqual:@"Reveal on workstation"];
+    controller.peerProjectItems = nil;
+    controller.peerFilePreview = nil;
+    controller.peerRevealFile = nil;
+    controller.askAIHandler = nil;
+    [NSFileManager.defaultManager removeItemAtPath:fixture error:nil];
+    controller.directory = @"/tmp";
     controller.section = TerminalProductSectionEnvironments;
     [controller refresh];
     BOOL environmentWorks = controller.items.count == 4;
@@ -804,6 +865,19 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     self.deleteButton.frame = NSMakeRect(976, 62, 122, 32);
     self.deleteButton.autoresizingMask = NSViewMinXMargin;
     [content addSubview:self.deleteButton];
+    self.operationLabel = [self labelWithSize:12 weight:NSFontWeightRegular
+                                      color:self.theme.statusBarActiveForeground];
+    self.operationLabel.frame = NSMakeRect(28, 14, 1070, 36);
+    self.operationLabel.autoresizingMask = NSViewWidthSizable;
+    self.operationLabel.maximumNumberOfLines = 2;
+    self.operationLabel.lineBreakMode = NSLineBreakByWordWrapping;
+    [content addSubview:self.operationLabel];
+}
+
+- (void)showOperationMessage:(NSString *)message failed:(BOOL)failed {
+    self.operationLabel.stringValue = message ?: @"";
+    self.operationLabel.textColor = failed ? self.theme.ansiColors[1]
+        : self.theme.statusBarActiveForeground;
 }
 
 - (void)showSection:(TerminalProductSection)section
@@ -874,6 +948,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
 }
 
 - (NSArray<NSDictionary *> *)projectItems {
+    if (self.peerProjectItems) return self.peerProjectItems();
     NSMutableArray<NSDictionary *> *items = [NSMutableArray arrayWithArray:@[
         @{@"id" : @"git", @"name" : @"Git status",
           @"detail" : @"Branch, staged changes, working tree, and untracked files",
@@ -888,7 +963,10 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
           @"detail" : @"List tracked and local files without changing them",
           @"command" : @"find . -maxdepth 3 -type f | sort | head -300"},
     ]];
-    NSURL *root = [NSURL fileURLWithPath:self.directory isDirectory:YES];
+    // File enumeration can canonicalize symlinks such as /tmp or a linked
+    // project folder. Compute relative paths against that same canonical root.
+    NSString *rootPath = self.directory.stringByResolvingSymlinksInPath;
+    NSURL *root = [NSURL fileURLWithPath:rootPath isDirectory:YES];
     NSArray *keys = @[NSURLIsRegularFileKey, NSURLFileSizeKey];
     NSDirectoryEnumerator<NSURL *> *enumerator =
         [NSFileManager.defaultManager
@@ -904,9 +982,9 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     NSUInteger count = 0;
     for (NSURL *url in enumerator) {
         if (count >= 120) break;
-        NSString *relative = url.path;
-        if ([relative hasPrefix:self.directory]) {
-            relative = [relative substringFromIndex:self.directory.length];
+        NSString *relative = url.path.stringByResolvingSymlinksInPath;
+        if ([relative hasPrefix:rootPath]) {
+            relative = [relative substringFromIndex:rootPath.length];
             if ([relative hasPrefix:@"/"]) {
                 relative = [relative substringFromIndex:1];
             }
@@ -936,6 +1014,11 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         count++;
     }
     return items;
+}
+
+- (NSArray<NSDictionary *> *)projectItemsForPeerDirectory:(NSString *)directory {
+    self.directory = directory;
+    return [self projectItems];
 }
 
 - (NSArray<NSDictionary *> *)starterRunbooks {
@@ -1095,7 +1178,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
             self.eyebrowLabel.stringValue = @"RESTORABLE CONTEXT";
             self.titleLabel.stringValue = @"Workspaces";
             self.subtitleLabel.stringValue =
-                @"Restore the path, account, and conversation purpose together.";
+                @"Open saved tabs and splits in a new window. Sessions stay on their original Macs.";
             self.items = self.store.workspaces.count > 0
                 ? self.store.workspaces
                 : @[@{@"id":@"empty-workspace",
@@ -1103,7 +1186,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
                        @"detail":@"Capture the current path, account, and chat purpose.",
                        @"directory":self.directory, @"empty":@YES}];
             self.createButton.title = @"Save current";
-            self.primaryButton.title = @"Restore";
+            self.primaryButton.title = @"Open Workspace";
             self.secondaryButton.title = @"Copy path";
             self.tertiaryButton.title = @"Rename…";
             self.tertiaryButton.hidden = NO;
@@ -1164,6 +1247,10 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
             @"Nothing here yet.\n\nCreate an item or clear the search field.";
     }
     self.window.title = self.titleLabel.stringValue;
+    if (self.executionWorkstation.length > 0 && self.section <= TerminalProductSectionWorkspaces) {
+        self.eyebrowLabel.stringValue = [NSString stringWithFormat:@"%@ · %@",
+            self.executionWorkstation, self.eyebrowLabel.stringValue];
+    }
 }
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {
@@ -1213,7 +1300,9 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         BOOL file = [item[@"kind"] isEqualToString:@"file"];
         self.primaryButton.title = file ? @"Ask AI" : @"Run…";
         self.secondaryButton.title = file ? @"Copy path" : @"Paste";
-        self.tertiaryButton.title = file ? @"Reveal" : @"Ask AI";
+        self.tertiaryButton.title = file
+            ? (self.peerRevealFile ? @"Reveal on workstation" : @"Reveal")
+            : @"Ask AI";
     } else if (self.section == TerminalProductSectionEnvironments) {
         NSString *identifier = item[@"id"];
         if ([identifier isEqualToString:@"ssh"]) {
@@ -1286,6 +1375,14 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         [detail appendFormat:@"OUTPUT\n%@\n", item[@"output"]];
     }
     if ([item[@"kind"] isEqualToString:@"file"]) {
+        if (self.peerFilePreview) {
+            self.detailView.string = [detail stringByAppendingString:@"Loading preview from the workstation…"];
+            NSString *selectedID = item[@"id"];
+            self.peerFilePreview(item[@"path"], ^(NSString *preview) {
+                if ([[self selectedItem][@"id"] isEqual:selectedID]) self.detailView.string = [detail stringByAppendingFormat:@"PREVIEW\n%@", preview];
+            });
+            return;
+        }
         NSString *path = item[@"path"];
         NSDictionary *attributes =
             [NSFileManager.defaultManager attributesOfItemAtPath:path
@@ -1421,6 +1518,13 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         if (values.count == 1) {
             NSDictionary *snapshot = self.workspaceSnapshotProvider
                 ? self.workspaceSnapshotProvider() : nil;
+            if ([snapshot[@"error"] isKindOfClass:NSString.class]) {
+                NSAlert *alert = [[NSAlert alloc] init];
+                alert.messageText = @"Could not save the workspace";
+                alert.informativeText = snapshot[@"error"];
+                [alert runModal];
+                return;
+            }
             if (snapshot.count > 0) {
                 [self.store saveWorkspaceNamed:values[0] snapshot:snapshot];
             } else {
@@ -1452,25 +1556,27 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         self.section == TerminalProductSectionRunbooks) {
         if (self.section == TerminalProductSectionProject &&
             [item[@"kind"] isEqualToString:@"file"]) {
-            NSString *contents =
-                [NSString stringWithContentsOfFile:item[@"path"]
-                                          encoding:NSUTF8StringEncoding
-                                             error:nil] ?: @"";
-            if (contents.length > 16000) {
-                contents = [contents substringToIndex:16000];
-            }
-            if (self.askAIHandler) {
+            void (^inspect)(NSString *) = ^(NSString *contents) {
+                if (!self.askAIHandler) return;
                 NSMutableDictionary *context = [item mutableCopy];
                 context[@"command"] =
                     [NSString stringWithFormat:@"Inspect file: %@",
                         item[@"name"] ?: @""];
-                context[@"environment"] = @"LOCAL";
+                context[@"environment"] = self.peerFilePreview
+                    ? @"WORKSTATION" : @"LOCAL";
                 context[@"state"] = @"FILE";
                 context[@"output"] = contents;
                 self.askAIHandler(context,
                     @"Review this file in the current project. Summarize its "
                      "purpose, flag likely issues, and propose a minimal diff "
                      "only if a change is warranted.");
+            };
+            if (self.peerFilePreview) {
+                self.peerFilePreview(item[@"path"], inspect);
+            } else {
+                NSString *contents = [NSString stringWithContentsOfFile:item[@"path"]
+                    encoding:NSUTF8StringEncoding error:nil] ?: @"";
+                inspect(contents.length > 16000 ? [contents substringToIndex:16000] : contents);
             }
             return;
         }
@@ -1529,7 +1635,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     } else if (self.section == TerminalProductSectionSettings) {
         NSString *identifier = item[@"id"];
         if ([identifier isEqualToString:@"general"]) {
-            NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+            NSUserDefaults *defaults = TerminalDBPreferences();
             BOOL restore =
                 [defaults boolForKey:@"TerminalDBRestoreWorkspaceOnLaunch"];
             NSAlert *alert = [[NSAlert alloc] init];
@@ -1643,7 +1749,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
             [history addButtonWithTitle:@"Cancel"];
             NSModalResponse response = [history runModal];
             if (response == NSAlertThirdButtonReturn) return;
-            [NSUserDefaults.standardUserDefaults
+            [TerminalDBPreferences()
                 setBool:(response == NSAlertSecondButtonReturn)
                  forKey:@"TerminalDBPrivateSessionDefault"];
         } else if (step == 3 || step == 4) {
@@ -1667,10 +1773,10 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
                 ? @"read-only"
                 : (response == NSAlertThirdButtonReturn
                     ? @"paste-only" : @"ask");
-            [NSUserDefaults.standardUserDefaults
+            [TerminalDBPreferences()
                 setObject:mode forKey:@"TerminalDBPermissionMode"];
         } else if (step == 7) {
-            [NSUserDefaults.standardUserDefaults
+            [TerminalDBPreferences()
                 setBool:YES forKey:@"TerminalDBDidCompleteOnboarding"];
             [self dismissPresentedSurface];
             return;
@@ -1759,14 +1865,14 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         return;
     }
     if (self.section == TerminalProductSectionSettings) {
-        [NSUserDefaults.standardUserDefaults
+        [TerminalDBPreferences()
             removeObjectForKey:@"TerminalDBDidCompleteOnboarding"];
         self.section = TerminalProductSectionOnboarding;
         [self refresh];
         return;
     }
     if (self.section == TerminalProductSectionOnboarding) {
-        [NSUserDefaults.standardUserDefaults
+        [TerminalDBPreferences()
             setBool:YES forKey:@"TerminalDBDidCompleteOnboarding"];
         [self dismissPresentedSurface];
         return;
@@ -1792,9 +1898,9 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         if ([item[@"kind"] isEqualToString:@"file"]) {
             NSString *path = item[@"path"];
             if (path.length > 0) {
-                [NSWorkspace.sharedWorkspace
-                    activateFileViewerSelectingURLs:
-                        @[[NSURL fileURLWithPath:path]]];
+                if (self.peerRevealFile) self.peerRevealFile(path);
+                else [NSWorkspace.sharedWorkspace
+                    activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:path]]];
             }
         } else if (self.askAIHandler) {
             self.askAIHandler(item,

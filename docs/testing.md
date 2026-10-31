@@ -10,7 +10,8 @@ git diff --check
 
 `make test-ci` builds the application, runs the native self test suite, verifies
 the code signature, verifies the icon bundle, scans the working tree for
-Anthropic API keys, and checks the Claude tab state bridge.
+Anthropic API keys, checks the Claude tab state bridge, runs native peer framing/TLS tests, and
+exercises real persistent helper sessions.
 
 ## Full local checks
 
@@ -74,25 +75,29 @@ real forms and terminal, and verify the visible success, error, and recovery
 states. Automated tests and developer fixtures remain useful regression gates,
 but do not replace this acceptance pass.
 
-For TerminalDB Remote account changes, include these journeys:
-
-1. Open **TerminalDB → Remote Control…** in the installed app and start account
-   creation.
-2. Open a one-time guest session, choose **Accounts**, and start account
-   creation with that Mac.
-3. Complete username, password, and MFA setup; verify the Mac appears without
-   sharing another link.
-4. Sign out, sign back in, and open the same live terminal session.
-5. Create another one-time guest link and verify account creation remains
-   optional.
-6. Verify visible guidance when the desktop app, Mac agent, network, or session
-   is unavailable.
-
-Use a disposable account and delete it when the pass is complete. Keep secrets,
-pairing material, tokens, and terminal content out of the QA record.
+For native peer changes, execute [native-peer-qa.md](native-peer-qa.md).
+Claude profiles remain native features; TerminalDB cloud accounts are retired.
 
 ## CI separation
 
 Application CI ignores marketing only changes. Site CI validates changes under
 `marketing/` and deploys only the static site. Release CI runs only for version
 tags.
+
+Native multi-Mac acceptance and current evidence: [native-peer-qa.md](native-peer-qa.md).
+
+Optional networking integration (requires Bonjour permission):
+
+```sh
+make -C apps/macos qa-peer-network
+```
+
+Persistent Keychain identity and TLS signing, on a test Mac with Keychain access:
+
+```sh
+TERMINALDB_PEER_VERIFY_KEYCHAIN=1 apps/macos/build/TerminalDB.app/Contents/MacOS/TerminalDB --peer-self-test
+```
+
+The normal self-test uses disposable software keys and does not touch Keychain.
+The optional Keychain pass uses the installation identity, verifies stable pins
+across certificate renewal, and exercises the actual hardware/software signer.

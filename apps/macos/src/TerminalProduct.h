@@ -22,6 +22,8 @@ typedef NS_ENUM(NSInteger, TerminalProductSection) {
 
 + (instancetype)sharedStore;
 + (instancetype)ephemeralStoreForTesting;
+- (instancetype)initInMemory;
+- (void)replacePeerState:(NSDictionary *)state;
 - (NSDictionary *)saveRunbookNamed:(NSString *)name
                            command:(NSString *)command
                          directory:(NSString *)directory;
@@ -54,6 +56,8 @@ typedef NS_ENUM(NSInteger, TerminalProductSection) {
 @interface TerminalProductWindowController : NSWindowController
 
 @property(nonatomic, strong, readonly) NSView *panelView;
+@property(nonatomic, copy, nullable) NSString *executionWorkstation;
+- (void)showOperationMessage:(NSString *)message failed:(BOOL)failed;
 @property(nonatomic, copy, nullable) void (^dismissHandler)(void);
 
 @property(nonatomic, copy, nullable) void (^runCommandHandler)(NSString *command);
@@ -67,6 +71,9 @@ typedef NS_ENUM(NSInteger, TerminalProductSection) {
 @property(nonatomic, copy, nullable) void (^activateTerminalHandler)(void);
 @property(nonatomic, copy, nullable) void (^askAIHandler)(
     NSDictionary *context, NSString *prompt);
+@property(nonatomic, copy, nullable) NSArray<NSDictionary *> *(^peerProjectItems)(void);
+@property(nonatomic, copy, nullable) void (^peerFilePreview)(NSString *path, void (^completion)(NSString *text));
+@property(nonatomic, copy, nullable) void (^peerRevealFile)(NSString *path);
 @property(nonatomic, copy, nullable) NSDictionary *
     (^workspaceSnapshotProvider)(void);
 
@@ -84,6 +91,7 @@ typedef NS_ENUM(NSInteger, TerminalProductSection) {
 - (void)didDismissPanel;
 - (void)promptToSaveCurrentWorkspace;
 - (void)refresh;
+- (NSArray<NSDictionary *> *)projectItemsForPeerDirectory:(NSString *)directory;
 
 @end
 

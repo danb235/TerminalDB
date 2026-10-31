@@ -64,7 +64,7 @@ disturbed. Do not interrupt an active terminal session to install or test.
    alternate-screen restoration and mouse/keyboard navigation. List omissions.
 8. Use Remote Web through the normal button; open a tab from the device list,
    compare rendering and Unicode, type/paste, resize/reconnect, switch accounts
-   per tab, and verify one-time-link access remains intact. Avoid changing auth.
+   per tab, and verify paired native access remains intact. Use the native peer QA plan.
 9. Check command History/details, selected-text AI context, account/usage panel,
    and close controls. No additional windows for utility views, no profile loss.
 10. Confirm macOS accessibility focus, keyboard-only selection/navigation, IME,
@@ -89,7 +89,7 @@ SwiftTerm 1.19.0, commit `464df5207fc2432e16c9a23abe538187196daf5f`.
 
 - `make -C apps/macos test-ci`: passed, including 52/52 Swift surface checks,
   Objective-C integration checks, bundle signature/icon checks, secret scan,
-  isolated remote-agent identity/socket tests, and Claude status hooks.
+  native pinned-peer identity/socket tests, and Claude status hooks.
 - `make -C apps/macos qa-tabs`: passed grouped windows, selected tab,
   independent shells, activity, titles, menu, assistant, and close assertions.
 - `npm run test:web`: 78 tests passed across 12 files.

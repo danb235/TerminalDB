@@ -26,6 +26,8 @@ extern NSNotificationName const ClaudeProfilesDidChangeNotification;
 @property(nonatomic, strong, readonly, nullable) ClaudeProfile *lastSelectedProfile;
 
 + (BOOL)runStorageSelfTests;
++ (instancetype)managerForPeerDisplay;
+- (void)replacePeerAccounts:(NSArray<NSDictionary *> *)accounts selected:(NSString *)identifier;
 + (instancetype)managerForTestingAtRoot:(NSString *)root;
 - (nullable ClaudeProfile *)profileWithIdentifier:(NSString *)identifier;
 - (nullable ClaudeProfile *)createProfileWithLabel:(NSString *)label

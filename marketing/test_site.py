@@ -66,7 +66,6 @@ def main() -> None:
 
     required_files = [
         ROOT / "support.js",
-        ROOT / "account-status.js",
         ROOT / "vendor/react.production.min.js",
         ROOT / "vendor/react-dom.production.min.js",
         ROOT / "uploads/terminaldb-native-current.png",
@@ -79,6 +78,8 @@ def main() -> None:
         fail(f"missing required files: {', '.join(missing)}")
 
     forbidden_fragments = [
+        "app.terminaldb.app",
+        "auth.terminaldb.app",
         "claudeusercontent.com",
         "data-omelette-injected",
         "__om_srcmap",
@@ -99,6 +100,7 @@ def main() -> None:
 
     required_copy = [
         "Your Claude Code accounts and terminals.",
+        "No TerminalDB cloud account is needed.",
         "Leave the Mac. Keep the terminal.",
         "Switch Claude subscriptions without restarting your work.",
         "See the limit before it slows you down.",
@@ -108,11 +110,6 @@ def main() -> None:
         "https://github.com/danb235/TerminalDB",
         "https://github.com/danb235/TerminalDB/releases/latest/download/TerminalDB-macOS.zip",
         "TerminalDB-macOS.zip",
-        "https://app.terminaldb.app/?account=signin&amp;source=marketing",
-        "https://app.terminaldb.app/?account=create&amp;source=marketing",
-        "https://app.terminaldb.app/auth-status.html",
-        "Signed out",
-        "Open app",
     ]
     for fragment in required_copy:
         if fragment not in html:

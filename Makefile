@@ -1,4 +1,4 @@
-.PHONY: all run install test test-ci clean web web-test infra-test
+.PHONY: all run install test test-ci clean
 
 all:
 	$(MAKE) -C apps/macos all
@@ -17,12 +17,3 @@ test-ci:
 
 clean:
 	$(MAKE) -C apps/macos clean
-
-web:
-	npm run dev:web
-
-web-test:
-	npm run test:web
-
-infra-test:
-	npm run test:infra

@@ -28,6 +28,10 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, readonly) BOOL accountStatusKnown;
 @property(nonatomic, strong, readonly, nullable) NSView *usagePanelView;
 @property(nonatomic, copy, nullable) void (^usagePanelDismissHandler)(void);
+@property(nonatomic) BOOL peerMode;
+@property(nonatomic, copy, nullable) void (^peerRefreshHandler)(void);
+- (NSDictionary *)peerUsagePresentation;
+- (void)applyPeerState:(NSDictionary *)state;
 
 - (instancetype)initWithFrame:(NSRect)frame
              claudeExecutable:(nullable NSString *)claudeExecutable

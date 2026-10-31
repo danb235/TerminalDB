@@ -40,10 +40,13 @@ Reports are especially useful for:
 - API keys appearing in logs, screenshots, history, or Git
 - update downloads accepting the wrong bundle or checksum
 - symlink, archive, or path traversal issues
+- peer impersonation, unapproved access, revoked-key acceptance or TLS failures
+- stale controller input, silent replay, forwarding abuse or unbounded queues
 
 ## Current security posture
 
-TerminalDB is open source and local first, but it is not a security boundary.
+TerminalDB runs shell commands with the execution Mac user’s authority. Peer
+authentication controls remote access; it does not sandbox approved shell work.
 The current prerelease is not notarized. The Anthropic API key is stored in
 TerminalDB preferences so development builds do not repeatedly prompt for
 Keychain access. It is masked in the UI, excluded from command history, and
@@ -57,3 +60,9 @@ persisted.
 
 See [docs/threat-model.md](docs/threat-model.md) for assumptions and known
 limitations.
+
+Pairing, credential residency and forwarding assumptions are documented in
+[docs/remote-security.md](docs/remote-security.md). Secure Enclave identities use
+Apple’s documented [CryptoKit Keychain storage](https://developer.apple.com/documentation/cryptokit/storing-cryptokit-keys-in-the-keychain).
+Software Keychain fallback on Macs without Secure Enclave does not provide
+hardware non-exportability. No absolute security guarantee is made.

@@ -24,8 +24,9 @@ enum TerminalSnapshot {
 
     static func encode(_ term: Terminal, cursorVisible: Bool, lineCount: Int) -> String {
         let base = max(0, lineCount - term.rows)
+        let state = term.terminalDBDisplayState
         // Bound retained history, but never truncate a live viewport to fit the
-        // old text renderer's budget. The browser accepts up to 8 MiB, including
+        // old text renderer's budget. Native viewers accept up to 8 MiB, including
         // a maximum-size grid with per-cell true colors.
         var lines: [(row: Int, text: String)] = []
         var bytes = 0
@@ -46,7 +47,8 @@ enum TerminalSnapshot {
             if row < base && bytes + encoded.utf8.count > 220000 { break }
             lines.append((row, encoded)); bytes += encoded.utf8.count + 2
         }
-        var result = term.isCurrentBufferAlternate ? "\u{1b}[?1049h" : ""
+        var result = "\u{1b}c" + state.palette
+        if term.isCurrentBufferAlternate { result += "\u{1b}[?1049h" }
         result += "\u{1b}[0m\u{1b}[2J\u{1b}[H"
         for (index, entry) in lines.reversed().enumerated() {
             if index > 0, term.bufferLine(atRow: entry.row)?.isWrapped != true {
@@ -54,10 +56,10 @@ enum TerminalSnapshot {
             }
             result += entry.text
         }
-        // Keep this suffix compatible with adaptSnapshotToLocalViewport.
-        result += "\u{1b}[?1\(term.applicationCursor ? "h" : "l")"
-        result += "\u{1b}[?2004\(term.bracketedPasteMode ? "h" : "l")"
         result += "\u{1b}[\(term.buffer.scrollTop + 1);\(term.buffer.scrollBottom + 1)r"
+        result += state.savedModes + sgr(state.savedAttribute)
+        result += "\u{1b}[\(max(1, state.savedY - state.savedOriginRow + 1));\(max(1, state.savedX - state.savedOriginColumn + 1))H\u{1b}7"
+        result += state.modes
         // CUP alone cannot restore a wrap-pending cursor. Repaint the final
         // glyph after positioning it so the next raw byte wraps, not overwrites.
         var cursorColumn = min(term.cols - 1, term.buffer.x)
@@ -69,7 +71,7 @@ enum TerminalSnapshot {
             let glyph = term.getCharacter(for: cell)
             wrapTail = sgr(cell.attribute) + String(glyph == "\0" ? " " : glyph)
         }
-        result += "\u{1b}[0m\u{1b}[\(term.buffer.y + 1);\(cursorColumn + 1)H"
+        result += "\u{1b}[0m\u{1b}[\(max(1, term.buffer.y - state.originRow + 1));\(max(1, cursorColumn - state.originColumn + 1))H"
         result += "\u{1b}[?25\(cursorVisible ? "h" : "l")"
         result += wrapTail
         // Raw PTY deltas resume after the snapshot, sometimes mid-color run.

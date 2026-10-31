@@ -4,7 +4,7 @@
 
 - macOS 13 or later
 - Xcode command line tools
-- `clang`, `make`, `codesign`, and `lipo`
+- Swift 6.2 or newer, `clang`, `make`, `codesign`, and `lipo`
 - `zsh` for the embedded interactive shell
 - Python 3 for marketing site tests
 
@@ -15,7 +15,7 @@ as the AI provider. An Anthropic API key can be used instead.
 
 ```sh
 make
-open build/TerminalDB.app
+open apps/macos/build/TerminalDB.app
 ```
 
 `make` builds the Objective C sources directly with `clang`, assembles the app
@@ -32,9 +32,9 @@ make run
 ## Universal release build
 
 ```sh
-TERMINALDB_VERSION=0.1.0 \
+TERMINALDB_VERSION=0.6.0 \
 TERMINALDB_BUILD=1 \
-./Scripts/build-app.sh release
+./apps/macos/Scripts/build-app.sh release
 ```
 
 The release script builds a universal `arm64` and `x86_64` binary. When the
@@ -81,3 +81,18 @@ GitHub Actions run number.
 
 Tags matching `v*` run `.github/workflows/release.yml`, which tests, builds,
 signs, packages, checksums, and publishes the application.
+
+SwiftPM resolves pinned dependencies on the first build. The app bundles the
+session and peer helpers plus their Service Management launch agents. Development
+bundles launch helpers directly; the canonical /Applications/TerminalDB.app
+registers per-user services through SMAppService. Dependency licenses ship in
+Contents/Resources/Licenses.
+
+The pinned SwiftTerm 1.19.0 dependency needs two small reviewed additions for
+session recovery: a read-only display-state export and bounded recording of an
+unfinished control-sequence prefix. `prepare-terminal-package.sh` applies these
+to the package scratch directory. It verifies the original source hashes and
+fails the build if upstream files change. It never changes terminal parsing
+decisions. When updating SwiftTerm, review both additions and run the surface
+recovery tests before changing the expected hashes. No dependency checkout is
+committed or edited by hand.

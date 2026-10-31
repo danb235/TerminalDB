@@ -12,6 +12,8 @@ extern NSNotificationName const TerminalLedgerDidChangeNotification;
 
 + (instancetype)sharedStore;
 + (instancetype)ephemeralStoreForTesting;
+- (instancetype)initInMemory;
+- (void)replacePeerRecords:(NSArray<NSDictionary *> *)records;
 + (BOOL)runPrivacyAndEnvironmentSelfTests;
 - (NSDictionary *)addCommand:(NSString *)command
                     directory:(NSString *)directory
@@ -50,6 +52,7 @@ extern NSNotificationName const TerminalLedgerDidChangeNotification;
 
 - (instancetype)initWithFrame:(NSRect)frame theme:(TerminalTheme *)theme;
 - (void)showReadyInDirectory:(NSString *)directory;
+- (void)showConnectionMessage:(NSString *)message;
 - (void)beginCommand:(NSString *)command directory:(NSString *)directory;
 - (void)displayRecord:(NSDictionary *)record;
 - (void)finishCommand:(NSString *)command

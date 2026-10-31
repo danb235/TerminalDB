@@ -24,19 +24,19 @@
 TerminalDB combines an independent PTY-backed shell, a collapsible AI chat,
 multiple isolated Claude Code accounts, live subscription-usage tracking, and
 a searchable local record of completed commands. It is written directly
-against AppKit and macOS system APIs with no Xcode project, package manager, or
-runtime framework dependency.
+against AppKit and macOS system APIs. SwiftPM pins SwiftTerm and the Apple
+networking, TLS, and certificate libraries; no Xcode project is required.
 
-The monorepo also contains TerminalDB Remote v1: a mobile-first React/PWA
-controller and a cost-capped AWS serverless ciphertext relay. It provides a
-Claude-first session dashboard, terminal control, existing-account switching,
-paired-controller management, explicit connectivity states, snapshot resync,
-and make-before-break WebSocket rotation. AWS never receives plaintext
-terminal or Claude content.
+TerminalDB connections run entirely between explicitly paired Macs. Native
+windows attach to persistent sessions owned by a background helper on the
+execution workstation. Terminal connections stay on your LAN or VPN. No public
+endpoints, router port forwarding, mesh routing or relay service are used.
+No TerminalDB cloud account or browser terminal is required.
 
-- [Remote architecture](docs/remote-architecture.md)
-- [Security and abuse controls](docs/remote-security.md)
-- [Deployment, enrollment, and teardown](docs/remote-operations.md)
+- [Peer architecture](docs/remote-architecture.md)
+- [Pairing and security](docs/remote-security.md)
+- [Setup and recovery](docs/remote-operations.md)
+- [Native acceptance QA](docs/native-peer-qa.md)
 
 > [!IMPORTANT]
 > TerminalDB is early alpha software. Test it with non-critical workflows,
@@ -74,7 +74,7 @@ one native window:
 - UTF-8, ANSI/256/truecolor output, alternate-screen programs, bracketed paste,
   cursor modes, and xterm navigation keys
 - Native macOS windows, tabs, and independent right/down split panes
-- In-window control panels for Remote Control, settings, project workflows,
+- In-window control panels for Workstations, settings, project workflows,
   Claude account usage, and AI provider configuration; dismiss with the visible
   X or Escape without creating another app window
 - Event-driven tab titles for shell commands and Claude Code lifecycle states
@@ -172,10 +172,8 @@ menus, accessibility behavior, environment safety, history, playbooks, and
 monitoring surfaces:
 
 - [Interactive desktop design export](design/desktop/TerminalDB.dc.html)
-- [Remote web design notes](design/remote/README.md)
 - [App icon SVG master](design/desktop/terminaldb-icon.svg)
 - [Claude Design desktop source](https://claude.ai/design/p/0e421271-5e0c-43e1-b34a-e52926506c66?file=TerminalDB.dc.html)
-- [Claude Design remote source](https://claude.ai/design/p/0e421271-5e0c-43e1-b34a-e52926506c66?file=TerminalDBRemote.dc.html)
 
 ## Requirements
 
@@ -222,67 +220,35 @@ verifies the published SHA 256 checksum, archive paths, universal
 architectures, bundle identifier, version, code signature, and the signing
 certificate used by the installed release.
 
-### Open TerminalDB Remote
+### Work across your Macs
 
-For the reference AWS deployment, open **TerminalDB → Remote Control…** and
-click **Open Remote Web App**. TerminalDB obtains a short-lived enrollment,
-starts the encrypted relay, creates a single-use pairing link, and opens the
-mirrored terminal in the Mac's default browser. Safari opens when Safari is the
-system default; no browser choice or second confirmation is required.
+1. Open **Workstations → Manage Macs → Add Mac** on both Macs while they share
+   a LAN. Choose the nearby Mac, compare both complete fingerprints on the two
+   screens, and select **Fingerprints Match — Pair** on each Mac. Cancel if they differ.
+2. **⌘T** or **+** immediately opens a terminal on **This Mac**. To work elsewhere,
+   open the workstation menu in the toolbar and choose **New Terminal on [Mac]**.
+   The hosting Mac appears first in the tab and in the toolbar. **Resume Session**
+   opens an existing session without changing the other Mac's selected tab.
+3. Closing a tab or quitting the interface detaches its view. Use **End Session**
+   to stop the shell. Multiple views can watch; **Take Control** transfers typing,
+   terminal sizing, and changes to the session.
+4. When away, connect your VPN to the LAN first. If discovery does not cross the
+   VPN, choose the paired Mac in **Manage Macs → Connection**, enter its internal
+   IP address or internal DNS name, and choose **Save & Test**. TerminalDB does
+   not require an internet-facing terminal port or configure your router.
 
-The remote terminal opens directly into the Mac's selected tab. The browser
-uses the same default 13.5-point Graphite Ledger terminal type at every window
-size and calculates its own visible rows and columns. Resizing the Mac changes
-the Mac viewport; resizing the browser changes the web viewport. Neither one
-zooms the other. Terminal history scrolls inside the terminal only; the browser
-window and status bars remain fixed. Each tab retains its own scroll position,
-selection, and follow-output state when switching between tabs.
+New tabs, private sessions and windows default to This Mac. Splits stay on their
+parent pane's Mac and inherit its directory. Opening a saved workspace preserves
+the current layout and opens its saved tabs and splits in a new window.
+Workspaces retain workstation and session references. Offline sessions remain
+reconnectable placeholders. Work never migrates to a different execution Mac.
 
-The shell process and its PTY remain Mac-authoritative. Normal transcript and
-scrollback can therefore expose more rows in a larger browser. Programs that
-perform their own full-screen PTY layout still format output for the Mac PTY's
-current rows and columns.
-
-Use **Pair a Phone** when the controller should open on another device. It
-shows a QR code and copyable one-time link. **Advanced Setup…** is only for a
-custom deployment or a Mac where automatic AWS enrollment is unavailable.
-
-The same deployment also supports optional TerminalDB accounts. Choose
-**Create Account** in the Mac's Remote Control panel, or open **Accounts**
-from an active one-time web terminal. The Mac signs a short-lived signup
-approval with its non-exportable Keychain identity. Cognito owns the account
-and token policy, while TerminalDB keeps the username, password, and
-authenticator forms on `app.terminaldb.app` and sends their values directly to
-Cognito. Password managers therefore see one consistent application domain,
-and TerminalDB's backend never receives the credentials. No email address or
-verification email is required. After
-username/password creation and authenticator-app TOTP setup, the
-waiting Mac connects to the new account automatically. TOTP
-is mandatory; email, SMS, passkeys, and backup codes are not offered. Set up a
-second secure or securely synced authenticator copy before relying on the
-account, because losing every copy requires operator help. Additional Macs can
-be added later by choosing **Connect Account** in TerminalDB on that Mac and
-completing a fresh Cognito password-plus-TOTP sign-in. There is no enrollment
-code to copy.
-Canceling account setup invalidates the unused approval immediately and returns
-the Mac to a retryable state.
-Every enrolled Mac then appears after login on a phone or browser without
-sending a pairing link, including offline Macs with their last-seen time.
-Online Macs expose their active terminal windows and tabs; if every Mac is
-offline, account login and device inventory still work, and TerminalDB explains
-how to bring a Mac back online. This is additive: account-enrolled Macs
-can still create one-time guest links whenever temporary access is more
-convenient. **Change Password…** and **Delete Account…** in the Mac app require
-fresh Cognito password-plus-TOTP authentication in the browser. Passwords are
-sent directly to Cognito and never pass through the Mac or TerminalDB backend.
-Changing the password immediately revokes account browsers but deliberately
-keeps the existing TOTP authenticator;
-Cognito does not provide an administrator API that safely removes a user's
-registered TOTP secret.
-
-The automatic reference path expects AWS CLI v2 and a working `stelao` profile
-in `us-west-2`. These defaults can be overridden with the documented macOS
-preferences for a self-hosted deployment.
+Hosts must stay awake, powered on, and logged in. Sessions survive interface
+exits and networking restarts, but not logout, reboot, or session-host failure.
+A viewing laptop can sleep and reconnect to the same session after waking and
+restoring its LAN or VPN connection. The execution Mac itself must remain awake.
+Update a saved internal address if it changes. Automatic file synchronization is
+outside this feature.
 
 ## Configure AI chat
 
@@ -424,21 +390,17 @@ TerminalDB deliberately keeps its implementation small and inspectable:
 | `apps/macos/src/TerminalProduct.*` | Playbooks, monitors, workspaces, project/environment/settings views |
 | `apps/macos/src/TerminalTheme.*` | Graphite Ledger colors, type, and terminal appearance |
 | `apps/macos/Resources/` | Font, license, icon, and shell bridge assets |
-| `apps/web/` | Mobile-first React/PWA controller |
-| `packages/protocol/` | Envelopes, validation, E2E crypto, sequencing, and cost math |
-| `packages/design-system/` | Graphite Ledger web tokens and base components |
-| `packages/test-harness/` | Cost guard and fault/load fixtures |
-| `infra/cdk/` | AWS serverless stacks and relay Lambdas |
-| `design/` | Desktop and remote Claude Design artifacts |
+| `design/` | Desktop design artifacts |
+| `apps/macos/TerminalSurface/` | SwiftTerm, peer protocol, TLS, pairing, session clients |
+| `apps/macos/src/TerminalPeerIntegration.m` | Host services and native workstation adapters |
 
 The build uses `clang`, AppKit, Foundation, and system pseudo-terminal APIs
-directly. There is no generated Xcode project or third-party runtime library.
+directly. There is no generated Xcode project. Dependency licenses ship in the app bundle.
 
 ## Data storage
 
 TerminalDB does not synchronize terminal content to cloud storage. Native
-application data is scoped to the current macOS account; Remote uses AWS only
-for ephemeral trust and routing metadata while enabled.
+application data and credentials stay on their execution workstation.
 
 | Data | Location | Notes |
 | --- | --- | --- |
@@ -448,8 +410,9 @@ for ephemeral trust and routing metadata while enabled.
 | Claude profiles | `~/Library/Application Support/TerminalDB/ClaudeProfiles/` | Separate configuration directory per profile |
 | Claude Code credentials | macOS Keychain | Created and read through the profile's Claude Code flow |
 | Temporary shell markers | A TerminalDB-created temporary directory | Removed with the terminal session |
-| Remote trust and routing | One DynamoDB table | Public keys, hashed one-time values, generations, and connection IDs only; TTL for ephemeral records |
-| Remote terminal and Claude content | Mac memory only | End-to-end encrypted in transit and never persisted by AWS |
+| Peer identity | macOS Keychain | Persistent device key; non-exportable Secure Enclave key when available |
+| Peer trust and endpoints | `~/Library/Application Support/TerminalDB/Peers/` | Per-user permissions, explicit local trust |
+| Live terminal state | Session-host memory on execution Mac | Bounded scrollback, authenticated TLS in transit |
 
 ## Security and privacy
 

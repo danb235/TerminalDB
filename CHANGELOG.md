@@ -7,6 +7,17 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Replace browser terminals and TerminalDB cloud accounts with explicitly paired
+  native Macs connected directly over the LAN or your existing VPN, with saved
+  internal addresses and sleep/wake recovery. No public endpoints or forwarding.
+- Keep shells running in a per-user session helper when views close; add
+  workstation/session selection, shared viewing, Take Control and End Session.
+- Run terminal tools, history and Claude services on the selected workstation,
+  with controller fencing, bounded queues and visible uncertain-input recovery.
+- Remove the obsolete cloud/browser source and account bridge while preserving
+  the marketing site, updater, release automation and Claude integrations.
+
+
 ## [0.5.6] - 2026-09-25
 
 ### Fixed

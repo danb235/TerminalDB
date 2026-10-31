@@ -24,6 +24,9 @@ NS_ASSUME_NONNULL_BEGIN
 @interface ClaudeAssistantView : NSView
 
 @property(nonatomic, weak, nullable) id<ClaudeAssistantViewDelegate> delegate;
+@property(nonatomic, copy, nullable) void (^peerPresentationDidChange)(NSDictionary *state);
+- (NSDictionary *)peerPresentation;
+- (void)applyPeerPresentation:(NSDictionary *)state;
 
 - (instancetype)initWithFrame:(NSRect)frame theme:(TerminalTheme *)theme;
 - (void)beginWithModelName:(NSString *)modelName

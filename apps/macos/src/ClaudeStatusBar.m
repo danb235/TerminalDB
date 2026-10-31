@@ -115,6 +115,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 @property(nonatomic) NSUInteger usageDashboardRefreshCompletedCount;
 @property(nonatomic) NSUInteger usageDashboardRefreshTotalCount;
 @property(nonatomic, copy) NSDictionary<NSString *, NSDictionary *> *usageDashboardResults;
+@property(nonatomic, copy) NSDictionary *peerUsageEntries;
 @property(nonatomic) CGFloat usageDashboardViewportWidth;
 @property(nonatomic) BOOL usageDashboardResizeScheduled;
 + (nullable NSNumber *)nextResetTimestamp:(nullable NSNumber *)timestamp
@@ -334,6 +335,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 }
 
 - (void)refreshUsageDashboard {
+    if (self.peerMode) { if (self.peerRefreshHandler) self.peerRefreshHandler(); return; }
     [self refreshUsageWindow:nil];
 }
 
@@ -1104,7 +1106,32 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         });
 }
 
+- (NSDictionary *)peerUsagePresentation {
+    NSMutableDictionary *entries = [NSMutableDictionary dictionary];
+    for (ClaudeProfile *profile in self.profileManager.profiles) {
+        NSMutableDictionary *entry = [[self usageDashboardEntryForProfile:profile] mutableCopy];
+        [entry removeObjectForKey:@"profile"];
+        NSDate *date = entry[@"modified_at"];
+        if ([date isKindOfClass:NSDate.class]) entry[@"modified_at"] = @(date.timeIntervalSince1970);
+        entries[profile.identifier] = entry;
+    }
+    return @{@"entries": entries, @"label": self.usageLabel.stringValue ?: @"",
+        @"loggedIn": @(self.accountIsLoggedIn), @"known": @(self.accountStatusKnown)};
+}
+- (void)applyPeerState:(NSDictionary *)state {
+    if (!self.peerMode) return;
+    self.selectedProfile = [self.profileManager profileWithIdentifier:state[@"accountId"] ?: @""];
+    NSDictionary *usage = state[@"usageState"] ?: @{};
+    self.peerUsageEntries = usage[@"entries"] ?: @{};
+    self.accountIsLoggedIn = [usage[@"loggedIn"] boolValue];
+    self.accountStatusKnown = [usage[@"known"] boolValue];
+    self.usageLabel.stringValue = usage[@"label"] ?: @"Usage  Waiting for workstation";
+    [self updateProfileLabel];
+    [self refreshUsageWindowContents];
+}
+
 - (void)startMonitoring {
+    if (self.peerMode) return;
     [self refreshAccountIfNeeded:YES];
     [self refreshUsage];
     [self refreshUsageIfNeeded:YES];
@@ -1116,6 +1143,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 }
 
 - (void)refreshNow {
+    if (self.peerMode) { if (self.peerRefreshHandler) self.peerRefreshHandler(); return; }
     self.lastAccountRefresh = nil;
     self.lastUsageRefreshAttempt = nil;
     [self refreshAccountIfNeeded:YES];
@@ -1251,6 +1279,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 }
 
 - (void)refreshAccountIfNeeded:(BOOL)force {
+    if (self.peerMode) return;
     ClaudeProfile *profile = self.selectedProfile;
     if (profile == nil) return;
     if (self.claudeExecutable.length == 0) {
@@ -1722,6 +1751,12 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 }
 
 - (NSDictionary *)usageDashboardEntryForProfile:(ClaudeProfile *)profile {
+    if (self.peerMode) {
+        NSMutableDictionary *entry = [self.peerUsageEntries[profile.identifier] mutableCopy] ?: [NSMutableDictionary dictionary];
+        entry[@"profile"] = profile;
+        if ([entry[@"modified_at"] isKindOfClass:NSNumber.class]) entry[@"modified_at"] = [NSDate dateWithTimeIntervalSince1970:[entry[@"modified_at"] doubleValue]];
+        return entry;
+    }
     NSDate *modifiedAt = nil;
     NSDictionary *status = [self usageStatusForProfile:profile
                                       sourceModifiedAt:&modifiedAt];
@@ -1768,6 +1803,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 }
 
 - (void)refreshUsage {
+    if (self.peerMode) return;
     ClaudeProfile *profile = self.selectedProfile;
     if (profile == nil) {
         self.currentUsageForecasts = @[];

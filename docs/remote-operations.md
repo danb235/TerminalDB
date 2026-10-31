@@ -1,276 +1,83 @@
-# TerminalDB Remote deployment and operations
+# Paired workstation operations
 
-## Deploy the development stack
+## Setup
 
-Prerequisites are Node 24, npm, AWS CLI v2, CDK bootstrap in `us-west-2` and
-`us-east-1`, and an AWS profile with deployment permissions.
+Install TerminalDB on each Mac and keep its user logged in, awake and powered on.
+Allow TerminalDB background activity in System Settings → General → Login Items
+& Extensions, and Local Network access in Privacy & Security when requested.
+Open Workstations → Manage Macs → Add Mac on both Macs on the same LAN. Select
+the nearby Mac, compare both complete fingerprints, and approve on both screens.
+Cancel if either fingerprint differs. Names are hints; keys establish trust.
 
-```sh
-npm ci
-npm run build
-npm run cdk:synth
-npm run cdk:deploy -- --profile stelao -c stage=dev -c region=us-west-2
-```
+Use ⌘T or + to open a terminal on This Mac immediately. New windows and private
+sessions also use This Mac. In the toolbar workstation menu, choose New Terminal
+on [Mac] to work elsewhere, or Resume Session to reopen existing work. The
+hosting Mac appears first in each tab and in the toolbar. Splits inherit their
+parent pane’s Mac. Opening a workspace preserves the current layout in another
+window. Closing a tab detaches it; End Session stops its shell and work.
+Use Take Control to transfer typing, sizing and session changes between viewers.
 
-For a branded deployment, request an ACM certificate in `us-east-1`, add its
-DNS validation record, and pass both application and authentication domains:
+## LAN and VPN access
 
-```sh
-npm run cdk:deploy -- \
-  -c domainName=app.example.com \
-  -c certificateArn=arn:aws:acm:us-east-1:... \
-  -c authDomainName=auth.example.com \
-  -c authCertificateArn=arn:aws:acm:us-east-1:...
-```
+When away, connect your existing VPN to the LAN before opening a workstation.
+TerminalDB does not configure the VPN or router and needs no public terminal port.
+Pair the Macs initially on the same LAN; VPN membership alone does not grant trust.
 
-The authentication domain's parent must already resolve with an A record.
-After deployment, point the application domain to `RemoteDistributionDomain`
-and the authentication domain to `CognitoDistributionDomain`. Keep the Cognito
-record DNS-only when using Cloudflare.
+Bonjour discovery may not cross routed VPNs. In Workstations → Manage Macs, select the
+paired Mac and open Connection. Enter its internal IP address or internal DNS
+name and click Save & Test. This checks that exact saved
+address and verifies the pinned key. Leave the field empty and save to remove a
+manual override. Discovered LAN addresses remain available independently.
 
-CDK prints the web URL, control Lambda name, alert topic, and enrollment
-command. Before the first deploy, copy
-`infra/cdk/terminaldb-remote.local.example.json` to
-`infra/cdk/terminaldb-remote.local.json` and set `budgetEmail`. The local file is
-gitignored, is loaded by every synth/diff/deploy, and prevents a later command
-from accidentally removing the subscription because its context was omitted.
-An explicit `-c budgetEmail=...` still overrides the local value. Confirm the
-SNS subscription email after deployment.
+Use a stable internal address or internal DNS name. Supported networks include
+RFC 1918 IPv4, IPv6 ULA/link-local and shared VPN space (100.64.0.0/10). Public
+addresses are rejected; listeners do not bind public interfaces. The VPN must
+route the execution Mac's private subnet and, for internal DNS names, provide
+working internal DNS. Avoid overlapping home/remote LAN subnets in VPN routing.
+TerminalDB never relays traffic through another workstation. Each selected Mac
+is reached directly over the current LAN or VPN route.
 
-When `cloudfrontPlan=FREE`, open the deployed distribution in CloudFront and
-associate the Free flat-rate plan if the account is eligible. This final
-association is manual because there is no supported public
-CloudFormation/CDK/PricingPlanManager API for it. With no association the same
-stack operates as pay-as-you-go. Do this immediately after the first deployment:
-until the plan is associated, CloudFront and the attached WAF use pay-as-you-go
-pricing and the deployment does not yet meet the personal sub-$1 monthly target.
+Trusted LAN access works without internet. Keep the execution Mac powered on,
+awake and logged in. Closing the viewing laptop disconnects its views; waking it
+and restoring LAN/VPN connectivity reattaches to the same shell. TerminalDB does
+not wake a sleeping execution Mac or move its work elsewhere.
 
-The stack always creates the encrypted SNS alert topic and both budgets. Without
-`budgetEmail`, no human subscriber receives those notifications.
+## Recovery
 
-TerminalDB accounts do not use email or SMS. Cognito recovery is set to
-`admin_only`; Cognito is the authority for password and authenticator-app TOTP
-verification. A Mac can initiate account security actions, but changing a
-password or deleting an account requires a fresh Cognito password-plus-TOTP
-sign-in. The stack has no Cognito sender configuration or SES dependency.
-`budgetEmail` remains only for operator cost alerts.
+Direct LAN or LAN / VPN identifies a direct authenticated connection. Reconnecting
+keeps work on its original Mac. Check power, sleep, login state, network permission,
+background activity, the saved internal address and VPN routing. Wake recovery establishes
+a new connection; it does not restart a shell elsewhere. If input delivery is
+uncertain, inspect the terminal and acknowledge the warning before continuing.
+It will not be repeated automatically.
 
-## Open the remote app
+For a background-service diagnostic, run
+`/Applications/TerminalDB.app/Contents/MacOS/TerminalDB --peer-service-status`.
+It reports each helper's macOS registration status without accessing device keys,
+terminal contents or credentials. An installed helper can initially report
+"not found"; opening the app registers it through Service Management.
 
-With the reference stack deployed and the `stelao` AWS CLI profile available,
-open **TerminalDB → Remote Control…** and click **Open Remote Web App**.
-TerminalDB performs enrollment, starts the local agent, creates a one-time
-pairing link, and opens the mirrored session in the Mac's default browser. If
-Safari is the default browser, Safari is the expected destination. The web app
-redeems the link automatically and removes its secret fragment from the
-address bar before showing the terminal.
+Unavailable saved sessions remain reconnectable. An ended session must be
+replaced explicitly with New Terminal. A session-host failure, reboot or logout
+ends sessions. Restarting only the peer agent preserves sessions. Preserve active
+legacy sessions before updating the old GUI-owned PTY implementation.
 
-Click **Pair a Phone** instead to display the same single-use flow as a QR code
-and copyable link. Use **Advanced Setup…** only for a custom deployment or when
-the configured AWS CLI profile is unavailable.
+Removing a Mac immediately blocks it here. The default applies to This Mac only;
+select the optional checkbox to request removal from other paired Macs. Hosts
+that cannot be reached remain visibly pending and can be retried. To pair again,
+remove the old pairing on both Macs first.
 
-The reference defaults are configurable through macOS preferences:
+## Legacy cloud retirement
 
-- `TerminalDBRemoteBaseURL`
-- `TerminalDBRemoteAWSProfile`
-- `TerminalDBRemoteAWSRegion`
-- `TerminalDBRemoteEnrollmentFunction`
+Do not treat source removal as deployed-resource deletion. First inventory the
+dedicated stacks and retained resources using authorized operator credentials.
+After native replacement passes acceptance QA, remove only TerminalDB remote
+stacks, retained remote storage, cloud users, deployment credentials and remote
+application/authentication DNS records. Preserve marketing/download DNS, updater,
+GitHub releases, Claude integrations and shared infrastructure.
 
-## Use an account across devices
-
-Choose **Create Account** in TerminalDB's Remote Control panel, or choose
-**Create account with this Mac** from **Accounts** in an active one-time web
-terminal. Standalone browsers can sign in, while connecting a Mac still
-requires its one-time approval. The Mac proves possession of its non-exportable P-256 key and receives
-a random 20-minute signup grant. The grant remains in the URL fragment or the
-encrypted Mac/browser channel, never an HTTP URL or log.
-
-The browser carries the grant in session storage and sends first-time username,
-password, and authenticator challenges directly from the TerminalDB page to
-Cognito's public user-pool API. A pre-signup trigger auto-confirms the username
-without creating an email or phone attribute. The setup screen centers the QR
-code beside an always-visible, copyable manual setup key. Email, SMS, passkeys,
-and backup codes are not alternatives. The screen recommends a securely synced
-authenticator copy because losing every copy requires operator assistance.
-Returning sign-in stays on the TerminalDB app origin and submits password and
-TOTP challenges directly to Cognito's public user-pool API. This preserves one
-password-manager origin and avoids Cognito's fixed MFA-enrollment layout.
-After authentication, the web app atomically binds the Cognito `sub` to the
-waiting Mac and consumes the grant. The agent polls with the grant, replaces an
-active guest session if necessary, and starts the account-owned session without
-a copy/paste step. Canceling setup invalidates the unused grant immediately so
-the Mac can start over instead of waiting for expiry.
-
-From then on, every enrolled Mac appears under **Your Macs** after login on a
-phone or another browser. Online Macs show their available terminals; offline
-Macs stay in the inventory with a last-seen time. Account authentication is
-enforced by Cognito independently of the Mac, so the user can still sign in
-and see the offline inventory
-when no TerminalDB app is running. Starting TerminalDB automatically reconnects
-an enrolled Mac. Selecting an online session registers that browser's own
-non-exportable controller keys and opens the encrypted terminal. Adding a Mac
-is intentionally a desktop action: choose **Connect Account** in TerminalDB on
-the additional Mac, then complete a fresh Cognito sign-in in the browser. The
-Mac's signed, short-lived bootstrap binds it directly to the authenticated
-account, with no enrollment code to copy or expose.
-
-Creating an account does not remove the link workflow. **Open Remote Web App**
-and **Pair a Phone** continue to create a session-scoped, single-use guest link,
-including for an account-enrolled Mac.
-
-**Log out** revokes the browser refresh token, clears local account credentials,
-and removes any account-mode controller saved by that browser. **Delete
-account** requires typing `DELETE`; it then blocks still-valid access tokens,
-disconnects the account's remote sockets, removes its enrolled Macs, sessions,
-and trusted account browsers, globally signs out the Cognito user, and deletes
-the login. A one-time session that was never connected to the account remains
-independent.
-
-On an enrolled Mac, **Change Password…** issues a signed, single-use ten-minute
-reset approval. Cognito assigns a random temporary password, the browser sends
-the user's chosen replacement directly to Cognito, and the existing TOTP
-authenticator must still be completed before sign-in succeeds. The reset
-globally signs out browsers and revokes account controllers. This provides
-no-email recovery without letting possession of only a Mac key bypass MFA.
-Signed-in users who still know the current password can also change it from
-the web account view. **Delete Account…** requires a fresh Cognito
-password-plus-TOTP sign-in no more than five minutes before the action and
-additionally requires
-the exact word `DELETE`, then performs the same tenant-scoped cleanup as web
-deletion. If every MFA factor is lost, the account is intentionally
-unrecoverable without operator action; Cognito has no safe administrator API
-for deleting a user's registered TOTP secret.
-
-## Manual Mac enrollment
-
-For a non-account or operator-managed installation, create a one-time enrollment code through the IAM-protected Lambda
-invoke path:
-
-```sh
-npm run remote:enrollment -- --profile stelao --stage dev
-```
-
-The plaintext code appears once and expires in 15 minutes. The Lambda retains
-only a salted hash. Enter it under **Advanced Setup…** in TerminalDB's Remote
-Control panel on the target Mac.
-
-## Emergency controls
-
-Disable only new pairings while leaving existing local work untouched:
-
-```sh
-npm run cdk:deploy -- --profile stelao \
-  -c stage=dev \
-  -c region=us-west-2 \
-  -c disableNewPairings=true
-```
-
-For suspected controller compromise, revoke the controller from TerminalDB.
-For device compromise, disable Remote Control on the Mac, which ends the cloud
-session and increments the generation. Rotate the local device identity before
-re-enrolling.
-
-## Cloud record lifecycle
-
-Active session, device-session, and controller records have a rolling 24-hour
-TTL. Every successful Mac or controller connection-ticket request renews that
-TTL, so a live or reconnecting installation does not expire. If a client is
-terminated before it can send the normal signed session-end request, DynamoDB
-eventually removes the abandoned records without retaining terminal content.
-
-Normal session end and controller revocation mark records inactive immediately
-and retain only the control-plane metadata for seven days before TTL cleanup.
-Temporary device identities created by the live QA harness also expire after
-seven days. Pairing and ticket records keep their shorter ten-minute and
-sixty-second TTLs. DynamoDB TTL deletion is asynchronous; authorization always
-checks status and expiry rather than relying on physical deletion.
-
-## Cost checks
-
-Account-enabled deployments use the Cognito Plus feature plan so threat
-protection can run in enforced mode. Cognito charges for account activity
-separately from the relay path; review the current Cognito MAU pricing and raise
-the reference budgets before offering a public hosted service. The original
-low-traffic relay estimates apply to the guest-link data path, not to an
-unbounded public account population.
-
-`packages/test-harness` computes API Gateway billing units from captured wire
-sizes. Idle foreground output remains capped at five batches per second; for
-1.25 seconds after active-tab input, an interactive lane may burst to twenty
-frames per second before falling back automatically. Run it with:
-
-```sh
-npm run test:cost
-```
-
-The default personal caps are 50 WebSocket messages/second, burst 100, and eight
-concurrent invocations per Lambda. Lower these for an especially strict
-personal installation; raise them only after load and cost capture.
-
-Run `npm audit --omit=dev --audit-level=high` before each deployment. Treat this
-as the production dependency gate. Also review the unfiltered audit separately:
-CDK is a build/deployment tool, and advisories in its bundled development-only
-dependencies may require an upstream CDK release rather than a runtime change.
-Keep CDK, `cdk-nag`, and Constructs pinned and review upgrades deliberately.
-
-## Live encrypted-path QA
-
-After building the native app, run the automated encrypted-session audit:
-
-```sh
-npm run live:session -w @terminaldb/test-harness
-```
-
-It creates a fresh IAM enrollment, launches the real native agent with an
-ephemeral identity, pairs a non-exportable test controller, and verifies the
-deployed CloudFront/WebSocket path. The audit covers protocol mismatch and
-pairing replay rejection, encrypted inventory and viewport resync, terminal
-input, account switching, usage refresh, lost-ack resolution without duplicate
-execution, trusted-controller listing, replacement pairing, revocation, and
-blocked reconnect. It accelerates one native rotation and also verifies
-controller make-before-break mapping before the old socket disconnects.
-Pairing secrets stay in a `0600` temporary file and the
-ephemeral identity, socket, event capture, and pairing file are removed during
-shutdown. The harness gives the native agent time to complete its signed
-session-end request before terminating the process.
-
-Run the deployed React client through the same native/AWS path with a real
-headless browser:
-
-```sh
-npm run live:browser -w @terminaldb/test-harness
-```
-
-This browser audit consumes a fresh pairing link, verifies that its fragment is
-removed, checks non-extractable IndexedDB keys, drives terminal input and Claude
-account controls through the UI, accelerates a make-before-break browser socket
-rotation, forces an offline/reconnect cycle, proves an unsent draft is retained
-without execution, reloads the controller identity, and revokes it. It never
-prints or retains the pairing URL.
-
-For an interactive manual pass, use:
-
-```sh
-npm run live:mac -w @terminaldb/test-harness
-```
-
-Open the protected pairing-file path it prints, exercise the phone interface,
-then stop the harness with Ctrl-C.
-
-## Teardown
-
-First disable Remote Control on the Mac and revoke controllers. Then remove the
-development stacks:
-
-```sh
-cd infra/cdk
-npx cdk destroy TerminalDBRemote-dev --profile stelao \
-  -c stage=dev -c region=us-west-2
-npx cdk destroy TerminalDBRemote-dev-Edge --profile stelao \
-  -c stage=dev -c region=us-west-2
-```
-
-The development bucket and table are destroyable. Production resources use
-retention, table deletion protection, and require an explicit data-retention
-decision before removal. Cancel the CloudFront pricing plan separately if one
-was associated.
+The October 2026 inventory found TerminalDBRemote-dev in us-west-2 (78 resources)
+and TerminalDBRemote-dev-Edge in us-east-1 (5 resources). Resource identifiers are
+kept in an operator-only inventory outside Git. Retirement is pending acceptance
+QA. Cloudflare remote DNS removal also requires valid DNS-edit authorization.
+No stack or DNS deletion is implied by this document.
