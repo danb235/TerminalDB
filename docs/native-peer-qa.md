@@ -182,14 +182,26 @@ Opening a saved layout created no extra shells. Saving it again from a live pane
 retained the ordered references for every workstation/session, including the ended
 pane. The updated panel showed a successful save on the named host and a rejected save
 with a visible Take Control instruction after another viewer took control.
-Final two-Mac pairing through the simplified sheet is pending. Earlier network
-results do not substitute for that check.
+The final universal build’s guided sheet passed on the primary Mac and mini.
+Both full displayed fingerprints matched the existing device identities. A
+mismatched expected fingerprint prevented scripted approval; cancellation through
+the normal button granted no access. Approving one side showed Waiting for Other
+Mac and granted no trust. Approval on the second physical Mac completed both
+pairings and closed both pairing windows. A new remote terminal accepted visible
+input on the mini; its selected local tab stayed unchanged. The next + action
+opened This Mac immediately. The management screen’s layout and contrast were
+also visually inspected with terminal and pairing details excluded.
 
 The real-agent tests additionally verify that the pairing-only discovery name is
 withdrawn after pairing closes. Three simultaneous two-sided initiation rounds
 converged on a single connection and still required independent approval by both
 Macs. This prevents the two native screens from waiting on different requests.
 
-Remaining physical acceptance includes the final bilateral pairing flow and final primary/mini installed About verification. Original active legacy work on the primary Mac and mini remains
-running and protected. Cloud retirement, repository merge and final installation
-are pending acceptance. Remote DNS cleanup is explicitly deferred by the user.
+Final primary/mini canonical installation and About verification remain in the
+repository handoff. Original active legacy work on those Macs is still running;
+private on-device backups of the original apps, saved settings and data are
+complete. The MBP’s eight native shells had no foreground non-shell processes at
+preflight. Replacing the old GUI-owned sessions requires finishing their work or
+explicit authorization to stop them; stored-data backups cannot preserve running
+processes. Cloud retirement, repository merge and final installation are pending.
+Remote DNS cleanup is explicitly deferred by the user.
