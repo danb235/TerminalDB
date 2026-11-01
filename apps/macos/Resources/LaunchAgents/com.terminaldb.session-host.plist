@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
+  <!-- Migration only: unregister stopped 0.6.0 agents; never register this file. -->
   <key>Label</key><string>com.terminaldb.session-host</string>
-  <key>BundleProgram</key><string>Contents/Helpers/TerminalDBSessionHost.app/Contents/MacOS/TerminalDBSessionHost</string>
+  <key>BundleProgram</key><string>Contents/MacOS/TerminalDBSessionHost</string>
   <key>ProgramArguments</key><array><string>TerminalDBSessionHost</string><string>--session-host</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

@@ -83,9 +83,12 @@ Tags matching `v*` run `.github/workflows/release.yml`, which tests, builds,
 signs, packages, checksums, and publishes the application.
 
 SwiftPM resolves pinned dependencies on the first build. The app bundles the
-session and peer helpers plus their Service Management launch agents. Development
+session and peer helper apps in Contents/Library/LoginItems. Each helper has its
+own bundle and signing identifier. Development
 bundles launch helpers directly; the canonical /Applications/TerminalDB.app
-registers per-user services through SMAppService. Dependency licenses ship in
+registers them through SMAppService.loginItem. Legacy LaunchAgent definitions are
+retained only to retire stopped 0.6.0 services without stopping a live host.
+Dependency licenses ship in
 Contents/Resources/Licenses.
 
 The pinned SwiftTerm 1.19.0 dependency needs two small reviewed additions for

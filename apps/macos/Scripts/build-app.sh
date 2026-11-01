@@ -56,7 +56,7 @@ for arch in "${architectures[@]}"; do
 done
 lipo -create "${app_slices[@]}" -output "${BIN_PATH}"
 for helper in TerminalDBSessionHost TerminalDBPeerAgent; do
-  helper_contents="${CONTENTS_DIR}/Helpers/${helper}.app/Contents"
+  helper_contents="${CONTENTS_DIR}/Library/LoginItems/${helper}.app/Contents"
   mkdir -p "${helper_contents}/MacOS"
   cp "${BIN_PATH}" "${helper_contents}/MacOS/${helper}"
   cp "Resources/Helpers/${helper}.plist" "${helper_contents}/Info.plist"
@@ -84,7 +84,7 @@ for component in TerminalDBSessionHost TerminalDBPeerAgent TerminalDB; do
   component_app="${APP_DIR}"
   identifier="com.terminaldb.app"
   if [[ "${component}" != "TerminalDB" ]]; then
-    component_app="${CONTENTS_DIR}/Helpers/${component}.app"
+    component_app="${CONTENTS_DIR}/Library/LoginItems/${component}.app"
     identifier="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${component_app}/Contents/Info.plist")"
   fi
   requirements=()
@@ -99,8 +99,8 @@ done
 
 codesign --verify --deep --strict --verbose=2 "${APP_DIR}"
 lipo "${BIN_PATH}" -verify_arch "${architectures[@]}"
-lipo "${CONTENTS_DIR}/Helpers/TerminalDBSessionHost.app/Contents/MacOS/TerminalDBSessionHost" -verify_arch "${architectures[@]}"
-lipo "${CONTENTS_DIR}/Helpers/TerminalDBPeerAgent.app/Contents/MacOS/TerminalDBPeerAgent" -verify_arch "${architectures[@]}"
+lipo "${CONTENTS_DIR}/Library/LoginItems/TerminalDBSessionHost.app/Contents/MacOS/TerminalDBSessionHost" -verify_arch "${architectures[@]}"
+lipo "${CONTENTS_DIR}/Library/LoginItems/TerminalDBPeerAgent.app/Contents/MacOS/TerminalDBPeerAgent" -verify_arch "${architectures[@]}"
 
 echo "Built ${APP_DIR}"
 echo "Version: ${VERSION}"

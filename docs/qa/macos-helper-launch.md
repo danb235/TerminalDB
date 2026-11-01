@@ -10,19 +10,21 @@ could also cause launchd to restart it. At diagnosis the session host was
 responsive and held no sessions; the two previously approved devices remained
 in its trust store.
 
-The helpers now live in separate self-contained bundles under `Contents/Helpers`
+The helpers now live in separate self-contained bundles under `Contents/Library/LoginItems`
 with their own metadata before AppKit initializes. They have distinct identifiers,
 bundle locations and background/accessory roles. The GUI alone owns
 `com.terminaldb.app`. Development bundles also start those actual executables
 instead of starting copies of the GUI with helper flags. Execution services
 continue sharing the existing `com.terminaldb.app` preferences explicitly.
-There is no change to device keys, paired trust, networking or terminal protocol.
+They are registered through `SMAppService.loginItem`, the supported mechanism for
+background helper app bundles. Stopped 0.6.0 LaunchAgents are retired; a live legacy
+host is retained until it stops, preserving its shells. There is no change to
+device keys, paired trust, networking or terminal protocol.
 Nested helpers are signed individually with their own identifiers before signing
 the enclosing app. Stopped-service repair awaits the Service Management
 unregistration completion before registering the replacement executable. The
-synchronous unregistration API returns before the old process and launch
-constraint are retired, so immediately registering can retain an obsolete
-code-hash constraint. Startup repair is asynchronous and leaves the UI responsive;
+synchronous unregistration API returns before the old process is retired; the completion API is the documented point at
+which registering a replacement is safe. Startup repair is asynchronous and leaves the UI responsive;
 the existing lease check still protects a live host and its shells.
 The build uses the selected Apple compiler through `xcrun`, avoiding an unrelated
 Homebrew compiler's stale SDK path after the operating system upgrade.
@@ -71,6 +73,11 @@ new physical run of those network scenarios.
   helpers also exit with that process coalition. Normal reopening succeeds.
   Final managed-service Force Quit/session survival and canonical About checks
   are recorded in the PR handoff after installing the merged primary branch.
+- On the canonical installation, both helper apps start independently through
+  Service Management. macOS Force Quit lists one TerminalDB interface, exits it,
+  and leaves the same host PID and private shell alive. Normal reopening works.
+  Networking Keychain approval and the final merged-primary verification remain
+  part of the final handoff record.
 - Automated checks pass: 92 surface, 86 protocol/security, 23 persistent-helper
   and 20 real-agent integration checks, plus product, background-tab, signature,
   icon, secret-scan and Claude hooks. The persistent-helper checks inspect both

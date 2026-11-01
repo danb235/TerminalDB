@@ -7645,10 +7645,10 @@ int main(void) {
         if ([NSProcessInfo.processInfo.arguments containsObject:@"--peer-service-status"]) {
             NSMutableDictionary *services = [NSMutableDictionary dictionary];
             NSArray *names = @[@"not registered", @"enabled", @"requires approval", @"not found"];
-            for (NSString *plist in @[@"com.terminaldb.session-host.plist", @"com.terminaldb.peer-agent.plist"]) {
-                SMAppService *service = [SMAppService agentServiceWithPlistName:plist];
+            for (NSString *identifier in @[@"com.terminaldb.session-host", @"com.terminaldb.peer-agent"]) {
+                SMAppService *service = [SMAppService loginItemServiceWithIdentifier:identifier];
                 NSUInteger status = service.status;
-                services[plist] = status < names.count ? names[status] : @"unknown";
+                services[identifier] = status < names.count ? names[status] : @"unknown";
             }
             NSData *data = [NSJSONSerialization dataWithJSONObject:services options:NSJSONWritingSortedKeys error:nil];
             fwrite(data.bytes, 1, data.length, stdout); fputc('\n', stdout);

@@ -96,7 +96,7 @@ def wait_for(predicate, timeout=10):
 
 
 def helper_executable(app, name):
-    return app.parent.parent / "Helpers" / (name + ".app") / "Contents/MacOS" / name
+    return app.parent.parent / "Library/LoginItems" / (name + ".app") / "Contents/MacOS" / name
 
 
 def helper_identity(pid, expected, executable):
