@@ -36,7 +36,8 @@ def main():
                 config.chmod(0o600)
                 env = dict(os.environ, TERMINALDB_PEER_STATE_DIR=str(root), TERMINALDB_PEER_EPHEMERAL_IDENTITY="1")
                 for role in ["--session-host", "--peer-agent"]:
-                    processes.append(subprocess.Popen([str(app), role, "--terminal-qa"], env=env,
+                    executable = qa.helper_executable(app, "TerminalDBSessionHost" if role == "--session-host" else "TerminalDBPeerAgent")
+                    processes.append(subprocess.Popen([str(executable), "--terminal-qa"], env=env,
                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
                 wait_for(lambda: (root / "peer.sock").exists() and (root / "host.sock").exists())
             managers = [Client(root, management=True) for root in roots]; clients += managers

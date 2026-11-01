@@ -91,8 +91,8 @@ jobs:
 
           APP="apps/macos/build/TerminalDB.app"
           BIN="${APP}/Contents/MacOS/TerminalDB"
-          AGENT="${APP}/Contents/MacOS/TerminalDBPeerAgent"
-          HOST="${APP}/Contents/MacOS/TerminalDBSessionHost"
+          AGENT="${APP}/Contents/Library/LoginItems/TerminalDBPeerAgent.app/Contents/MacOS/TerminalDBPeerAgent"
+          HOST="${APP}/Contents/Library/LoginItems/TerminalDBSessionHost.app/Contents/MacOS/TerminalDBSessionHost"
           codesign --verify --deep --strict --verbose=2 "${APP}"
           lipo "${BIN}" -verify_arch arm64 x86_64
           lipo "${AGENT}" -verify_arch arm64 x86_64

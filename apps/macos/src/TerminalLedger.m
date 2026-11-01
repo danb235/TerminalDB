@@ -1239,7 +1239,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
     self.stateLabel.textColor = self.theme.ansiColors[3];
     self.commandLabel.stringValue = message ?: @"Workstation unavailable";
     self.metadataLabel.stringValue = @"Work stays on its original workstation.";
-    self.outputLabel.stringValue = @"Check that the Mac is awake and logged in, then use Reconnect. For internet access, check its saved address and router or firewall rule.";
+    self.outputLabel.stringValue = @"Check that the Mac is awake and logged in, then use Reconnect. When away, connect your VPN and check the Mac’s saved internal address.";
 }
 
 - (void)beginCommand:(NSString *)command directory:(NSString *)directory {

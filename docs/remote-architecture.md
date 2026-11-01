@@ -7,6 +7,13 @@ bounded scrollback, Claude credentials and execution-related product services.
 The interface uses the same typed session protocol for This Mac and paired Macs.
 Restarting networking does not restart shells.
 
+Each helper is a separately identified background app under
+`Contents/Library/LoginItems`, registered through `SMAppService.loginItem`.
+The interface alone owns the main app's bundle identity and appears in Force Quit.
+Stopped legacy LaunchAgents are migrated using asynchronous unregistration;
+a live legacy host retains its shells until it stops. Helper repair never
+unregisters a process holding the session lease or waiting for Keychain approval.
+
 The host uses SwiftTerm's UI-independent terminal engine. Native viewer renderers
 suppress terminal-generated query replies; only the host answers the shell.
 The existing product adapter supplies ledger, Claude, permission, patch, project,

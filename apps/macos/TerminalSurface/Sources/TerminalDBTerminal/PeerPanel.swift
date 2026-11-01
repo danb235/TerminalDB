@@ -16,16 +16,33 @@ public final class TDBWorkspaceReferences: NSObject {
 @objc(TDBPeerServices)
 public final class TDBPeerServices: NSObject {
     private static var children: [Process] = []
-    @objc public static func start() throws {
+    @objc(startWithCompletion:)
+    public static func start(completion: @escaping (NSError?) -> Void) {
+        Task { @MainActor in
+            do { try await startServices(); completion(nil) }
+            catch { completion(error as NSError) }
+        }
+    }
+    @MainActor private static func startServices() async throws {
         if Bundle.main.bundlePath == "/Applications/TerminalDB.app" {
             try PeerPaths.prepare()
-            for (socket, executable, plist) in [
-                ("host", "TerminalDBSessionHost", "com.terminaldb.session-host.plist"),
-                ("peer", "TerminalDBPeerAgent", "com.terminaldb.peer-agent.plist")
+            for (socket, executable, identifier) in [
+                ("host", "TerminalDBSessionHost", "com.terminaldb.session-host"),
+                ("peer", "TerminalDBPeerAgent", "com.terminaldb.peer-agent")
             ] {
-                let service = SMAppService.agent(plistName: plist)
+                // Retire the 0.6.0 agent only when it is stopped. A live
+                // legacy host continues serving its existing shells.
+                let legacy = SMAppService.agent(plistName: identifier + ".plist")
+                if legacy.status == .requiresApproval {
+                    throw PeerFailure("Enable TerminalDB in System Settings → General → Login Items & Extensions, then reopen it.")
+                }
+                if legacy.status == .enabled,
+                   try await !repairStoppedService(legacy, socket: socket, executable: executable, reregister: false) {
+                    continue
+                }
+                let service = SMAppService.loginItem(identifier: identifier)
                 if service.status == .enabled {
-                    try repairStoppedService(service, socket: socket, executable: executable)
+                    _ = try await repairStoppedService(service, socket: socket, executable: executable)
                 }
                 if service.status == .notRegistered || service.status == .notFound {
                     try service.register()
@@ -40,12 +57,10 @@ public final class TDBPeerServices: NSObject {
         } else {
             // Development/automated QA starts the same signed helpers without
             // registering a worktree path as a persistent login service.
-            for (socket, argument) in [("host", "--session-host"), ("peer", "--peer-agent")] {
+            for (socket, executable) in [("host", "TerminalDBSessionHost"), ("peer", "TerminalDBPeerAgent")] {
                 if (try? PeerLocalConnection.connect(socket)) != nil { continue }
-                guard let executable = Bundle.main.executableURL else { throw PeerFailure("The helper executable is missing.") }
                 let process = Process()
-                process.executableURL = executable
-                process.arguments = [argument]
+                process.executableURL = helperURL(executable)
                 process.standardInput = FileHandle.nullDevice
                 process.standardOutput = FileHandle.nullDevice
                 process.standardError = FileHandle.nullDevice
@@ -54,31 +69,40 @@ public final class TDBPeerServices: NSObject {
             }
         }
     }
-    private static func repairStoppedService(_ service: SMAppService, socket: String, executable: String) throws {
+    @MainActor private static func repairStoppedService(_ service: SMAppService, socket: String, executable: String, reregister: Bool = true) async throws -> Bool {
         let fd = Darwin.open(PeerPaths.file(socket + ".lock").path, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
         guard fd >= 0 else { throw PeerFailure("TerminalDB could not check its background service. Check this user’s Application Support permissions.") }
         defer { Darwin.close(fd) }
         // A live host's lease protects its shells, even when its UI/IPC is slow.
         // Hold an unowned lease until unregister finishes so no new work can
         // start in the old registration during repair.
-        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { return }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { return false }
         defer { flock(fd, LOCK_UN) }
-        let path = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/" + executable).path
+        let paths = [helperURL(executable).path,
+                     Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/" + executable).path,
+                     Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/\(executable).app/Contents/MacOS/\(executable)").path]
         let capacity = max(1024, Int(proc_listallpids(nil, 0)) + 256)
         var pids = [pid_t](repeating: 0, count: capacity)
         let count = pids.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, Int32($0.count)) }
-        guard count >= 0 else { return }
+        guard count >= 0 else { return false }
         for pid in pids.prefix(min(Int(count), capacity)) where pid > 0 {
             var name = [CChar](repeating: 0, count: 4096)
-            if proc_pidpath(pid, &name, UInt32(name.count)) > 0 && String(cString: name) == path {
-                return // Includes a helper waiting on its macOS Keychain prompt.
+            if proc_pidpath(pid, &name, UInt32(name.count)) > 0 && paths.contains(String(cString: name)) {
+                return false // Includes a helper waiting on its macOS Keychain prompt.
             }
         }
         // macOS can retain an enabled registration pointing at a replaced
         // bundle. Refresh only a stopped service; never stop a running host.
-        try service.unregister()
+        // The synchronous API returns before launchd/BTM has retired the old
+        // process and signing constraint. Only the async completion makes it
+        // safe to register the new executable's signature after an update.
+        try await service.unregister()
         flock(fd, LOCK_UN)
-        try service.register()
+        if reregister { try service.register() }
+        return true
+    }
+    private static func helperURL(_ executable: String) -> URL {
+        Bundle.main.bundleURL.appendingPathComponent("Contents/Library/LoginItems/\(executable).app/Contents/MacOS/\(executable)")
     }
     @objc public static func openBackgroundSettings() { SMAppService.openSystemSettingsLoginItems() }
 }

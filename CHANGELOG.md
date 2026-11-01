@@ -7,6 +7,8 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Give background helpers separate macOS identities so opening and quitting
+  TerminalDB always targets its visible app, including after a macOS upgrade.
 - Replace browser terminals and TerminalDB cloud accounts with explicitly paired
   native Macs connected directly over the LAN or your existing VPN, with saved
   internal addresses and sleep/wake recovery. No public endpoints or forwarding.

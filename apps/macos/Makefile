@@ -7,7 +7,7 @@ SOURCES := src/main.m src/ClaudeAPI.m src/ClaudeAssistantView.m \
 	src/TerminalLedger.m src/TerminalPermissions.m src/TerminalProduct.m \
 	src/TerminalUpdater.m src/TerminalPeerIntegration.m src/TerminalPeerStores.m src/TerminalPreferences.m
 HEADERS := $(wildcard src/*.h)
-HELPER_RESOURCES := $(wildcard Resources/LaunchAgents/*.plist)
+HELPER_RESOURCES := $(wildcard Resources/LaunchAgents/*.plist Resources/Helpers/*.plist)
 ICON_RESOURCE := Resources/AppIcon.icns
 FONT_RESOURCES := \
 	Resources/Fonts/JetBrainsMono-Regular.ttf \
