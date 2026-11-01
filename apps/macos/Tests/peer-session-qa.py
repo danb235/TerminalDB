@@ -7,6 +7,7 @@ credentials and launch secrets are never printed. This supplements visible QA.
 import base64
 import json
 import os
+import re
 from pathlib import Path
 import socket
 import struct
@@ -94,6 +95,21 @@ def wait_for(predicate, timeout=10):
     raise AssertionError("Disposable peer session did not reach its expected state")
 
 
+def helper_executable(app, name):
+    return app.parent.parent / "Helpers" / (name + ".app") / "Contents/MacOS" / name
+
+
+def helper_identity(pid, expected, executable):
+    """Check the running process, not just its source plist or signature."""
+    inventory = subprocess.run(["/usr/bin/lsappinfo", "list"], check=True,
+                               capture_output=True, text=True).stdout
+    # Do not print the inventory: it also describes unrelated applications.
+    bundle = executable.parent.parent.parent
+    return any(f'bundleID="{expected}"' in record and f"pid = {pid} " in record
+               and f'bundle path="{bundle}"' in record
+               for record in re.split(r"(?m)^\d+\) ", inventory))
+
+
 def main():
     app = Path(sys.argv[1]).resolve()
     checks = 0
@@ -101,13 +117,17 @@ def main():
         root = Path(temporary)
         env = dict(os.environ, TERMINALDB_PEER_STATE_DIR=str(root),
                    TERMINALDB_PEER_EPHEMERAL_IDENTITY="1")
-        helper = subprocess.Popen([str(app), "--session-host", "--terminal-qa"], env=env,
+        host_executable = helper_executable(app, "TerminalDBSessionHost")
+        peer_executable = helper_executable(app, "TerminalDBPeerAgent")
+        helper = subprocess.Popen([str(host_executable), "--terminal-qa"], env=env,
                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL)
         agent = None
         clients = []
         try:
             wait_for(lambda: (root / "host.sock").exists())
+            assert helper_identity(helper.pid, "com.terminaldb.session-host", host_executable), "Session host claimed the GUI bundle"
+            checks += 1
             assert (root / "host.sock").stat().st_mode & 0o777 == 0o600
             checks += 1
             a = Client(root); clients.append(a)
@@ -210,9 +230,11 @@ def main():
             reservation = socket.socket(); reservation.bind(("127.0.0.1", 0))
             port = reservation.getsockname()[1]; reservation.close()
             (root / "trust.json").write_text(json.dumps(dict(peers={}, listenPort=port)))
-            agent = subprocess.Popen([str(app), "--peer-agent"], env=env,
+            agent = subprocess.Popen([str(peer_executable)], env=env,
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             wait_for(lambda: (root / "peer.sock").exists())
+            assert helper_identity(agent.pid, "com.terminaldb.peer-agent", peer_executable), "Networking helper claimed the GUI bundle"
+            checks += 1
             agent.terminate(); agent.wait(timeout=10); agent = None
             assert helper.poll() is None
             assert c.input("printf '%s' $$ > fourth-shell-id\r").get("accepted")

@@ -55,10 +55,20 @@ for arch in "${architectures[@]}"; do
 
 done
 lipo -create "${app_slices[@]}" -output "${BIN_PATH}"
-cp "${BIN_PATH}" "${CONTENTS_DIR}/MacOS/TerminalDBSessionHost"
-cp "${BIN_PATH}" "${CONTENTS_DIR}/MacOS/TerminalDBPeerAgent"
+for helper in TerminalDBSessionHost TerminalDBPeerAgent; do
+  helper_contents="${CONTENTS_DIR}/Helpers/${helper}.app/Contents"
+  mkdir -p "${helper_contents}/MacOS"
+  cp "${BIN_PATH}" "${helper_contents}/MacOS/${helper}"
+  cp "Resources/Helpers/${helper}.plist" "${helper_contents}/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string ${VERSION}" "${helper_contents}/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string ${BUILD_NUMBER}" "${helper_contents}/Info.plist"
+  # The host uses the same bundled shell hooks, fonts and terminal renderer.
+  # Keep each helper self-contained so Launch Services never assigns it the
+  # visible app's bundle URL or identity.
+  /usr/bin/ditto "${CONTENTS_DIR}/Resources" "${helper_contents}/Resources"
+done
 rm "${app_slices[@]}"
-chmod 755 "${BIN_PATH}" "${CONTENTS_DIR}/MacOS/TerminalDBSessionHost" "${CONTENTS_DIR}/MacOS/TerminalDBPeerAgent"
+chmod 755 "${BIN_PATH}"
 
 IDENTITY_CN="TerminalDB Self-Signed"
 if security find-identity -p codesigning 2>/dev/null | grep -q "${IDENTITY_CN}"; then
@@ -82,8 +92,8 @@ fi
 
 codesign --verify --deep --strict --verbose=2 "${APP_DIR}"
 lipo "${BIN_PATH}" -verify_arch "${architectures[@]}"
-lipo "${CONTENTS_DIR}/MacOS/TerminalDBSessionHost" -verify_arch "${architectures[@]}"
-lipo "${CONTENTS_DIR}/MacOS/TerminalDBPeerAgent" -verify_arch "${architectures[@]}"
+lipo "${CONTENTS_DIR}/Helpers/TerminalDBSessionHost.app/Contents/MacOS/TerminalDBSessionHost" -verify_arch "${architectures[@]}"
+lipo "${CONTENTS_DIR}/Helpers/TerminalDBPeerAgent.app/Contents/MacOS/TerminalDBPeerAgent" -verify_arch "${architectures[@]}"
 
 echo "Built ${APP_DIR}"
 echo "Version: ${VERSION}"

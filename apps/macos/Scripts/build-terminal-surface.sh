@@ -40,7 +40,7 @@ if [[ "${configuration}" == "debug" ]]; then optimization=(-O0 -g); fi
 object_files=()
 for source in src/*.m; do
   object="${objects}/$(basename "${source}" .m).o"
-  clang -c -fobjc-arc -Wall -Wextra -arch "${arch}" \
+  xcrun clang -c -fobjc-arc -Wall -Wextra -arch "${arch}" \
     -mmacosx-version-min=13.0 "${optimization[@]}" \
     -I "${generated_header_dir}" \
     "${source}" -o "${object}"

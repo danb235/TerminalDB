@@ -40,12 +40,10 @@ public final class TDBPeerServices: NSObject {
         } else {
             // Development/automated QA starts the same signed helpers without
             // registering a worktree path as a persistent login service.
-            for (socket, argument) in [("host", "--session-host"), ("peer", "--peer-agent")] {
+            for (socket, executable) in [("host", "TerminalDBSessionHost"), ("peer", "TerminalDBPeerAgent")] {
                 if (try? PeerLocalConnection.connect(socket)) != nil { continue }
-                guard let executable = Bundle.main.executableURL else { throw PeerFailure("The helper executable is missing.") }
                 let process = Process()
-                process.executableURL = executable
-                process.arguments = [argument]
+                process.executableURL = helperURL(executable)
                 process.standardInput = FileHandle.nullDevice
                 process.standardOutput = FileHandle.nullDevice
                 process.standardError = FileHandle.nullDevice
@@ -63,7 +61,7 @@ public final class TDBPeerServices: NSObject {
         // start in the old registration during repair.
         guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { return }
         defer { flock(fd, LOCK_UN) }
-        let path = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/" + executable).path
+        let path = helperURL(executable).path
         let capacity = max(1024, Int(proc_listallpids(nil, 0)) + 256)
         var pids = [pid_t](repeating: 0, count: capacity)
         let count = pids.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, Int32($0.count)) }
@@ -79,6 +77,9 @@ public final class TDBPeerServices: NSObject {
         try service.unregister()
         flock(fd, LOCK_UN)
         try service.register()
+    }
+    private static func helperURL(_ executable: String) -> URL {
+        Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/\(executable).app/Contents/MacOS/\(executable)")
     }
     @objc public static func openBackgroundSettings() { SMAppService.openSystemSettingsLoginItems() }
 }
