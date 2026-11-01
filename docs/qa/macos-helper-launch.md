@@ -17,6 +17,13 @@ bundle locations and background/accessory roles. The GUI alone owns
 instead of starting copies of the GUI with helper flags. Execution services
 continue sharing the existing `com.terminaldb.app` preferences explicitly.
 There is no change to device keys, paired trust, networking or terminal protocol.
+Nested helpers are signed individually with their own identifiers before signing
+the enclosing app. Stopped-service repair awaits the Service Management
+unregistration completion before registering the replacement executable. The
+synchronous unregistration API returns before the old process and launch
+constraint are retired, so immediately registering can retain an obsolete
+code-hash constraint. Startup repair is asynchronous and leaves the UI responsive;
+the existing lease check still protects a live host and its shells.
 The build uses the selected Apple compiler through `xcrun`, avoiding an unrelated
 Homebrew compiler's stale SDK path after the operating system upgrade.
 
@@ -67,4 +74,4 @@ new physical run of those network scenarios.
 - Automated checks pass: 92 surface, 86 protocol/security, 23 persistent-helper
   and 20 real-agent integration checks, plus product, background-tab, signature,
   icon, secret-scan and Claude hooks. The persistent-helper checks inspect both
-  running helper bundle identifiers and their separate bundle locations.
+  running helper bundle identifiers, signing identifiers and separate locations.

@@ -73,22 +73,29 @@ chmod 755 "${BIN_PATH}"
 IDENTITY_CN="TerminalDB Self-Signed"
 if security find-identity -p codesigning 2>/dev/null | grep -q "${IDENTITY_CN}"; then
   echo "Signing with stable identity '${IDENTITY_CN}'"
-  codesign \
-    --force \
-    --deep \
-    --sign "${IDENTITY_CN}" \
-    --identifier com.terminaldb.app \
-    "${APP_DIR}"
+  signing_identity="${IDENTITY_CN}"
 else
   echo "No stable signing identity found. Using an ad hoc signature."
+  signing_identity="-"
+fi
+# Sign inside out. --deep with the GUI identifier would assign that signing
+# identity to every helper, contrary to their own bundle metadata.
+for component in TerminalDBSessionHost TerminalDBPeerAgent TerminalDB; do
+  component_app="${APP_DIR}"
+  identifier="com.terminaldb.app"
+  if [[ "${component}" != "TerminalDB" ]]; then
+    component_app="${CONTENTS_DIR}/Helpers/${component}.app"
+    identifier="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${component_app}/Contents/Info.plist")"
+  fi
+  requirements=()
+  if [[ "${signing_identity}" == "-" ]]; then requirements=(--requirements "=designated => identifier \"${identifier}\""); fi
   codesign \
     --force \
-    --deep \
-    --sign - \
-    --identifier com.terminaldb.app \
-    --requirements '=designated => identifier "com.terminaldb.app"' \
-    "${APP_DIR}"
-fi
+    --sign "${signing_identity}" \
+    --identifier "${identifier}" \
+    "${requirements[@]}" \
+    "${component_app}"
+done
 
 codesign --verify --deep --strict --verbose=2 "${APP_DIR}"
 lipo "${BIN_PATH}" -verify_arch "${architectures[@]}"

@@ -273,13 +273,13 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         return;
     }
     if (TerminalDBUsesPeerSessions()) {
-        NSError *serviceError = nil;
-        if (![TDBPeerServices startAndReturnError:&serviceError]) {
+        [TDBPeerServices startWithCompletion:^(NSError *serviceError) {
+            if (serviceError == nil) return;
             NSAlert *alert = [[NSAlert alloc] init]; alert.messageText = @"Enable TerminalDB background services";
             alert.informativeText = serviceError.localizedDescription ?: @"The background services could not start.";
             [alert addButtonWithTitle:@"Open System Settings"]; [alert addButtonWithTitle:@"Continue"];
             if ([alert runModal] == NSAlertFirstButtonReturn) [TDBPeerServices openBackgroundSettings];
-        }
+        }];
         self.peerPanel = [[TDBPeerPanel alloc] init];
         self.peerPanel.changed = ^{
             for (AppDelegate *controller in weakRoot.windowControllers) {

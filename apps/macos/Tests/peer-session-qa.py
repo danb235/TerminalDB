@@ -101,6 +101,10 @@ def helper_executable(app, name):
 
 def helper_identity(pid, expected, executable):
     """Check the running process, not just its source plist or signature."""
+    signature = subprocess.run(["/usr/bin/codesign", "--display", "--verbose=2", str(executable)],
+                               check=True, capture_output=True, text=True).stderr
+    if f"Identifier={expected}\n" not in signature:
+        return False
     inventory = subprocess.run(["/usr/bin/lsappinfo", "list"], check=True,
                                capture_output=True, text=True).stdout
     # Do not print the inventory: it also describes unrelated applications.

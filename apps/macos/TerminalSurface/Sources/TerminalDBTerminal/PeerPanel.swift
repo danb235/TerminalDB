@@ -16,7 +16,14 @@ public final class TDBWorkspaceReferences: NSObject {
 @objc(TDBPeerServices)
 public final class TDBPeerServices: NSObject {
     private static var children: [Process] = []
-    @objc public static func start() throws {
+    @objc(startWithCompletion:)
+    public static func start(completion: @escaping (NSError?) -> Void) {
+        Task { @MainActor in
+            do { try await startServices(); completion(nil) }
+            catch { completion(error as NSError) }
+        }
+    }
+    @MainActor private static func startServices() async throws {
         if Bundle.main.bundlePath == "/Applications/TerminalDB.app" {
             try PeerPaths.prepare()
             for (socket, executable, plist) in [
@@ -25,7 +32,7 @@ public final class TDBPeerServices: NSObject {
             ] {
                 let service = SMAppService.agent(plistName: plist)
                 if service.status == .enabled {
-                    try repairStoppedService(service, socket: socket, executable: executable)
+                    try await repairStoppedService(service, socket: socket, executable: executable)
                 }
                 if service.status == .notRegistered || service.status == .notFound {
                     try service.register()
@@ -52,7 +59,7 @@ public final class TDBPeerServices: NSObject {
             }
         }
     }
-    private static func repairStoppedService(_ service: SMAppService, socket: String, executable: String) throws {
+    @MainActor private static func repairStoppedService(_ service: SMAppService, socket: String, executable: String) async throws {
         let fd = Darwin.open(PeerPaths.file(socket + ".lock").path, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
         guard fd >= 0 else { throw PeerFailure("TerminalDB could not check its background service. Check this user’s Application Support permissions.") }
         defer { Darwin.close(fd) }
@@ -74,7 +81,10 @@ public final class TDBPeerServices: NSObject {
         }
         // macOS can retain an enabled registration pointing at a replaced
         // bundle. Refresh only a stopped service; never stop a running host.
-        try service.unregister()
+        // The synchronous API returns before launchd/BTM has retired the old
+        // process and signing constraint. Only the async completion makes it
+        // safe to register the new executable's signature after an update.
+        try await service.unregister()
         flock(fd, LOCK_UN)
         try service.register()
     }
