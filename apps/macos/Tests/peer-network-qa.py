@@ -154,6 +154,12 @@ elif args[:2]==["auth","status"]:
             assert catalog(observer)[0]["id"]==account_id
             assert observer.request("account.select",accountId=account_id).get("accepted")
             assert observer.request("host.state")["accountId"]==account_id
+            assert observer.request("workspace.restoreSession",snapshot={"account_id":"f"*64,"account_label":"Synthetic Personal"}).get("accepted")
+            assert observer.request("host.state")["accountId"]==""
+            checks += 1
+            assert observer.request("workspace.restoreSession",snapshot={"account_id":account_id,"account_label":"Old display name"}).get("accepted")
+            assert observer.request("host.state")["accountId"]==account_id
+            checks += 1
             assert observer.input("claude verify-shared\r").get("accepted")
             wait_for(lambda: (roots[1]/"shared-token-hash").exists())
             assert (roots[1]/"shared-token-hash").read_text()==hashlib.sha256(("tdb-test-"+"a"*96).encode()).hexdigest()

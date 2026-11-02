@@ -3,7 +3,9 @@
 Accounts & Usage is a single account picker for this Mac and the Macs you have
 chosen to sync. The heading names the workstation that runs the selected tab.
 Choosing an account changes that tab's next Claude launch, not another tab or an
-already running Claude process. New tabs still start on This Mac.
+already running Claude process. Saved workspaces use the account identity; an
+unavailable account leaves the selection empty rather than choosing another
+subscription with the same name. New tabs still start on This Mac.
 
 ## Setup and everyday use
 

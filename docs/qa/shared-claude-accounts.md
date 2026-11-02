@@ -46,7 +46,8 @@ pairing mismatch/unapproved denial, takeover, agent restart and revocation.
 Automated: `make test-ci` passed: 96 terminal-surface checks, native product
 self-tests, 127 native peer/account checks, 23 persistent-session checks,
 signature/icon/secret checks and shell-hook checks. The native agent integration
-suite passed 26 scenarios. Universal arm64/x86_64 build passed before the final credential-repair follow-up.
+suite passed 28 scenarios, including saved account identity restoration and
+rejecting same-label substitution for an unavailable account. Universal arm64/x86_64 build passed before the final credential-repair follow-up.
 The earlier 125 native checks also passed on the physical mini and MBP.
 The final two checks cover repairing Keychain state from unchanged metadata.
 

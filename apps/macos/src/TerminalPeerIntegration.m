@@ -193,10 +193,21 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
         if (![snapshot isKindOfClass:NSDictionary.class] || [controller hasForegroundProcessInThisPane]) {
             reply(@{@"error": @"This saved conversation can only be restored at an idle shell prompt."}); return;
         }
-        ClaudeProfile *profile = [root.profileManager profileWithIdentifier:snapshot[@"account_id"] ?: @""];
-        if (!profile) for (ClaudeProfile *candidate in root.profileManager.profiles)
-            if ([candidate.label isEqual:snapshot[@"account_label"]]) { profile = candidate; break; }
-        if (profile) [controller claudeStatusBar:controller.claudeStatusBar didSelectProfile:profile];
+        NSString *accountID = [snapshot[@"account_id"] isKindOfClass:NSString.class] ? snapshot[@"account_id"] : @"";
+        NSString *accountLabel = [snapshot[@"account_label"] isKindOfClass:NSString.class] ? snapshot[@"account_label"] : @"";
+        ClaudeProfile *profile = [root.profileManager profileWithIdentifier:accountID];
+        // Stable account references must never fall back to another subscription
+        // with the same display name. Only label-only legacy saves may match by
+        // name, and then only when that name identifies exactly one account.
+        if (accountID.length == 0 && accountLabel.length > 0) {
+            NSArray *matches = [root.profileManager.profiles filteredArrayUsingPredicate:
+                [NSPredicate predicateWithBlock:^BOOL(ClaudeProfile *candidate, NSDictionary *bindings) {
+                    return !candidate.catalogOnly && [candidate.label isEqual:accountLabel];
+                }]];
+            if (matches.count == 1) profile = matches.firstObject;
+        }
+        if (accountID.length > 0 || accountLabel.length > 0)
+            [controller claudeStatusBar:controller.claudeStatusBar didSelectProfile:profile.catalogOnly ? nil : profile];
         NSMutableArray *messages = [NSMutableArray array];
         for (id message in [snapshot[@"chat_messages"] isKindOfClass:NSArray.class] ? snapshot[@"chat_messages"] : @[]) {
             if ([message isKindOfClass:NSDictionary.class] && [message[@"role"] isKindOfClass:NSString.class] && [message[@"content"] isKindOfClass:NSString.class]) [messages addObject:message];
