@@ -350,6 +350,30 @@ do {
     check(String(decoding: mouseInput, as: UTF8.self) == "\(esc)[<0;2;3M", "genuine application mouse input reaches the host")
 }
 
+// Modifier-key link lookup must stay bounded after long wrapped output.
+do {
+    let view = makeSurface(80, 24)
+    view.feedText(String(repeating: "Q", count: 2000000))
+    let start = ProcessInfo.processInfo.systemUptime
+    let link = term(view).link(at: .screen(Position(col: 1, row: 23)), mode: .explicitAndImplicit)
+    check(link == nil && ProcessInfo.processInfo.systemUptime - start < 0.1,
+          "implicit link lookup remains bounded on megabytes of wrapped output")
+    let pathological = makeSurface(80, 24)
+    pathological.feedText(String(repeating: "Q", count: 3000) + "/")
+    let pathStart = ProcessInfo.processInfo.systemUptime
+    _ = term(pathological).link(at: .screen(Position(col: 1, row: 23)), mode: .explicitAndImplicit)
+    check(ProcessInfo.processInfo.systemUptime - pathStart < 0.1,
+          "nonmatching path lookup stays responsive within the scan bound")
+    let linked = makeSurface(12, 5)
+    linked.feedText("https://example.com/normal")
+    check(term(linked).link(at: .buffer(Position(col: 4, row: 1)), mode: .explicitAndImplicit) == "https://example.com/normal",
+          "ordinary wrapped implicit links remain available")
+    let explicit = makeSurface(80, 24)
+    explicit.feedText("\(esc)]8;;https://example.com/explicit\u{7}" + String(repeating: "Q", count: 20000) + "\(esc)]8;;\u{7}")
+    check(term(explicit).link(at: .screen(Position(col: 1, row: 23)), mode: .explicitAndImplicit) == "https://example.com/explicit",
+          "explicit hyperlinks remain available on long wrapped output")
+}
+
 // Slow-reader backpressure regression: exact bytes and order, including paste
 // delimiters and the Enter queued behind a 1 MB Unicode paste.
 do {

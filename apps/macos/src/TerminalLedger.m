@@ -1242,6 +1242,15 @@ static NSString *TerminalLedgerCSVCell(id value) {
     self.outputLabel.stringValue = @"Check that the Mac is awake and logged in, then use Reconnect. When away, connect your VPN and check the Mac’s saved internal address.";
 }
 
+- (void)showInputReviewMessage {
+    [self showReadyInDirectory:@""];
+    self.stateLabel.stringValue = @"INPUT PAUSED";
+    self.stateLabel.textColor = self.theme.ansiColors[3];
+    self.commandLabel.stringValue = @"Review the last input before continuing";
+    self.metadataLabel.stringValue = @"New typing is paused until you review the terminal.";
+    self.outputLabel.stringValue = @"The last input may have reached the shell. Check the terminal, then choose Review Input. TerminalDB won’t repeat it.";
+}
+
 - (void)beginCommand:(NSString *)command directory:(NSString *)directory {
     self.record = nil;
     self.command = command ?: @"";

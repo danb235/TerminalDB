@@ -20,13 +20,15 @@ final class PeerLocalConnection: PeerConnection {
     private var output = Data()
     private var offset = 0
     private var stopped = false
+    private let writeStallTimeout: TimeInterval
     private let sendBudget = PeerQueueBudget()
     private let deliveryBudget = PeerQueueBudget()
     var receive: (([String: Any]) -> Void)?
     var disconnected: (() -> Void)?
 
-    init(fd: Int32) {
+    init(fd: Int32, writeStallTimeout: TimeInterval = 10) {
         self.fd = fd
+        self.writeStallTimeout = writeStallTimeout
         fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
         var yes: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &yes, socklen_t(MemoryLayout.size(ofValue: yes)))
@@ -105,8 +107,10 @@ final class PeerLocalConnection: PeerConnection {
                     writer = source
                     source.setEventHandler { [weak self] in self?.flush() }
                     source.resume()
-                    wireQueue.asyncAfter(deadline: .now() + 10) { [weak self, weak source] in
-                        guard let self, self.writer === source else { return }
+                    wireQueue.asyncAfter(deadline: .now() + writeStallTimeout) { [weak self, weak source] in
+                        // Once the queue drains, both weak source and writer
+                        // can be nil. nil === nil must not close a healthy link.
+                        guard let self, let source, self.writer === source else { return }
                         self.stop()
                     }
                 }

@@ -7,6 +7,8 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Keep terminal connections open after temporary buffer pressure clears, reduce
+  account-usage work during typing, and keep input-review warnings visible.
 - Give background helpers separate macOS identities so opening and quitting
   TerminalDB always targets its visible app, including after a macOS upgrade.
 - Replace browser terminals and TerminalDB cloud accounts with explicitly paired
