@@ -7,6 +7,12 @@ bounded scrollback, Claude credentials and execution-related product services.
 The interface uses the same typed session protocol for This Mac and paired Macs.
 Restarting networking does not restart shells.
 
+The optional [shared Claude account service](shared-claude-accounts.md) combines
+account metadata across explicitly synced Macs and synchronizes reusable Claude
+Code sign-ins. Its Keychain work runs on a separate serial background queue.
+Ordinary login/refresh credentials are never included. Durable causal revisions,
+removal tombstones and directory snapshots preserve offline changes on reconnect.
+
 Each helper is a separately identified background app under
 `Contents/Library/LoginItems`, registered through `SMAppService.loginItem`.
 The interface alone owns the main app's bundle identity and appears in Force Quit.

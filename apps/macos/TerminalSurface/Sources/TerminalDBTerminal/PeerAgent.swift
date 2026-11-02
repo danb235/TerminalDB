@@ -39,6 +39,16 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
     private var applyingRevocations = false
     private var status = "Starting"
     private var statusDetail = ""
+    private var accountTimer: Timer?
+    private var accountBusy: Set<String> = []
+    private var accountStatus: [String: String] = [:]
+    private var accountCursor = 0
+    private var incomingAccountStages: [String: String] = [:]
+    private var accountLinks: Set<String> = []
+    private var accountManagerChecks: Set<String> = []
+    private func canSyncAccounts(_ id: String) -> Bool {
+        trust.contains(id) && (trust.settings.accountPeers ?? []).contains(id) && !sleeping
+    }
 
     @objc public func start() throws {
         do { identity = try PeerDeviceIdentity() }
@@ -62,6 +72,7 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
         }
         browser.delegate = self
         browser.searchForServices(ofType: PeerProtocol.serviceType, inDomain: "local.")
+        accountTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in self?.syncAccounts() }
         sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
             self.sleeping = true; self.gate.close(); self.expirePairing()
@@ -78,6 +89,7 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
         }
     }
     deinit {
+        accountTimer?.invalidate()
         if let networkObserver { NotificationCenter.default.removeObserver(networkObserver) }
         for observer in [wakeObserver, sleepObserver].compactMap({ $0 }) {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
@@ -174,15 +186,41 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
         connection.send(["type": "ready", "version": PeerProtocol.version])
     }
 
-    private func manage(_ message: [String: Any], connection: PeerLocalConnection) {
+    private func manage(_ message: [String: Any], connection: PeerLocalConnection, authenticatedAccounts: Bool = false) {
         guard let operation = message["operation"] as? String,
               let request = message["requestId"] as? String, UUID(uuidString: request) != nil else { connection.close(); return }
         func reply(_ payload: [String: Any] = [:]) {
             var result = payload; result["type"] = "reply"; result["requestId"] = request
             connection.send(result)
         }
+        if operation.hasPrefix("accounts."), !authenticatedAccounts {
+            guard accountManagerChecks.count < 8, accountManagerChecks.insert(connection.id).inserted else {
+                reply(["error": "Account settings are busy. Try again."]); return
+            }
+            DispatchQueue.global(qos: .userInitiated).async {
+                let allowed = connection.peerAudit.map { SharedAccountCodeIdentity.allowsLocalManagement(audit: $0) } ?? false
+                DispatchQueue.main.async {
+                    self.accountManagerChecks.remove(connection.id)
+                    guard self.localClients[connection.id] != nil else { return }
+                    guard allowed else { reply(["error": "Use the installed TerminalDB app to change account sync."]); return }
+                    self.manage(message, connection: connection, authenticatedAccounts: true)
+                }
+            }
+            return
+        }
         do {
             switch operation {
+            case "accounts.sync.configure":
+                guard let peers = message["peers"] as? [String], peers.count <= 128,
+                      peers.allSatisfy({ trust.contains($0) }) else { throw PeerFailure("Choose paired Macs for account sync.") }
+                let previous = Set(trust.settings.accountPeers ?? [])
+                try trust.update { $0.accountPeers = Array(Set(peers)).sorted() }
+                for id in previous.subtracting(peers) {
+                    for link in links.values where link.peerID == id && accountLinks.contains(link.id) { link.close() }
+                    accountStatus.removeValue(forKey: id)
+                }
+                reply(state()); broadcastState(); syncAccounts()
+            case "accounts.sync.now": syncAccounts(); reply(state())
             case "peers.state": reply(state())
             case "peers.pairing.open":
                 gate.open(); advertise(); reply(state()); broadcastState()
@@ -223,6 +261,7 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
                         settings.pendingRevocations = pending
                     }
                     settings.peers.removeValue(forKey: id)
+                    settings.accountPeers?.removeAll { $0 == id }
                     settings.pendingRevocations?.removeValue(forKey: id)
                 }
                 disconnectPeer(id)
@@ -280,6 +319,16 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
             guard let self, let link else { return }
             guard self.trust.contains(link.peerID) else { link.close(); return }
             if let host = self.hostLinks[link.id] { host.send(message); return }
+            if (message["type"] as? String)?.hasPrefix("accounts.sync.") == true {
+                applicationAccepted = true
+                guard self.canSyncAccounts(link.peerID) else {
+                    link.send(["type": "accounts.sync.denied"])
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { link.close() }
+                    return
+                }
+                self.receiveAccountSync(message, link: link)
+                return
+            }
             if message["type"] as? String == "revocation.apply" {
                 applicationAccepted = true
                 guard let target = message["target"] as? String, target.count == 64,
@@ -416,6 +465,8 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
                 self.links.removeValue(forKey: link.id)
                 self.hostLinks.removeValue(forKey: link.id)?.close()
                 self.pendingPairs.removeValue(forKey: link.id)
+                self.incomingAccountStages.removeValue(forKey: link.id)
+                self.accountLinks.remove(link.id)
             }
         }
     }
@@ -459,7 +510,7 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
         }
         return ["status": status, "detail": statusDetail, "fingerprint": identity.fingerprint,
                 "hardwareBacked": identity.hardwareBacked, "pairingOpen": gate.isOpen, "port": trust.settings.listenPort,
-                "peers": peers,
+                "peers": peers, "accountPeers": trust.settings.accountPeers ?? [], "accountStatus": accountStatus,
                 "pendingRemovals": (trust.settings.pendingRevocations ?? [:]).keys.sorted().map { trust.settings.peers[$0]?.name ?? "Unavailable Mac" },
                 "nearby": nearby.keys.sorted().map { service -> [String: Any] in
                     let data = serviceTXT[service] ?? services[service]?.txtRecordData() ?? Data()
@@ -476,6 +527,84 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
     private func broadcastState() {
         var result = state(); result["type"] = "peers.state"
         for connection in localClients.values { connection.send(result) }
+    }
+
+    private func receiveAccountSync(_ message: [String: Any], link: PeerTLSLink) {
+        guard canSyncAccounts(link.peerID) else { link.close(); return }
+        if message["type"] as? String == "accounts.sync.hello" {
+            guard incomingAccountStages[link.id] == nil, incomingAccountStages.count < 8 else { link.close(); return }
+            incomingAccountStages[link.id] = "checking"
+            accountLinks.insert(link.id)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30) { link.close() }
+            PeerAccountHostRPC.call("accounts.sync.digest") { [weak self, weak link] result in
+                guard let self, let link, self.canSyncAccounts(link.peerID) else { link?.close(); return }
+                guard let digest = result["digest"] as? String else { link.close(); return }
+                let same = message["digest"] as? String == digest
+                self.incomingAccountStages[link.id] = same ? "done" : "ready"
+                link.send(["type": same ? "accounts.sync.current" : "accounts.sync.ready"])
+                if same { self.accountStatus[link.peerID] = "Up to date"; self.broadcastState() }
+            }
+        } else if message["type"] as? String == "accounts.sync.exchange", let bundle = message["bundle"] as? [String: Any] {
+            guard incomingAccountStages[link.id] == "ready" else { link.close(); return }
+            incomingAccountStages[link.id] = "importing"
+            PeerAccountHostRPC.call("accounts.sync.import", payload: ["bundle": bundle]) { [weak self, weak link] result in
+                guard let self, let link, self.canSyncAccounts(link.peerID), result["error"] == nil else { link?.close(); return }
+                PeerAccountHostRPC.call("accounts.sync.export") { [weak self, weak link] response in
+                    guard let self, let link, self.canSyncAccounts(link.peerID), let bundle = response["bundle"] else { link?.close(); return }
+                    link.send(["type": "accounts.sync.result", "bundle": bundle])
+                    self.accountStatus[link.peerID] = "Up to date"; self.broadcastState()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5) { link.close() }
+                }
+            }
+        } else { link.close() }
+    }
+
+    private func syncAccounts() {
+        let peers = (trust.settings.accountPeers ?? []).filter { canSyncAccounts($0) }.sorted()
+        guard !peers.isEmpty else { return }
+        let ordered = (0..<peers.count).map { peers[(accountCursor + $0) % peers.count] }
+        accountCursor = (accountCursor + 8) % peers.count
+        for id in ordered.prefix(8) where accountBusy.count < 8 && !accountBusy.contains(id) {
+            accountBusy.insert(id)
+            PeerAccountHostRPC.call("accounts.sync.digest") { [weak self] result in
+                guard let self else { return }
+                guard self.canSyncAccounts(id), let digest = result["digest"] else { self.accountBusy.remove(id); return }
+                self.connect(peerID: id, cancelled: { !self.canSyncAccounts(id) }) { [weak self] connection in
+                    guard let self else { return }
+                    guard case .success(let link) = connection else {
+                        self.accountBusy.remove(id); self.accountStatus[id] = "Waiting for LAN or VPN"; self.broadcastState(); return
+                    }
+                    self.accountLinks.insert(link.id)
+                    var done = false
+                    func finish(_ detail: String) {
+                        guard !done else { return }; done = true
+                        self.accountBusy.remove(id); self.accountStatus[id] = detail
+                        link.receive = nil; link.disconnected = nil; link.close(); self.broadcastState()
+                    }
+                    link.disconnected = { finish("Waiting to sync. Check TerminalDB is updated on both Macs.") }
+                    link.receive = { [weak self, weak link] message in
+                        guard let self, let link, self.canSyncAccounts(id) else { finish("Account sync is off"); return }
+                        switch message["type"] as? String {
+                        case "accounts.sync.current": finish("Up to date")
+                        case "accounts.sync.denied": finish("Enable account sync on the other Mac too")
+                        case "accounts.sync.ready":
+                            PeerAccountHostRPC.call("accounts.sync.export") { result in
+                                guard self.canSyncAccounts(id), let bundle = result["bundle"] else { finish("Unlock Keychain to sync accounts"); return }
+                                link.send(["type": "accounts.sync.exchange", "bundle": bundle])
+                            }
+                        case "accounts.sync.result":
+                            guard let bundle = message["bundle"] as? [String: Any] else { finish("Account sync could not finish"); return }
+                            PeerAccountHostRPC.call("accounts.sync.import", payload: ["bundle": bundle]) { result in
+                                finish(result["error"] == nil ? "Up to date" : "Account sync needs attention")
+                            }
+                        default: finish("Update TerminalDB on both Macs to sync accounts")
+                        }
+                    }
+                    link.send(["type": "accounts.sync.hello", "digest": digest])
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 30) { finish("Waiting to sync. Check LAN, VPN and Keychain.") }
+                }
+            }
+        }
     }
 
     public func netServiceBrowser(_ browser: NetServiceBrowser, didNotSearch errorDict: [String: NSNumber]) {

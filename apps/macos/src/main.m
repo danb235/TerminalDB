@@ -1707,7 +1707,12 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         [usage addObject:value];
     }
     return @{
-        @"id" : profile.identifier,
+        @"id" : profile.catalogIdentifier,
+        @"sharedID" : profile.sharedAccountIdentifier ?: @"",
+        @"sharedExpires" : @(profile.sharedExpiresAt),
+        @"catalogOnly" : @(profile.catalogOnly),
+        @"locations" : profile.catalogLocations ?: @[],
+        @"organization" : profile.accountOrganization ?: @"",
         @"label" : profile.label,
         @"email" : profile.email ?: @"",
         @"plan" : profile.subscriptionType ?: @"",
@@ -4107,6 +4112,12 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 }
 
 - (NSString *)discoverClaudeExecutable {
+    NSDictionary *environment = NSProcessInfo.processInfo.environment;
+    if ([environment[@"TERMINALDB_PEER_QA"] isEqualToString:@"1"] &&
+        [environment[@"TERMINALDB_PEER_EPHEMERAL_IDENTITY"] isEqualToString:@"1"]) {
+        NSString *fixture = [environment[@"TERMINALDB_PEER_STATE_DIR"] stringByAppendingPathComponent:@"bin/claude"];
+        return [NSFileManager.defaultManager isExecutableFileAtPath:fixture] ? fixture : nil;
+    }
     NSFileManager *files = NSFileManager.defaultManager;
     NSMutableArray<NSString *> *candidates = [NSMutableArray array];
 
@@ -4241,7 +4252,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
          "export TERMINALDB_CLAUDE_WINDOW_STATUS_FILE\n"
          "export TERMINALDB_CLAUDE_STATE_FILE\n"
          "rm -f \"$TERMINALDB_CLAUDE_WINDOW_STATUS_FILE\"\n"
-         "exec \"$TERMINALDB_REAL_CLAUDE\" "
+         "exec \"$TERMINALDB_CLAUDE_LAUNCHER\" --claude-launch \"$TERMINALDB_SHARED_ACCOUNT_ID\" -- \"$TERMINALDB_REAL_CLAUDE\" "
          "--settings \"$TERMINALDB_CLAUDE_SETTINGS\" \"$@\"\n";
     [shimContents writeToFile:claudeShim
                    atomically:YES
@@ -4320,7 +4331,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                  "    export TERMINALDB_CLAUDE_WINDOW_STATUS_FILE\n"
                  "    export TERMINALDB_CLAUDE_STATE_FILE\n"
                  "    rm -f \"$TERMINALDB_CLAUDE_WINDOW_STATUS_FILE\"\n"
-                 "    command \"$TERMINALDB_REAL_CLAUDE\" "
+                 "    command \"$TERMINALDB_CLAUDE_LAUNCHER\" --claude-launch \"$TERMINALDB_SHARED_ACCOUNT_ID\" -- \"$TERMINALDB_REAL_CLAUDE\" "
                  "--settings \"$TERMINALDB_CLAUDE_SETTINGS\" \"$@\"\n"
                  "  )\n"
                  "}\n"
@@ -4396,12 +4407,16 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     NSString *contents = profile != nil
         ? [NSString stringWithFormat:
             @"TERMINALDB_CLAUDE_PROFILE_ID=%@\n"
+             "TERMINALDB_SHARED_ACCOUNT_ID=%@\n"
+             "TERMINALDB_CLAUDE_LAUNCHER=%@\n"
              "TERMINALDB_CLAUDE_CONFIG_DIR=%@\n"
              "TERMINALDB_CLAUDE_SETTINGS=%@\n"
              "TERMINALDB_CLAUDE_STATUS_FILE=%@\n"
              "TERMINALDB_CLAUDE_WINDOW_STATUS_FILE=%@\n"
              "TERMINALDB_CLAUDE_STATE_FILE=%@\n",
             [self shellQuotedString:profile.identifier],
+            [self shellQuotedString:profile.sharedAccountIdentifier ?: @""],
+            [self shellQuotedString:TDBSharedAccounts.launcherPath],
             [self shellQuotedString:profile.configDirectory],
             [self shellQuotedString:profile.settingsPath],
             [self shellQuotedString:profile.statusLineCachePath],
@@ -5730,6 +5745,10 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 }
 
 - (void)claudeStatusBarDidRequestAddProfile:(ClaudeStatusBar *)statusBar {
+    if (TerminalDBUsesPeerSessions() && [[self rootController].peerPanel.peerInventory[@"accountPeers"] count] > 0) {
+        [self claudeStatusBar:statusBar didRequestSharedSignIn:nil];
+        return;
+    }
     (void)statusBar;
     NSAlert *alert = [[NSAlert alloc] init];
     alert.messageText = @"Add Claude subscription";
@@ -5796,12 +5815,27 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     (void)statusBar;
     if (self.sessionClient) {
         if (!profile) return;
-        NSAlert *alert = [[NSAlert alloc] init]; alert.messageText = @"Remove this Claude account?";
-        alert.informativeText = [NSString stringWithFormat:@"This removes the profile and its stored credentials from %@. It does not cancel the Claude subscription.", self.sessionClient.workstationName];
+        NSAlert *alert = [[NSAlert alloc] init]; alert.messageText = profile.sharedAccountIdentifier.length > 0 ? @"Remove this shared sign-in everywhere?" : @"Remove this Claude account?";
+        alert.informativeText = profile.sharedAccountIdentifier.length > 0
+            ? @"This removes the shared sign-in across your synced Macs when they reconnect. Running Claude sessions keep their current credentials. Independent local sign-ins and the Claude subscription are not cancelled."
+            : [NSString stringWithFormat:@"This removes the profile and its stored credentials from %@. It does not cancel the Claude subscription.", self.sessionClient.workstationName];
         [alert addButtonWithTitle:@"Remove Account"]; [alert addButtonWithTitle:@"Cancel"];
         if ([alert runModal] != NSAlertFirstButtonReturn) return;
         [self.sessionClient request:@"account.remove" payload:@{@"accountId": profile.identifier} completion:^(NSDictionary *result) {}];
     } else [[self rootController] removeClaudeProfile:profile];
+}
+
+- (void)claudeStatusBar:(ClaudeStatusBar *)statusBar didRequestSharedSignIn:(ClaudeProfile *)profile {
+    (void)statusBar;
+    NSMutableDictionary *account = [@{@"label": profile.label ?: @"", @"email": profile.email ?: @"", @"plan": profile.subscriptionType ?: @""} mutableCopy];
+    account[@"organization"] = profile.accountOrganization ?: @"";
+    if (self.sessionClient.workstationID.length == 0 && profile.identifier.length > 0) account[@"binding"] = profile.identifier;
+    [TDBSharedAccountPanel presentSignIn:account executable:[self rootController].claudeExecutable ?: @""];
+}
+
+- (void)claudeStatusBarDidRequestAccountSync:(ClaudeStatusBar *)statusBar {
+    (void)statusBar;
+    [TDBSharedAccountPanel presentSync];
 }
 
 - (void)claudeStatusBarDidRequestUsagePanel:(ClaudeStatusBar *)statusBar {
@@ -7642,6 +7676,8 @@ static AppDelegate *TerminalDBApplicationDelegate;
 
 int main(void) {
     @autoreleasepool {
+        int sharedLaunch = [TDBSharedAccounts runLauncherIfRequested];
+        if (sharedLaunch >= 0) return sharedLaunch;
         if ([NSProcessInfo.processInfo.arguments containsObject:@"--peer-service-status"]) {
             NSMutableDictionary *services = [NSMutableDictionary dictionary];
             NSArray *names = @[@"not registered", @"enabled", @"requires approval", @"not found"];
@@ -7659,6 +7695,7 @@ int main(void) {
             return [TDBPeerSelfTests run] ? 0 : 1;
         }
         if ([NSProcessInfo.processInfo.arguments containsObject:@"--peer-agent"] ||
+            [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.terminaldb.peer-agent"] ||
             [NSProcessInfo.processInfo.processName isEqualToString:@"TerminalDBPeerAgent"]) {
             [app setActivationPolicy:NSApplicationActivationPolicyProhibited];
             static TDBPeerAgent *agent;

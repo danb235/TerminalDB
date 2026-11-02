@@ -23,6 +23,10 @@ public final class TDBPeerSelfTests: NSObject {
         }
         do {
             checks += try localBackpressureChecks()
+            checks += try SharedAccountTests.run(root: directory.appendingPathComponent("accounts"))
+            try check(SharedAccountCodeIdentity.allowsLocalManagement(getpid()))
+            try check(!SharedAccountCodeIdentity.allowsLocalManagement(1))
+            try check(!SharedAccountCodeIdentity.isClaude("/usr/bin/env"))
             try check(TDBWorkstationPresentation.tabTitle(workstation: "Office Mac", session: "project") == "Office Mac · project")
             try check(PeerProtocol.displayName("  Office\nMac\u{202e}  ") == "OfficeMac")
             try check(PeerProtocol.displayName("\n\t ") == "Mac")
@@ -289,6 +293,9 @@ public final class TDBPeerSelfTests: NSObject {
         let sender = PeerLocalConnection(fd: pair[0], writeStallTimeout: 0.8)
         let receiver = PeerLocalConnection(fd: pair[1])
         defer { sender.close(); receiver.close() }
+        guard let audit = receiver.peerAudit, SharedAccountCodeIdentity.allowsLocalManagement(audit: audit) else {
+            throw PeerFailure("Kernel-authenticated local account management failed.")
+        }
         var received = false, disconnected = false, responded = false
         sender.disconnected = { disconnected = true }
         sender.receive = { if $0["type"] as? String == "response" { responded = true } }

@@ -1,4 +1,6 @@
 #import "ClaudeProfile.h"
+#import <AppKit/AppKit.h>
+#import "TerminalDBTerminal-Swift.h"
 
 #import <CommonCrypto/CommonDigest.h>
 
@@ -26,9 +28,21 @@ static BOOL ClaudeProfileIdentifierIsSafe(NSString *identifier) {
 @property(nonatomic, copy, readwrite, nullable) NSString *email;
 @property(nonatomic, copy, readwrite, nullable) NSString *subscriptionType;
 @property(nonatomic, copy, readwrite) NSString *profileDirectory;
+@property(nonatomic, copy, readwrite, nullable) NSString *sharedAccountIdentifier;
+@property(nonatomic, readwrite) NSTimeInterval sharedExpiresAt;
+@property(nonatomic, readwrite) BOOL knownSignedIn;
+@property(nonatomic, readwrite) BOOL catalogOnly;
+@property(nonatomic, copy, readwrite) NSArray<NSString *> *catalogLocations;
+@property(nonatomic, copy, readwrite) NSString *accountOrganization;
 @end
 
 @implementation ClaudeProfile
+
+- (NSString *)catalogIdentifier {
+    if (self.sharedAccountIdentifier.length > 0) return self.sharedAccountIdentifier;
+    if (self.email.length > 0) return [TDBSharedAccounts identityForEmail:self.email organization:self.accountOrganization ?: @""];
+    return self.identifier;
+}
 
 - (NSString *)configDirectory {
     return [self.profileDirectory stringByAppendingPathComponent:@"config"];
@@ -93,8 +107,26 @@ static BOOL ClaudeProfileIdentifierIsSafe(NSString *identifier) {
         profile.label = account[@"label"] ?: @"Claude";
         profile.email = account[@"email"];
         profile.subscriptionType = account[@"plan"];
+        profile.sharedAccountIdentifier = account[@"sharedID"];
+        profile.sharedExpiresAt = [account[@"sharedExpires"] doubleValue];
+        profile.catalogOnly = [account[@"catalogOnly"] boolValue];
+        profile.catalogLocations = account[@"locations"] ?: @[];
+        profile.accountOrganization = account[@"organization"] ?: @"";
         profile.profileDirectory = @"/__TerminalDBPeerDisplay__";
         [profiles addObject:profile];
+    }
+    NSMutableSet *seen = [NSMutableSet set];
+    for (ClaudeProfile *profile in profiles) [seen addObject:profile.identifier];
+    NSMutableArray *localCatalog = [[TDBSharedAccounts catalog] mutableCopy];
+    [localCatalog addObjectsFromArray:[TDBSharedAccounts directoryCatalog]];
+    for (NSDictionary *item in localCatalog) {
+        if ([seen containsObject:item[@"id"]]) continue;
+        ClaudeProfile *profile = [[ClaudeProfile alloc] init];
+        profile.identifier = item[@"id"]; profile.label = item[@"label"]; profile.email = item[@"email"]; profile.subscriptionType = item[@"plan"];
+        profile.catalogLocations = item[@"locations"] ?: @[]; profile.accountOrganization = item[@"organization"] ?: @"";
+        profile.catalogOnly = YES; profile.profileDirectory = @"/__TerminalDBPeerDisplay__";
+        if (item[@"expires"]) { profile.sharedAccountIdentifier = item[@"id"]; profile.sharedExpiresAt = [item[@"expires"] doubleValue]; }
+        [profiles addObject:profile]; [seen addObject:profile.identifier];
     }
     self.profiles = profiles;
     _lastSelectedProfile = [self profileWithIdentifier:identifier];
@@ -212,6 +244,11 @@ static BOOL ClaudeProfileIdentifierIsSafe(NSString *identifier) {
             [saved[@"subscriptionType"] isKindOfClass:NSString.class]
                 ? saved[@"subscriptionType"]
                 : nil;
+        profile.sharedAccountIdentifier = [saved[@"sharedID"] isKindOfClass:NSString.class] ? saved[@"sharedID"] : nil;
+        profile.sharedExpiresAt = [saved[@"sharedExpires"] doubleValue];
+        profile.knownSignedIn = [saved[@"knownSignedIn"] boolValue];
+        profile.catalogOnly = [saved[@"catalogOnly"] boolValue];
+        profile.accountOrganization = [saved[@"organization"] isKindOfClass:NSString.class] ? saved[@"organization"] : @"";
         profile.profileDirectory =
             [self.profilesRoot stringByAppendingPathComponent:identifier];
         [loaded addObject:profile];
@@ -231,9 +268,87 @@ static BOOL ClaudeProfileIdentifierIsSafe(NSString *identifier) {
 
 - (nullable ClaudeProfile *)profileWithIdentifier:(NSString *)identifier {
     for (ClaudeProfile *profile in self.profiles) {
-        if ([profile.identifier isEqualToString:identifier]) return profile;
+        if ([profile.identifier isEqualToString:identifier] || [profile.catalogIdentifier isEqualToString:identifier]) return profile;
     }
     return nil;
+}
+
+- (void)refreshSharedAccounts {
+    if (self.profilesRoot.length == 0) return;
+    NSArray *catalog = [TDBSharedAccounts catalog];
+    NSDictionary *bindings = [TDBSharedAccounts bindings];
+    NSSet *removed = [NSSet setWithArray:[TDBSharedAccounts removedIDs]];
+    NSMutableDictionary *items = [NSMutableDictionary dictionary];
+    for (NSDictionary *item in [TDBSharedAccounts directoryCatalog]) items[item[@"id"]] = [item mutableCopy];
+    for (NSDictionary *item in catalog) {
+        NSMutableDictionary *combined = [items[item[@"id"]] mutableCopy] ?: [NSMutableDictionary dictionary];
+        [combined addEntriesFromDictionary:item]; combined[@"portable"] = @YES;
+        items[item[@"id"]] = combined;
+    }
+    NSMutableArray *profiles = [NSMutableArray array];
+    NSMutableSet *seen = [NSMutableSet set];
+    BOOL changed = NO;
+    for (ClaudeProfile *profile in self.profiles) {
+        NSString *identifier = profile.sharedAccountIdentifier ?: bindings[profile.identifier] ?: profile.catalogIdentifier;
+        NSDictionary *item = identifier.length > 0 ? items[identifier] : nil;
+        if ([removed containsObject:identifier ?: @""] && profile.sharedAccountIdentifier.length > 0) {
+            if ([profile.identifier isEqual:identifier]) { changed = YES; continue; }
+            profile.sharedAccountIdentifier = nil; profile.sharedExpiresAt = 0; changed = YES;
+        }
+        if (item) {
+            BOOL portable = [item[@"portable"] boolValue];
+            BOOL catalogOnly = !portable && !profile.knownSignedIn;
+            if (profile.catalogOnly != catalogOnly || ![profile.catalogLocations isEqual:item[@"locations"] ?: @[]]) changed = YES;
+            profile.catalogOnly = catalogOnly; profile.catalogLocations = item[@"locations"] ?: @[];
+            if (portable) {
+                if (profile.sharedAccountIdentifier.length == 0) [self markProfileReadyForInteractiveClaude:profile];
+                if (![profile.sharedAccountIdentifier isEqual:identifier] || profile.sharedExpiresAt != [item[@"expires"] doubleValue]) changed = YES;
+                profile.sharedAccountIdentifier = identifier; profile.sharedExpiresAt = [item[@"expires"] doubleValue];
+                if (![profile.label isEqual:item[@"label"]] || ![profile.email isEqual:item[@"email"]]) changed = YES;
+                profile.label = item[@"label"]; profile.email = item[@"email"]; profile.subscriptionType = item[@"plan"];
+                profile.accountOrganization = item[@"organization"] ?: @"";
+            }
+            [seen addObject:identifier];
+        } else if (profile.catalogOnly && [profile.identifier isEqual:profile.catalogIdentifier]) {
+            changed = YES; continue;
+        }
+        [profiles addObject:profile];
+    }
+    for (NSString *identifier in [[items allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
+        if ([seen containsObject:identifier] || [removed containsObject:identifier]) continue;
+        NSDictionary *item = items[identifier]; BOOL portable = [item[@"portable"] boolValue];
+        ClaudeProfile *profile = [[ClaudeProfile alloc] init];
+        profile.identifier = identifier; profile.sharedAccountIdentifier = portable ? identifier : nil;
+        profile.sharedExpiresAt = [item[@"expires"] doubleValue]; profile.catalogOnly = !portable;
+        profile.catalogLocations = item[@"locations"] ?: @[]; profile.accountOrganization = item[@"organization"] ?: @"";
+        profile.label = item[@"label"]; profile.email = item[@"email"]; profile.subscriptionType = item[@"plan"];
+        profile.profileDirectory = [self.profilesRoot stringByAppendingPathComponent:identifier];
+        [self prepareRuntimeFilesForProfile:profile];
+        if (portable) [self markProfileReadyForInteractiveClaude:profile];
+        [profiles addObject:profile]; changed = YES;
+    }
+    if (!changed) return;
+    self.profiles = profiles;
+    if ([self profileWithIdentifier:_lastSelectedProfile.identifier] == nil || _lastSelectedProfile.catalogOnly) {
+        _lastSelectedProfile = nil;
+        for (ClaudeProfile *profile in self.profiles) if (!profile.catalogOnly && (profile.sharedAccountIdentifier.length == 0 || profile.sharedExpiresAt > NSDate.date.timeIntervalSince1970)) { _lastSelectedProfile = profile; break; }
+    }
+    [self saveProfiles]; [self notifyProfilesChanged];
+}
+
+- (void)recordSignInState:(BOOL)signedIn forProfile:(ClaudeProfile *)profile {
+    if (profile.sharedAccountIdentifier.length > 0 || profile.catalogOnly || profile.knownSignedIn == signedIn) return;
+    profile.knownSignedIn = signedIn; [self saveProfiles];
+}
+
+- (NSArray<NSDictionary *> *)localAccountCatalog {
+    NSMutableArray *items = [NSMutableArray array];
+    for (ClaudeProfile *profile in self.profiles) {
+        if (!profile.knownSignedIn || profile.catalogOnly || profile.sharedAccountIdentifier.length > 0 || profile.email.length == 0) continue;
+        [items addObject:@{@"id": profile.catalogIdentifier, @"label": profile.label, @"email": profile.email,
+            @"organization": profile.accountOrganization ?: @"", @"plan": profile.subscriptionType ?: @""}];
+    }
+    return [items sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [a[@"id"] compare:b[@"id"]]; }];
 }
 
 - (nullable ClaudeProfile *)createProfileWithLabel:(NSString *)label
@@ -337,11 +452,17 @@ static BOOL ClaudeProfileIdentifierIsSafe(NSString *identifier) {
 - (void)updateProfile:(ClaudeProfile *)profile
                 email:(NSString *)email
      subscriptionType:(NSString *)subscriptionType {
-    BOOL changed = ![profile.email ?: @"" isEqualToString:email ?: @""] ||
+    BOOL changed = !profile.knownSignedIn || ![profile.email ?: @"" isEqualToString:email ?: @""] ||
         ![profile.subscriptionType ?: @""
             isEqualToString:subscriptionType ?: @""];
+    profile.knownSignedIn = YES;
     profile.email = email;
     profile.subscriptionType = subscriptionType;
+    id parsedConfiguration = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:[profile.configDirectory stringByAppendingPathComponent:@".claude.json"]] ?: [NSData data] options:0 error:nil];
+    NSDictionary *configuration = [parsedConfiguration isKindOfClass:NSDictionary.class] ? parsedConfiguration : @{};
+    NSDictionary *oauth = [configuration[@"oauthAccount"] isKindOfClass:NSDictionary.class] ? configuration[@"oauthAccount"] : @{};
+    NSString *organization = [oauth[@"organizationUuid"] isKindOfClass:NSString.class] ? oauth[@"organizationUuid"] : nil;
+    if (organization.length > 0 && ![profile.accountOrganization isEqual:organization]) { profile.accountOrganization = organization; changed = YES; }
     if (!changed) return;
     [self saveProfiles];
     [self notifyProfilesChanged];
@@ -445,6 +566,13 @@ static BOOL ClaudeProfileIdentifierIsSafe(NSString *identifier) {
         if (profile.email.length > 0) saved[@"email"] = profile.email;
         if (profile.subscriptionType.length > 0) {
             saved[@"subscriptionType"] = profile.subscriptionType;
+        }
+        saved[@"knownSignedIn"] = @(profile.knownSignedIn);
+        saved[@"catalogOnly"] = @(profile.catalogOnly);
+        saved[@"organization"] = profile.accountOrganization ?: @"";
+        if (profile.sharedAccountIdentifier.length > 0) {
+            saved[@"sharedID"] = profile.sharedAccountIdentifier;
+            saved[@"sharedExpires"] = @(profile.sharedExpiresAt);
         }
         [savedProfiles addObject:saved];
     }

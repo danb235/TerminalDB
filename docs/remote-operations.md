@@ -17,6 +17,10 @@ parent pane’s Mac. Opening a workspace preserves the current layout in another
 window. Closing a tab detaches it; End Session stops its shell and work.
 Use Take Control to transfer typing, sizing and session changes between viewers.
 
+For one Claude account picker across Macs, use Accounts & Usage → Sync Macs on
+both Macs, then Share Sign-In once per subscription. See [shared Claude accounts](shared-claude-accounts.md)
+for offline additions, renewal, removal and the distinction from normal local login.
+
 ## LAN and VPN access
 
 When away, connect your existing VPN to the LAN before opening a workstation.

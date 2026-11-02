@@ -12,6 +12,8 @@ protocol PeerConnection: AnyObject {
 // main queue, shared with session state. Slow readers have bounded buffers.
 final class PeerLocalConnection: PeerConnection {
     let id = UUID().uuidString
+    let peerPID: pid_t
+    let peerAudit: Data?
     private var fd: Int32
     private let wireQueue = DispatchQueue(label: "com.terminaldb.peer.local")
     private var reader: DispatchSourceRead?
@@ -27,6 +29,14 @@ final class PeerLocalConnection: PeerConnection {
     var disconnected: (() -> Void)?
 
     init(fd: Int32, writeStallTimeout: TimeInterval = 10) {
+        var pid: pid_t = 0
+        var size = socklen_t(MemoryLayout<pid_t>.size)
+        _ = getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &size)
+        peerPID = pid
+        var audit = audit_token_t()
+        var auditSize = socklen_t(MemoryLayout<audit_token_t>.size)
+        peerAudit = getsockopt(fd, SOL_LOCAL, LOCAL_PEERTOKEN, &audit, &auditSize) == 0 && auditSize == MemoryLayout<audit_token_t>.size
+            ? Data(bytes: &audit, count: Int(auditSize)) : nil
         self.fd = fd
         self.writeStallTimeout = writeStallTimeout
         fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)

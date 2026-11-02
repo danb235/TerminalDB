@@ -77,6 +77,8 @@ struct PeerSettings: Codable {
     var peers: [String: TrustedPeer] = [:]
     var listenPort = PeerProtocol.defaultPort
     var pendingRevocations: [String: [String]]?
+    // Pairing alone never opts a Mac into subscription credential sharing.
+    var accountPeers: [String]?
 }
 
 final class PeerTrustStore {
