@@ -123,6 +123,15 @@ enum SharedAccountTests {
         _ = try clone.updateDirectory([])
         try check(try clone.load().writer == cloneWriter)
         try check(!(try clone.exportBundle()).keys.contains("machine"))
+        // Metadata-only backup restoration cannot mark an unchanged token as
+        // already installed. A subsequent approved import repairs its copy.
+        let restoredKeys = AccountTestSecrets()
+        let restored = SharedAccountStore(root: root.appendingPathComponent("restored"), secrets: restoredKeys)
+        try FileManager.default.createDirectory(at: restored.root, withIntermediateDirectories: true)
+        try Data(contentsOf: a.root.appendingPathComponent("shared-accounts.json")).write(to: restored.root.appendingPathComponent("shared-accounts.json"))
+        try check(rejected { _ = try restored.token(for: id) })
+        try restored.importBundle(a.exportBundle())
+        try check(try restored.token(for: id) == a.token(for: id))
         return count
     }
 }

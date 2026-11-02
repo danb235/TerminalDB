@@ -44,16 +44,17 @@ pairing mismatch/unapproved denial, takeover, agent restart and revocation.
 ## Execution record
 
 Automated: `make test-ci` passed: 96 terminal-surface checks, native product
-self-tests, 125 native peer/account checks, 23 persistent-session checks,
+self-tests, 127 native peer/account checks, 23 persistent-session checks,
 signature/icon/secret checks and shell-hook checks. The native agent integration
-suite passed 26 scenarios. Universal arm64/x86_64 build passed. The same 125
-native checks also passed on the physical mini and MBP.
+suite passed 26 scenarios. Universal arm64/x86_64 build passed before the final credential-repair follow-up.
+The earlier 125 native checks also passed on the physical mini and MBP.
+The final two checks cover repairing Keychain state from unchanged metadata.
 
 Visible: two isolated installed apps on one physical Mac passed empty state,
 fingerprint comparison/approval on both interfaces, unchecked sharing after
 pairing, two-sided sync controls, account addition, automatic appearance in the
 second picker, per-tab selection, details, renewal, shared-removal confirmation,
-remote workstation heading and remote fixture-Claude launch. Pausing only a
+remote workstation heading, new tabs defaulting to This Mac, and remote fixture-Claude launch. Pausing only a
 disposable networking helper proved an added account stayed local while offline
 and appeared automatically after reconnect. A removal made while a peer was
 paused also propagated when it resumed, without resurrecting the account.

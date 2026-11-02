@@ -281,9 +281,15 @@ final class SharedAccountStore {
                     return value
                 }
                 let merged = try Self.merge(proposed[id] ?? [], versions)
-                for value in merged where Self.winner(merged)?.removed != true && !value.removed && !(proposed[id] ?? []).contains(value) {
-                    guard let encoded = items.first(where: { $0["credential"] as? String == value.credential })?["token"] as? String,
-                          let data = Data(base64Encoded: encoded), (32...4096).contains(data.count),
+                for value in merged where Self.winner(merged)?.removed != true && !value.removed {
+                    // Metadata may survive a device migration or Keychain
+                    // repair. An unchanged revision must still restore its
+                    // credential when an approved peer supplies it again.
+                    guard let encoded = items.first(where: { $0["credential"] as? String == value.credential })?["token"] as? String else {
+                        guard (proposed[id] ?? []).contains(value) else { throw PeerFailure("The reusable sign-in was incomplete.") }
+                        continue
+                    }
+                    guard let data = Data(base64Encoded: encoded), (32...4096).contains(data.count),
                           PeerProtocol.fingerprint(data) == value.digest else { throw PeerFailure("The reusable sign-in was incomplete.") }
                     additions.append((value.credential, data))
                 }

@@ -64,7 +64,9 @@ between Macs that opted in on both sides. There is no cloud account service.
 Account revisions use bounded causal clocks and retained removal tombstones.
 Metadata mutations use an interprocess file lock and atomic writes. A local
 machine stamp rotates the writer after a copied-data migration; it is never
-exported. Normal sign-in directory snapshots use monotonically increasing
+exported. Approved imports also restore supplied credentials whose unchanged
+metadata already exists locally; metadata alone is not proof of a Keychain copy.
+Normal sign-in directory snapshots use monotonically increasing
 per-writer revisions, including empty snapshots for withdrawals. Replayed older
 snapshots cannot restore withdrawn directory entries.
 
