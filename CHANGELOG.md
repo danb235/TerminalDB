@@ -7,6 +7,9 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Share selected AWS SSO and console-login profiles across approved Macs using
+  expiring credentials, separate AWS sync controls, and native sign-in.
+  Preserve original profiles and synchronize offline changes over LAN or VPN.
 - Show one Claude account picker across approved Macs, with reusable sign-ins
   stored in Keychain and explicit account-sync approval on both Macs. Accounts
   added or removed offline sync automatically when LAN or VPN connectivity returns.

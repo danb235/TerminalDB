@@ -24,6 +24,9 @@ public final class TDBPeerSelfTests: NSObject {
         do {
             checks += try localBackpressureChecks()
             checks += try SharedAccountTests.run(root: directory.appendingPathComponent("accounts"))
+            checks += try SharedAWSTests.run(root: directory.appendingPathComponent("aws-store"))
+            checks += try AWSProfileConfigurationTests.run(root: directory.appendingPathComponent("aws-config"))
+            checks += try SharedAWSServiceTests.run(root: directory.appendingPathComponent("aws-service"))
             try check(SharedAccountCodeIdentity.allowsLocalManagement(getpid()))
             try check(!SharedAccountCodeIdentity.allowsLocalManagement(1))
             try check(!SharedAccountCodeIdentity.isClaude("/usr/bin/env"))

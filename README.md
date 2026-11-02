@@ -400,7 +400,11 @@ directly. There is no generated Xcode project. Dependency licenses ship in the a
 ## Data storage
 
 TerminalDB does not synchronize terminal content to cloud storage. Native
-application data and credentials stay on their execution workstation.
+application data stays on its execution workstation. Explicit account sharing
+can copy reusable Claude sign-ins and selected temporary AWS credentials to
+approved Macs over the LAN or VPN, with separate approval for each provider.
+See [shared Claude accounts](docs/shared-claude-accounts.md) and
+[shared AWS access](docs/shared-aws-access.md).
 
 | Data | Location | Notes |
 | --- | --- | --- |
@@ -409,6 +413,7 @@ application data and credentials stay on their execution workstation.
 | Playbooks and workspaces | `~/Library/Application Support/TerminalDB/product-state.json` | Local persistent workflow state |
 | Claude profiles | `~/Library/Application Support/TerminalDB/ClaudeProfiles/` | Separate configuration directory per profile |
 | Claude Code credentials | macOS Keychain | Created and read through the profile's Claude Code flow |
+| Shared AWS access | Device-only macOS Keychain; metadata under `Peers/` | Selected temporary credentials only; AWS login/refresh material stays local |
 | Temporary shell markers | A TerminalDB-created temporary directory | Removed with the terminal session |
 | Peer identity | macOS Keychain | Persistent device key; non-exportable Secure Enclave key when available |
 | Peer trust and endpoints | `~/Library/Application Support/TerminalDB/Peers/` | Per-user permissions, explicit local trust |

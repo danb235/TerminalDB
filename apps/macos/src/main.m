@@ -738,6 +738,11 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                                    action:@selector(showPairedWorkstations:)
                             keyEquivalent:@""];
     workstations.target = self;
+    NSMenuItem *awsAccess =
+        [applicationMenu addItemWithTitle:@"AWS Access…"
+                                   action:@selector(showAWSAccess:)
+                            keyEquivalent:@""];
+    awsAccess.target = self;
     [applicationMenu addItem:NSMenuItem.separatorItem];
 
     NSMenuItem *services =
@@ -1675,6 +1680,11 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     [root.peerPanel refresh];
     [controller showUtilityPanelView:root.peerPanel.view title:@"Workstations"
                           fullWidth:YES dismissHandler:nil];
+}
+
+- (void)showAWSAccess:(id)sender {
+    (void)sender;
+    [TDBAWSAccessPanel present];
 }
 
 - (NSDictionary *)remoteUsageForProfile:(ClaudeProfile *)profile {
@@ -7678,6 +7688,8 @@ int main(void) {
     @autoreleasepool {
         int sharedLaunch = [TDBSharedAccounts runLauncherIfRequested];
         if (sharedLaunch >= 0) return sharedLaunch;
+        int awsLaunch = [TDBSharedAWS runLauncherIfRequested];
+        if (awsLaunch >= 0) return awsLaunch;
         if ([NSProcessInfo.processInfo.arguments containsObject:@"--peer-service-status"]) {
             NSMutableDictionary *services = [NSMutableDictionary dictionary];
             NSArray *names = @[@"not registered", @"enabled", @"requires approval", @"not found"];
