@@ -53,6 +53,7 @@ extern NSNotificationName const TerminalLedgerDidChangeNotification;
 - (instancetype)initWithFrame:(NSRect)frame theme:(TerminalTheme *)theme;
 - (void)showReadyInDirectory:(NSString *)directory;
 - (void)showConnectionMessage:(NSString *)message;
+- (void)showInputReviewMessage;
 - (void)beginCommand:(NSString *)command directory:(NSString *)directory;
 - (void)displayRecord:(NSDictionary *)record;
 - (void)finishCommand:(NSString *)command

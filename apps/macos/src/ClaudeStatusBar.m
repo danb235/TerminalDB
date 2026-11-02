@@ -116,6 +116,10 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 @property(nonatomic) NSUInteger usageDashboardRefreshTotalCount;
 @property(nonatomic, copy) NSDictionary<NSString *, NSDictionary *> *usageDashboardResults;
 @property(nonatomic, copy) NSDictionary *peerUsageEntries;
+@property(nonatomic, copy) NSDictionary *cachedHostUsageEntries;
+@property(nonatomic, copy) NSArray *cachedHostUsageProfiles;
+@property(nonatomic, copy) NSDictionary *cachedHostUsageResults;
+@property(nonatomic) NSTimeInterval cachedHostUsageAt;
 @property(nonatomic) CGFloat usageDashboardViewportWidth;
 @property(nonatomic) BOOL usageDashboardResizeScheduled;
 + (nullable NSNumber *)nextResetTimestamp:(nullable NSNumber *)timestamp
@@ -1107,15 +1111,29 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 }
 
 - (NSDictionary *)peerUsagePresentation {
-    NSMutableDictionary *entries = [NSMutableDictionary dictionary];
-    for (ClaudeProfile *profile in self.profileManager.profiles) {
-        NSMutableDictionary *entry = [[self usageDashboardEntryForProfile:profile] mutableCopy];
-        [entry removeObjectForKey:@"profile"];
-        NSDate *date = entry[@"modified_at"];
-        if ([date isKindOfClass:NSDate.class]) entry[@"modified_at"] = @(date.timeIntervalSince1970);
-        entries[profile.identifier] = entry;
+    // Terminal state is polled five times a second and also published during
+    // shell activity. Usage forecasts read/parse history and belong on their
+    // own cadence, not on every keystroke or terminal-state publication.
+    NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
+    if (self.cachedHostUsageEntries == nil ||
+        now - self.cachedHostUsageAt >= 1.0 ||
+        self.cachedHostUsageProfiles != self.profileManager.profiles ||
+        self.cachedHostUsageResults != self.usageDashboardResults) {
+        NSMutableDictionary *entries = [NSMutableDictionary dictionary];
+        for (ClaudeProfile *profile in self.profileManager.profiles) {
+            NSMutableDictionary *entry = [[self usageDashboardEntryForProfile:profile] mutableCopy];
+            [entry removeObjectForKey:@"profile"];
+            NSDate *date = entry[@"modified_at"];
+            if ([date isKindOfClass:NSDate.class]) entry[@"modified_at"] = @(date.timeIntervalSince1970);
+            entries[profile.identifier] = entry;
+        }
+        self.cachedHostUsageEntries = entries;
+        self.cachedHostUsageProfiles = self.profileManager.profiles;
+        self.cachedHostUsageResults = self.usageDashboardResults;
+        self.cachedHostUsageAt = now;
     }
-    return @{@"entries": entries, @"label": self.usageLabel.stringValue ?: @"",
+    // Selected-account labels and sign-in state must remain immediate.
+    return @{@"entries": self.cachedHostUsageEntries, @"label": self.usageLabel.stringValue ?: @"",
         @"loggedIn": @(self.accountIsLoggedIn), @"known": @(self.accountStatusKnown)};
 }
 - (void)applyPeerState:(NSDictionary *)state {
@@ -1144,6 +1162,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 
 - (void)refreshNow {
     if (self.peerMode) { if (self.peerRefreshHandler) self.peerRefreshHandler(); return; }
+    self.cachedHostUsageEntries = nil;
     self.lastAccountRefresh = nil;
     self.lastUsageRefreshAttempt = nil;
     [self refreshAccountIfNeeded:YES];
@@ -2665,6 +2684,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     BOOL dashboardUsesHostScroller =
         NSHeight(dashboard.frame) > 620 &&
         !ClaudeUsageViewContainsNestedScrollView(dashboard);
+    (void)[fixtureBar peerUsagePresentation];
     [fixtureBar setValue:@YES forKey:@"usageDashboardRefreshInFlight"];
     [fixtureBar setValue:@0 forKey:@"usageDashboardRefreshCompletedCount"];
     [fixtureBar setValue:@2 forKey:@"usageDashboardRefreshTotalCount"];
@@ -2679,6 +2699,12 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         },
     } forKey:@"usageDashboardResults"];
     NSView *startingRefreshDashboard = [fixtureBar prepareUsagePanel];
+    NSDictionary *peerStartingRefresh = [fixtureBar peerUsagePresentation];
+    BOOL peerRefreshUpdatesImmediately =
+        [peerStartingRefresh[@"entries"][fixtureProfile.identifier][@"refresh_state"]
+            isEqual:@"refreshing"] &&
+        [peerStartingRefresh[@"entries"][secondProfile.identifier][@"refresh_state"]
+            isEqual:@"waiting"];
     BOOL dashboardShowsStartingRefresh =
         ClaudeUsageViewContainsText(startingRefreshDashboard,
             @"Checking 2 profiles…") &&
@@ -2727,6 +2753,13 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     [fixtureBar setValue:@NO forKey:@"accountIsLoggedIn"];
     [fixtureBar refreshUsage];
     NSView *signedOutDashboard = [fixtureBar prepareUsagePanel];
+    NSDictionary *peerSignedOut = [fixtureBar peerUsagePresentation];
+    BOOL peerSignOutUpdatesImmediately =
+        ![peerSignedOut[@"loggedIn"] boolValue] &&
+        [peerSignedOut[@"known"] boolValue] &&
+        [peerSignedOut[@"entries"][fixtureProfile.identifier][@"account_state"]
+            isEqual:@"signed_out"] &&
+        [peerSignedOut[@"entries"][fixtureProfile.identifier][@"suppress_metrics"] boolValue];
     BOOL hidesSignedOutUsage =
         [fixtureBar.usageLabel.stringValue isEqualToString:
             @"Usage  Sign in required"] &&
@@ -2784,6 +2817,8 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         dashboardUsesHostScroller &&
         dashboardShowsStartingRefresh &&
         dashboardShowsProgressiveRefresh &&
+        peerRefreshUpdatesImmediately &&
+        peerSignOutUpdatesImmediately &&
         hidesStaleUsage &&
         hidesSignedOutUsage &&
         historyPermissions.unsignedIntegerValue == 0600;

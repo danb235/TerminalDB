@@ -522,6 +522,11 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
         [self showPeerError:@"This session has ended. Open a new terminal to continue."];
     }
     self.terminalView.inputEnabled = self.sessionClient.connected && self.sessionClient.controlling && !self.sessionClient.synchronizing && !self.sessionClient.snapshotFailed && !self.sessionClient.inputUncertain;
+    if (self.sessionClient.inputUncertain && !self.sessionClient.ended) {
+        // Routine state updates must not overwrite a blocked-input warning
+        // with "READY" while Return and typing are disabled.
+        [self.ledgerBar showInputReviewMessage];
+    }
     [self refreshPeerToolbar];
 }
 

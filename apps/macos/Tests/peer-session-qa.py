@@ -89,8 +89,13 @@ class Client:
 def wait_for(predicate, timeout=10):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if predicate():
-            return
+        try:
+            if predicate():
+                return
+        except FileNotFoundError:
+            # git apply may briefly remove a file before publishing its new
+            # contents. Observe the completed result rather than that gap.
+            pass
         time.sleep(0.03)
     raise AssertionError("Disposable peer session did not reach its expected state")
 

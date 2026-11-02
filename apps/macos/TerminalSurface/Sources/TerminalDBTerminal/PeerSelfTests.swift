@@ -1,6 +1,7 @@
 import Foundation
 import Security
 import NIO
+import Darwin
 
 @objc(TDBPeerSelfTests)
 public final class TDBPeerSelfTests: NSObject {
@@ -21,6 +22,7 @@ public final class TDBPeerSelfTests: NSObject {
             try? FileManager.default.removeItem(at: directory)
         }
         do {
+            checks += try localBackpressureChecks()
             try check(TDBWorkstationPresentation.tabTitle(workstation: "Office Mac", session: "project") == "Office Mac · project")
             try check(PeerProtocol.displayName("  Office\nMac\u{202e}  ") == "OfficeMac")
             try check(PeerProtocol.displayName("\n\t ") == "Mac")
@@ -264,5 +266,62 @@ public final class TDBPeerSelfTests: NSObject {
             fputs("FAIL native peer regression check after \(checks) successful checks: \(detail)\n", stderr)
             return false
         }
+    }
+
+    private static func localBackpressureChecks() throws -> Int {
+        func sockets() throws -> [Int32] {
+            var pair: [Int32] = [-1, -1]
+            guard socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0 else {
+                throw PeerFailure("Could not prepare the local transport test.")
+            }
+            var size: Int32 = 4096
+            setsockopt(pair[0], SOL_SOCKET, SO_SNDBUF, &size, socklen_t(MemoryLayout.size(ofValue: size)))
+            return pair
+        }
+        func spin(_ done: () -> Bool, timeout: TimeInterval) -> Bool {
+            let end = PeerClock.now + timeout
+            while !done() && PeerClock.now < end {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.005))
+            }
+            return done()
+        }
+        let pair = try sockets()
+        let sender = PeerLocalConnection(fd: pair[0], writeStallTimeout: 0.8)
+        let receiver = PeerLocalConnection(fd: pair[1])
+        defer { sender.close(); receiver.close() }
+        var received = false, disconnected = false, responded = false
+        sender.disconnected = { disconnected = true }
+        sender.receive = { if $0["type"] as? String == "response" { responded = true } }
+        receiver.receive = {
+            if $0["type"] as? String == "large" { received = true }
+            if $0["type"] as? String == "probe" { receiver.send(["type": "response"]) }
+        }
+        sender.start()
+        sender.send(["type": "large", "data": String(repeating: "x", count: 512 * 1024)])
+        // A frame much larger than SO_SNDBUF forces EAGAIN before reading.
+        _ = spin({ false }, timeout: 0.03)
+        receiver.start()
+        guard spin({ received }, timeout: 0.7) else {
+            throw PeerFailure("The local connection did not drain recovered backpressure.")
+        }
+        _ = spin({ disconnected }, timeout: 1.0)
+        guard !disconnected else {
+            throw PeerFailure("A recovered local connection was closed by its expired write timer.")
+        }
+        sender.send(["type": "probe"])
+        guard spin({ responded }, timeout: 1) else {
+            throw PeerFailure("The local connection stopped responding after recovered backpressure.")
+        }
+        let stalledPair = try sockets()
+        let stalled = PeerLocalConnection(fd: stalledPair[0], writeStallTimeout: 0.2)
+        defer { stalled.close(); Darwin.close(stalledPair[1]) }
+        var expired = false
+        stalled.disconnected = { expired = true }
+        stalled.start()
+        stalled.send(["type": "large", "data": String(repeating: "x", count: 512 * 1024)])
+        guard spin({ expired }, timeout: 2) else {
+            throw PeerFailure("A genuinely stalled local writer exceeded its deadline.")
+        }
+        return 3
     }
 }
