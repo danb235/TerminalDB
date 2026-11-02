@@ -149,7 +149,8 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate {
         var body: [String: Any]
         if syncing {
             let enabled = syncDraft.map { Array($0).sorted() } ?? (peerState["awsPeers"] as? [String] ?? [])
-            body = ["peers": peerState["peers"] ?? [], "enabled": enabled, "states": peerState["awsStatus"] ?? [:]]
+            body = ["peers": peerState["peers"] ?? [], "enabled": enabled,
+                    "connected": agent.connected, "states": peerState["awsStatus"] ?? [:]]
         } else {
             body = ["profiles": catalog["profiles"] ?? [], "accounts": catalog["accounts"] ?? [],
                     "installed": catalog["installed"] ?? [], "sourceStatus": catalog["sourceStatus"] ?? [:],
@@ -164,6 +165,10 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate {
     }
 
     private func renderMacs() {
+        guard agent.connected else {
+            addRow(NSStackView(views: [label("Waiting for this Mac’s networking. Check any macOS Keychain or background-app permission prompt, then try again.")]))
+            return
+        }
         let peers = peerState["peers"] as? [[String: Any]] ?? []
         let enabled = syncDraft ?? Set(peerState["awsPeers"] as? [String] ?? [])
         let states = peerState["awsStatus"] as? [String: String] ?? [:]
