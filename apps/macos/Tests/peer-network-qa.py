@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+import hashlib
 
 spec = importlib.util.spec_from_file_location("session_qa", Path(__file__).with_name("peer-session-qa.py"))
 qa = importlib.util.module_from_spec(spec)
@@ -29,12 +30,32 @@ def main():
         try:
             for root in roots:
                 root.mkdir(mode=0o700)
+                fakebin = root / "bin"; fakebin.mkdir()
+                fake = fakebin / "claude"
+                fake.write_text('''#!/usr/bin/env python3
+import os,sys,json,hashlib
+from pathlib import Path
+args=sys.argv[1:]
+if args[:1]==["--settings"]: args=args[2:]
+if args==["--version"]:
+ print("999.0.0 (Claude Code)")
+elif args==["setup-token"]:
+ print("tdb-test-"+"a"*96,flush=True)
+elif args==["verify-shared"]:
+ token=os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+ assert token.startswith("tdb-test-")
+ assert not os.environ.get("ANTHROPIC_API_KEY")
+ Path("shared-token-hash").write_text(hashlib.sha256(token.encode()).hexdigest())
+elif args[:2]==["auth","status"]:
+ print(json.dumps({"loggedIn":False}))
+''')
+                fake.chmod(0o700)
                 reservation = socket.socket(); reservation.bind(("127.0.0.1", 0))
                 port = reservation.getsockname()[1]; reservation.close()
                 config = root / "trust.json"
                 config.write_text(json.dumps(dict(peers={}, listenPort=port)))
                 config.chmod(0o600)
-                env = dict(os.environ, TERMINALDB_PEER_STATE_DIR=str(root), TERMINALDB_PEER_EPHEMERAL_IDENTITY="1")
+                env = dict(os.environ, TERMINALDB_PEER_STATE_DIR=str(root), TERMINALDB_PEER_EPHEMERAL_IDENTITY="1", TERMINALDB_PEER_QA="1", PATH=str(fakebin)+":"+os.environ["PATH"])
                 for role in ["--session-host", "--peer-agent"]:
                     executable = qa.helper_executable(app, "TerminalDBSessionHost" if role == "--session-host" else "TerminalDBPeerAgent")
                     processes.append(subprocess.Popen([str(executable), "--terminal-qa"], env=env,
@@ -97,12 +118,83 @@ def main():
             assert observer.input("printf forbidden > forbidden\r").get("code") == "control-required"
             checks += 1
             observer.generation = observer.request("control.acquire")["generation"]
+            observer.sequence = 0
             assert remote.input("printf forbidden > forbidden\r").get("code") == "control-required"
             assert not (roots[1]/"forbidden").exists()
             checks += 1
             observer.request("product.invoke", action="runbook.save", name="Synthetic QA", command="pwd")
             assert observer.request("product.list", kind="runbooks")["items"][0]["name"] == "Synthetic QA"
             assert observer.request("project.files").get("items")
+            checks += 1
+            # Account sharing is separate from terminal trust. Neither a
+            # paired terminal controller nor a one-sided opt-in can export it.
+            assert "error" in remote.request("accounts.sync.export")
+            assert "error" in remote.request("accounts.sync.import", bundle={})
+            local = Client(roots[0]); clients.append(local)
+            def catalog(client): return client.request("accounts.catalog")["accounts"]
+            def sign_in(label, email):
+                directory = roots[0] / "sign-ins" / str(uuid.uuid4())
+                directory.mkdir(parents=True, mode=0o700)
+                result = local.request("accounts.signIn.start", label=label, email=email,
+                    organization="", plan="Max", executable=str(roots[0]/"bin/claude"), configDirectory=str(directory))
+                assert result.get("accepted")
+            sign_in("Synthetic Personal", "personal@example.invalid")
+            wait_for(lambda: len(catalog(local))==1)
+            account_id = catalog(local)[0]["id"]
+            assert not catalog(observer)
+            checks += 1
+            managers[0].request("accounts.sync.configure", peers=[fingerprints[1]])
+            managers[0].request("accounts.sync.now")
+            wait_for(lambda: "Enable account sync" in state(0).get("accountStatus",{}).get(fingerprints[1],""),timeout=40)
+            assert not catalog(observer)
+            checks += 1
+            managers[1].request("accounts.sync.configure", peers=[fingerprints[0]])
+            managers[0].request("accounts.sync.now")
+            wait_for(lambda: len(catalog(observer))==1,timeout=40)
+            assert catalog(observer)[0]["id"]==account_id
+            assert observer.request("account.select",accountId=account_id).get("accepted")
+            assert observer.request("host.state")["accountId"]==account_id
+            assert observer.request("workspace.restoreSession",snapshot={"account_id":"f"*64,"account_label":"Synthetic Personal"}).get("accepted")
+            assert observer.request("host.state")["accountId"]==""
+            checks += 1
+            assert observer.request("workspace.restoreSession",snapshot={"account_id":account_id,"account_label":"Old display name"}).get("accepted")
+            assert observer.request("host.state")["accountId"]==account_id
+            checks += 1
+            assert observer.input("claude verify-shared\r").get("accepted")
+            wait_for(lambda: (roots[1]/"shared-token-hash").exists())
+            assert (roots[1]/"shared-token-hash").read_text()==hashlib.sha256(("tdb-test-"+"a"*96).encode()).hexdigest()
+            checks += 1
+            generation = observer.generation
+            managers[0].request("accounts.sync.configure", peers=[])
+            assert observer.request("health.ping").get("accepted") and observer.generation==generation
+            sign_in("Synthetic Work", "work@example.invalid")
+            wait_for(lambda: len(catalog(local))==2)
+            assert len(catalog(observer))==1
+            checks += 1
+            # The source can restart while disconnected. Its new sign-in is
+            # durable; reconnecting later needs neither a browser nor a replay.
+            old = processes[0]; old.terminate(); old.wait(timeout=10)
+            env = dict(os.environ, TERMINALDB_PEER_STATE_DIR=str(roots[0]), TERMINALDB_PEER_EPHEMERAL_IDENTITY="1", TERMINALDB_PEER_QA="1", PATH=str(roots[0]/"bin")+":"+os.environ["PATH"])
+            executable = qa.helper_executable(app, "TerminalDBSessionHost")
+            replacement=subprocess.Popen([str(executable),"--terminal-qa"],env=env,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            processes.append(replacement)
+            local.close();clients.remove(local)
+            def ready_after_restart():
+                try:
+                    probe=Client(roots[0]);probe.close();return True
+                except (RuntimeError,OSError):return False
+            wait_for(ready_after_restart)
+            local=Client(roots[0]);clients.append(local)
+            assert len(catalog(local))==2
+            managers[0].request("accounts.sync.configure",peers=[fingerprints[1]])
+            wait_for(lambda: len(catalog(observer))==2,timeout=40)
+            checks += 1
+            managers[0].request("accounts.sync.configure",peers=[])
+            assert local.request("accounts.remove",accountId=account_id).get("accepted")
+            assert len(catalog(observer))==2
+            managers[0].request("accounts.sync.configure",peers=[fingerprints[1]])
+            wait_for(lambda: len(catalog(observer))==1,timeout=40)
+            assert catalog(observer)[0]["id"]!=account_id
             checks += 1
             remote.close(); clients.remove(remote)
             remote = Client(roots[0], peer_id=fingerprints[1]); clients.append(remote)

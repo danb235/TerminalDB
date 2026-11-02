@@ -1,5 +1,7 @@
 #import "TerminalPreferences.h"
 #import "ClaudeAPI.h"
+#import <AppKit/AppKit.h>
+#import "TerminalDBTerminal-Swift.h"
 
 NSNotificationName const ClaudeAPIConfigurationDidChangeNotification =
     @"ClaudeAPIConfigurationDidChangeNotification";
@@ -214,6 +216,11 @@ static NSArray<NSDictionary *> *ClaudeAPIValidModels(id saved) {
     NSTask *task = [[NSTask alloc] init];
     task.executableURL = [NSURL fileURLWithPath:self.executable];
     task.arguments = arguments;
+    NSString *shared = [TDBSharedAccounts accountForConfigDirectory:self.configDirectory];
+    if (shared.length > 0) {
+        task.executableURL = [NSURL fileURLWithPath:TDBSharedAccounts.launcherPath];
+        task.arguments = [@[@"--claude-launch", shared, @"--", self.executable] arrayByAddingObjectsFromArray:arguments];
+    }
     BOOL isDirectory = NO;
     if ([NSFileManager.defaultManager
             fileExistsAtPath:self.workingDirectory

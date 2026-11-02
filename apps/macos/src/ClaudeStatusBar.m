@@ -2,12 +2,20 @@
 
 #import "ClaudeProfile.h"
 #import "TerminalTheme.h"
+#import "TerminalDBTerminal-Swift.h"
 
 #import <math.h>
 
 static NSTimeInterval const ClaudeUsageRefreshInterval = 5.0 * 60.0;
 static NSTimeInterval const ClaudeUsageFreshnessInterval = 10.0 * 60.0;
 static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
+
+static void ClaudeConfigureSharedTask(NSTask *task, NSString *executable, NSArray *arguments, NSDictionary *environment) {
+    NSString *shared = environment[@"TERMINALDB_SHARED_ACCOUNT_ID"];
+    if (shared.length == 0) return;
+    task.executableURL = [NSURL fileURLWithPath:TDBSharedAccounts.launcherPath];
+    task.arguments = [@[@"--claude-launch", shared, @"--", executable] arrayByAddingObjectsFromArray:arguments];
+}
 
 static dispatch_queue_t ClaudeUsageRefreshQueue(void) {
     static dispatch_queue_t queue;
@@ -37,11 +45,20 @@ static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
     } else if ([view isKindOfClass:NSButton.class]) {
         value = [(NSButton *)view title];
     }
-    if ([value rangeOfString:text].location != NSNotFound) return YES;
+    if (value != nil && [value rangeOfString:text].location != NSNotFound) return YES;
     for (NSView *subview in view.subviews) {
         if (ClaudeUsageViewContainsText(subview, text)) return YES;
     }
     return NO;
+}
+
+static NSButton *ClaudeUsageFindButton(NSView *view, NSString *title, NSString *identifier) {
+    if ([view isKindOfClass:NSButton.class] && [[(NSButton *)view title] isEqual:title] && [view.identifier isEqual:identifier]) return (NSButton *)view;
+    for (NSView *child in view.subviews) {
+        NSButton *button = ClaudeUsageFindButton(child, title, identifier);
+        if (button) return button;
+    }
+    return nil;
 }
 
 static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
@@ -122,6 +139,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 @property(nonatomic) NSTimeInterval cachedHostUsageAt;
 @property(nonatomic) CGFloat usageDashboardViewportWidth;
 @property(nonatomic) BOOL usageDashboardResizeScheduled;
+@property(nonatomic, strong) NSMutableSet<NSString *> *expandedUsageAccounts;
 + (nullable NSNumber *)nextResetTimestamp:(nullable NSNumber *)timestamp
                                    period:(NSTimeInterval)period
                                    rolled:(BOOL *)rolled;
@@ -370,6 +388,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     NSString *executable = self.claudeExecutable;
     NSMutableArray<NSDictionary *> *requests = [NSMutableArray array];
     for (ClaudeProfile *profile in profiles) {
+        if (profile.catalogOnly) continue;
         [requests addObject:@{
             @"profile" : profile,
             @"environment" : [self environmentForProfile:profile],
@@ -421,6 +440,9 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
                 dashboardResults[profile.identifier] = [result copy];
                 strongSelf.usageDashboardResults = [dashboardResults copy];
                 strongSelf.usageDashboardRefreshCompletedCount += 1;
+                if ([result[@"account_state"] isEqual:@"signed_in"] || [result[@"account_state"] isEqual:@"signed_out"]) {
+                    [strongSelf.profileManager recordSignInState:[result[@"account_state"] isEqual:@"signed_in"] forProfile:profile];
+                }
                 if ([strongSelf.selectedProfile.identifier
                         isEqualToString:profile.identifier]) {
                     NSString *state = result[@"account_state"];
@@ -499,7 +521,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     CGFloat columnX = floor((viewportWidth - columnWidth) / 2.0);
     CGFloat y = 34;
     NSTextField *eyebrow = [self
-        usageWindowLabel:@"OPTIONAL CLAUDE CODE PROFILES"
+        usageWindowLabel:@"YOUR CLAUDE ACCOUNTS"
                     size:10
                    weight:NSFontWeightSemibold
                     color:self.theme.ansiColors[6]
@@ -518,9 +540,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     y += 40;
     NSTextField *subtitle = [self
         usageWindowLabel:
-            @"Burn is the recent percentage of an allowance used per hour. "
-             "Available pace is what remains divided by time until reset. "
-             "TerminalDB warns only when current burn may reach a limit first."
+            [NSString stringWithFormat:@"Choose an account for this tab on %@. Shared sign-ins are available across your synced Macs.", self.accountWorkstationName ?: @"This Mac"]
                      size:12
                    weight:NSFontWeightRegular
                     color:self.theme.statusBarActiveForeground
@@ -530,12 +550,12 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     y += 48;
 
     NSString *configured = profiles.count == 1
-        ? @"1 profile configured"
-        : [NSString stringWithFormat:@"%lu profiles configured",
+        ? @"1 account available"
+        : [NSString stringWithFormat:@"%lu accounts available",
             (unsigned long)profiles.count];
     NSTextField *summary = [self
         usageWindowLabel:[NSString stringWithFormat:
-            @"%@ · one account can be active per terminal tab · metrics stay on this Mac",
+            @"%@ · one account per tab · account changes apply to new Claude sessions",
             configured]
                     size:10.5
                    weight:NSFontWeightMedium
@@ -679,6 +699,50 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
             isEqualToString:@"unknown"] && statusError.length > 0;
         BOOL active = [profile.identifier
             isEqualToString:self.selectedProfile.identifier];
+        if (![self.expandedUsageAccounts containsObject:profile.identifier]) {
+            NSView *compact = [[NSView alloc] initWithFrame:NSMakeRect(columnX, y, columnWidth, 116)];
+            compact.wantsLayer = YES; compact.layer.cornerRadius = 8;
+            compact.layer.borderWidth = active ? 1.5 : 1;
+            compact.layer.borderColor = (active ? self.theme.ansiColors[6] : self.theme.statusBarBorder).CGColor;
+            compact.layer.backgroundColor = self.theme.statusBarBackground.CGColor;
+            compact.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
+            BOOL shared = profile.sharedAccountIdentifier.length > 0;
+            BOOL expired = shared && profile.sharedExpiresAt <= NSDate.date.timeIntervalSince1970;
+            BOOL pending = shared && profile.catalogOnly;
+            NSString *identity = profile.email ?: @"Sign in to connect this account";
+            if (profile.subscriptionType.length > 0) identity = [identity stringByAppendingFormat:@" · %@", profile.subscriptionType.capitalizedString];
+            NSString *availability = shared ? (expired ? @"Renew this sign-in once to update your synced Macs" : pending ? @"Waiting for account sync on this workstation" : @"Shared sign-in · ready on this workstation")
+                : [NSString stringWithFormat:@"On %@ · share this sign-in to use it across your Macs", profile.catalogLocations.count > 0 ? [profile.catalogLocations componentsJoinedByString:@", "] : self.accountWorkstationName ?: @"This Mac"];
+            NSMutableArray *usage = [NSMutableArray array];
+            for (NSDictionary *forecast in forecasts) if (![forecast[@"stale"] boolValue]) {
+                [usage addObject:[NSString stringWithFormat:@"%@ %.0f%%", forecast[@"detail_label"] ?: @"Usage", [forecast[@"percent"] doubleValue]]];
+            }
+            NSString *summary = usage.count > 0 ? [usage componentsJoinedByString:@"   ·   "] : @"Usage appears when Claude Code reports it";
+            NSArray *lines = @[@{@"text": profile.label, @"y": @82, @"size": @16, @"width": @(columnWidth-370)},
+                              @{@"text": identity, @"y": @60, @"size": @12, @"width": @(columnWidth-202)},
+                              @{@"text": availability, @"y": @38, @"size": @11, @"width": @(columnWidth-202)},
+                              @{@"text": summary, @"y": @15, @"size": @11, @"width": @(columnWidth-40)}];
+            for (NSDictionary *line in lines) {
+                NSTextField *text = [self usageWindowLabel:line[@"text"] size:[line[@"size"] doubleValue] weight:NSFontWeightMedium color:self.theme.terminalForeground frame:NSMakeRect(20,[line[@"y"] doubleValue],[line[@"width"] doubleValue],22)];
+                text.lineBreakMode = NSLineBreakByTruncatingTail; text.maximumNumberOfLines = 1; [compact addSubview:text];
+            }
+            BOOL signIn = !signedIn && (signedOut || profile.email.length == 0);
+            NSString *action = pending ? @"Waiting for Sync" : profile.catalogOnly ? @"Make Available…" : expired ? @"Renew Sign-In…" : signIn ? @"Sign In…" : active ? @"Active on This Tab" : @"Use on This Tab";
+            SEL selector = profile.catalogOnly || expired ? @selector(shareSignInFromUsageCard:) : signIn ? @selector(signInProfileFromUsageCard:) : @selector(selectProfileFromUsageCard:);
+            NSButton *use = [NSButton buttonWithTitle:action target:self action:selector];
+            use.frame = NSMakeRect(columnWidth-166,72,146,30); use.identifier = profile.identifier;
+            use.enabled = !pending && (profile.catalogOnly || expired || signIn || !active); [compact addSubview:use];
+            NSButton *details = [NSButton buttonWithTitle:@"Usage & Settings…" target:self action:@selector(toggleUsageDetails:)];
+            details.identifier = profile.identifier; details.frame = NSMakeRect(columnWidth-166,38,146,26); [compact addSubview:details];
+            if (!shared && !profile.catalogOnly) {
+                NSButton *share = [NSButton buttonWithTitle:@"Share Sign-In…" target:self action:@selector(shareSignInFromUsageCard:)];
+                share.identifier = profile.identifier; share.frame = NSMakeRect(columnWidth-326,72,146,30); [compact addSubview:share];
+            } else if (pending) {
+                NSButton *sync = [NSButton buttonWithTitle:@"Sync Macs…" target:self action:@selector(showAccountSync:)];
+                sync.frame = NSMakeRect(columnWidth-326,72,146,30); [compact addSubview:sync];
+            }
+            [document addSubview:compact]; y += 130; continue;
+        }
         NSView *card = [[NSView alloc]
             initWithFrame:NSMakeRect(columnX, y, columnWidth, 204)];
         card.wantsLayer = YES;
@@ -696,9 +760,11 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
                          size:16
                        weight:NSFontWeightSemibold
                         color:self.theme.terminalForeground
-                        frame:NSMakeRect(20, 164, columnWidth - 206, 24)];
+                        frame:NSMakeRect(20, 164, columnWidth - 370, 24)];
         accountTitle.selectable = NO;
         [card addSubview:accountTitle];
+        NSButton *hideDetails = [NSButton buttonWithTitle:@"Hide Details" target:self action:@selector(toggleUsageDetails:)];
+        hideDetails.identifier = profile.identifier; hideDetails.frame = NSMakeRect(columnWidth-326,158,146,30); [card addSubview:hideDetails];
         NSString *identity = signedIn
             ? (profile.email.length > 0
                 ? [NSString stringWithFormat:@"Signed in · %@ · %@",
@@ -768,18 +834,20 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         freshnessLabel.selectable = NO;
         [card addSubview:freshnessLabel];
 
-        BOOL requiresSignIn = !signedIn &&
-            (signedOut || profile.email.length == 0);
+        BOOL shared = profile.sharedAccountIdentifier.length > 0;
+        BOOL pending = shared && profile.catalogOnly;
+        BOOL expired = shared && profile.sharedExpiresAt <= NSDate.date.timeIntervalSince1970;
+        BOOL requiresSignIn = expired || (!signedIn && (signedOut || profile.email.length == 0));
         NSButton *use = [NSButton
-            buttonWithTitle:requiresSignIn ? @"Sign In…"
+            buttonWithTitle:pending ? @"Waiting for Sync" : profile.catalogOnly ? @"Make Available…" : requiresSignIn ? (shared ? @"Renew Sign-In…" : @"Sign In…")
                 : (active ? @"Active on This Tab" : @"Use on This Tab")
                      target:self
-                     action:requiresSignIn
-                        ? @selector(signInProfileFromUsageCard:)
+                     action:profile.catalogOnly ? @selector(shareSignInFromUsageCard:) : requiresSignIn
+                        ? (profile.sharedAccountIdentifier.length > 0 ? @selector(shareSignInFromUsageCard:) : @selector(signInProfileFromUsageCard:))
                         : @selector(selectProfileFromUsageCard:)];
         use.frame = NSMakeRect(columnWidth - 166, 158, 146, 30);
         use.identifier = profile.identifier;
-        use.enabled = requiresSignIn || !active;
+        use.enabled = !pending && (profile.catalogOnly || requiresSignIn || !active);
         if (requiresSignIn) {
             use.toolTip = @"Opens your browser for this profile when Claude Code supports direct sign-in. A busy tab opens sign-in in a new tab.";
         }
@@ -789,8 +857,15 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
                                               action:@selector(removeProfileFromUsageCard:)];
         remove.frame = NSMakeRect(columnWidth - 166, 120, 146, 28);
         remove.identifier = profile.identifier;
+        remove.enabled = !profile.catalogOnly;
         remove.contentTintColor = self.theme.ansiColors[1];
         [card addSubview:remove];
+        NSButton *share = [NSButton buttonWithTitle:pending ? @"Sync Macs…" : shared ? @"Renew Sign-In…" : @"Share Sign-In…"
+                                            target:self action:pending ? @selector(showAccountSync:) : @selector(shareSignInFromUsageCard:)];
+        share.frame = NSMakeRect(columnWidth - 166, 84, 146, 28);
+        share.identifier = profile.identifier;
+        share.toolTip = @"Sign in once with Claude Code’s reusable token, then use this account on your approved Macs.";
+        [card addSubview:share];
 
         if (forecasts.count == 0) {
             NSString *unavailableText = nil;
@@ -942,6 +1017,9 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     add.frame = NSMakeRect(columnX + 160, y, 160, 32);
     add.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
     [document addSubview:add];
+    NSButton *sync = [NSButton buttonWithTitle:@"Sync Macs…" target:self action:@selector(showAccountSync:)];
+    sync.frame = NSMakeRect(columnX + 330, y, 130, 32);
+    [document addSubview:sync];
     NSButton *done = [NSButton buttonWithTitle:@"Done"
                                         target:self
                                         action:@selector(dismissUsagePanel:)];
@@ -981,6 +1059,23 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     if (profile != nil) {
         [self.delegate claudeStatusBar:self didRequestLoginProfile:profile];
     }
+}
+
+- (void)toggleUsageDetails:(NSButton *)sender {
+    if (self.expandedUsageAccounts == nil) self.expandedUsageAccounts = [NSMutableSet set];
+    if ([self.expandedUsageAccounts containsObject:sender.identifier]) [self.expandedUsageAccounts removeObject:sender.identifier];
+    else [self.expandedUsageAccounts addObject:sender.identifier];
+    [self refreshUsageWindowContents];
+}
+
+- (void)shareSignInFromUsageCard:(NSButton *)sender {
+    ClaudeProfile *profile = [self.profileManager profileWithIdentifier:sender.identifier];
+    if (profile) [self.delegate claudeStatusBar:self didRequestSharedSignIn:profile];
+}
+
+- (void)showAccountSync:(id)sender {
+    (void)sender;
+    [self.delegate claudeStatusBarDidRequestAccountSync:self];
 }
 
 - (void)removeProfileFromUsageCard:(NSButton *)sender {
@@ -1125,7 +1220,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
             [entry removeObjectForKey:@"profile"];
             NSDate *date = entry[@"modified_at"];
             if ([date isKindOfClass:NSDate.class]) entry[@"modified_at"] = @(date.timeIntervalSince1970);
-            entries[profile.identifier] = entry;
+            entries[profile.catalogIdentifier] = entry;
         }
         self.cachedHostUsageEntries = entries;
         self.cachedHostUsageProfiles = self.profileManager.profiles;
@@ -1290,6 +1385,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     NSMutableDictionary *environment =
         [NSProcessInfo.processInfo.environment mutableCopy];
     environment[@"CLAUDE_CONFIG_DIR"] = profile.configDirectory;
+    environment[@"TERMINALDB_SHARED_ACCOUNT_ID"] = profile.sharedAccountIdentifier ?: @"";
     environment[@"CLAUDE_SECURESTORAGE_CONFIG_DIR"] =
         profile.configDirectory;
     environment[@"TERMINALDB_CLAUDE_STATUS_FILE"] =
@@ -1301,6 +1397,13 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     if (self.peerMode) return;
     ClaudeProfile *profile = self.selectedProfile;
     if (profile == nil) return;
+    if (profile.catalogOnly) { self.accountStatusKnown = NO; self.accountIsLoggedIn = NO; return; }
+    if (profile.sharedAccountIdentifier.length > 0) {
+        self.accountStatusKnown = YES;
+        self.accountIsLoggedIn = profile.sharedExpiresAt > NSDate.date.timeIntervalSince1970;
+        [self updateProfileLabel]; [self refreshUsage];
+        return;
+    }
     if (self.claudeExecutable.length == 0) {
         self.profileLabel.toolTip = @"Claude Code is not installed";
         return;
@@ -1384,6 +1487,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     }
     self.accountStatusKnown = YES;
     self.accountIsLoggedIn = [status[@"loggedIn"] boolValue];
+    [self.profileManager recordSignInState:self.accountIsLoggedIn forProfile:profile];
     NSMutableDictionary *results =
         [self.usageDashboardResults mutableCopy];
     results[profile.identifier] = @{
@@ -1770,6 +1874,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 }
 
 - (NSDictionary *)usageDashboardEntryForProfile:(ClaudeProfile *)profile {
+    if (profile.catalogOnly) return @{@"profile": profile, @"forecasts": @[], @"account_state": @"available_elsewhere", @"suppress_metrics": @YES};
     if (self.peerMode) {
         NSMutableDictionary *entry = [self.peerUsageEntries[profile.identifier] mutableCopy] ?: [NSMutableDictionary dictionary];
         entry[@"profile"] = profile;
@@ -1783,6 +1888,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         self.usageDashboardResults[profile.identifier];
     NSString *accountState = [refreshResult[@"account_state"]
         isKindOfClass:NSString.class] ? refreshResult[@"account_state"] : @"unknown";
+    if (profile.sharedAccountIdentifier.length > 0) accountState = profile.sharedExpiresAt > NSDate.date.timeIntervalSince1970 ? @"signed_in" : @"signed_out";
     NSString *refreshError = [refreshResult[@"refresh_error"]
         isKindOfClass:NSString.class] ? refreshResult[@"refresh_error"] : nil;
     NSString *statusError = [refreshResult[@"status_error"]
@@ -2020,6 +2126,13 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 
 + (NSDictionary *)accountRefreshResultWithExecutable:(NSString *)executable
                                           environment:(NSDictionary *)environment {
+    if ([environment[@"TERMINALDB_SHARED_ACCOUNT_ID"] length] > 0) {
+        NSString *identifier = environment[@"TERMINALDB_SHARED_ACCOUNT_ID"];
+        for (NSDictionary *item in [TDBSharedAccounts catalog]) {
+            if ([item[@"id"] isEqual:identifier]) return @{@"account_state": [item[@"ready"] boolValue] ? @"signed_in" : @"signed_out"};
+        }
+        return @{@"account_state": @"signed_out"};
+    }
     NSString *temporaryPath = [NSTemporaryDirectory()
         stringByAppendingPathComponent:[NSString stringWithFormat:
             @"terminaldb-claude-auth-%@.json", NSUUID.UUID.UUIDString]];
@@ -2099,6 +2212,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     task.arguments = @[
         @"-p", @"/usage", @"--output-format", @"json", @"--max-turns", @"1",
     ];
+    ClaudeConfigureSharedTask(task, executable, task.arguments, environment);
     NSMutableDictionary *taskEnvironment = [environment mutableCopy];
     taskEnvironment[@"LANG"] = @"en_US.UTF-8";
     taskEnvironment[@"LC_ALL"] = @"en_US.UTF-8";
@@ -2496,6 +2610,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         theme:[TerminalTheme preferredTheme]];
     [fixtureBar setValue:@YES forKey:@"accountStatusKnown"];
     [fixtureBar setValue:@YES forKey:@"accountIsLoggedIn"];
+    [fixtureBar setValue:@{fixtureProfile.identifier: @{@"account_state": @"signed_in"}, secondProfile.identifier: @{@"account_state": @"signed_in"}} forKey:@"usageDashboardResults"];
     [fixtureBar refreshUsage];
     NSString *compactSummary = fixtureBar.usageLabel.stringValue;
     BOOL showsEveryWindow =
@@ -2671,9 +2786,14 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     BOOL showsRiskOnlyWhenForecasted =
         [fixtureBar.usageLabel.stringValue containsString:@"⚠ Fable"];
     NSView *dashboard = [fixtureBar prepareUsagePanel];
+    BOOL compactAccountPicker = !ClaudeUsageViewContainsText(dashboard, @"BURN") && ClaudeUsageViewContainsText(dashboard, @"Usage & Settings…");
+    for (ClaudeProfile *profile in fixtureManager.profiles) {
+        [ClaudeUsageFindButton(dashboard, @"Usage & Settings…", profile.identifier) performClick:nil];
+    }
+    dashboard = [fixtureBar prepareUsagePanel];
     BOOL dashboardShowsAllAccounts =
-        ClaudeUsageViewContainsText(dashboard, @"2 profiles configured") &&
-        ClaudeUsageViewContainsText(dashboard, @"Usage Summary") &&
+        ClaudeUsageViewContainsText(dashboard, @"2 accounts available") &&
+        ClaudeUsageViewContainsText(dashboard, @"Accounts & usage") &&
         ClaudeUsageViewContainsText(dashboard, @"Second Subscription") &&
         ClaudeUsageViewContainsText(dashboard, @"Signed in · first@example.com") &&
         ClaudeUsageViewContainsText(dashboard, @"Add Subscription…") &&
@@ -2701,9 +2821,9 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     NSView *startingRefreshDashboard = [fixtureBar prepareUsagePanel];
     NSDictionary *peerStartingRefresh = [fixtureBar peerUsagePresentation];
     BOOL peerRefreshUpdatesImmediately =
-        [peerStartingRefresh[@"entries"][fixtureProfile.identifier][@"refresh_state"]
+        [peerStartingRefresh[@"entries"][fixtureProfile.catalogIdentifier][@"refresh_state"]
             isEqual:@"refreshing"] &&
-        [peerStartingRefresh[@"entries"][secondProfile.identifier][@"refresh_state"]
+        [peerStartingRefresh[@"entries"][secondProfile.catalogIdentifier][@"refresh_state"]
             isEqual:@"waiting"];
     BOOL dashboardShowsStartingRefresh =
         ClaudeUsageViewContainsText(startingRefreshDashboard,
@@ -2757,9 +2877,9 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     BOOL peerSignOutUpdatesImmediately =
         ![peerSignedOut[@"loggedIn"] boolValue] &&
         [peerSignedOut[@"known"] boolValue] &&
-        [peerSignedOut[@"entries"][fixtureProfile.identifier][@"account_state"]
+        [peerSignedOut[@"entries"][fixtureProfile.catalogIdentifier][@"account_state"]
             isEqual:@"signed_out"] &&
-        [peerSignedOut[@"entries"][fixtureProfile.identifier][@"suppress_metrics"] boolValue];
+        [peerSignedOut[@"entries"][fixtureProfile.catalogIdentifier][@"suppress_metrics"] boolValue];
     BOOL hidesSignedOutUsage =
         [fixtureBar.usageLabel.stringValue isEqualToString:
             @"Usage  Sign in required"] &&
@@ -2771,6 +2891,9 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         attributesOfItemAtPath:fixtureProfile.usageHistoryPath error:nil]
         [NSFilePosixPermissions];
     [NSFileManager.defaultManager removeItemAtPath:fixtureRoot error:nil];
+    if (!(compactAccountPicker && dashboardShowsAllAccounts && dashboardUsesHostScroller && dashboardShowsStartingRefresh && dashboardShowsProgressiveRefresh && peerRefreshUpdatesImmediately && peerSignOutUpdatesImmediately && hidesStaleUsage && hidesSignedOutUsage)) {
+        fprintf(stderr, "FAIL account view checks compact=%d accounts=%d scroller=%d starting=%d progress=%d refresh=%d signout=%d stale=%d signedout=%d\n", compactAccountPicker, dashboardShowsAllAccounts, dashboardUsesHostScroller, dashboardShowsStartingRefresh, dashboardShowsProgressiveRefresh, peerRefreshUpdatesImmediately, peerSignOutUpdatesImmediately, hidesStaleUsage, hidesSignedOutUsage);
+    }
     return [limits[@"five_hour"][@"used_percentage"] isEqual:@12] &&
         [fiveHourReset isKindOfClass:NSNumber.class] &&
         [limits[@"seven_day"][@"used_percentage"] isEqual:@34] &&
@@ -2813,6 +2936,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
         [exhaustedForecast[@"severity"] isEqualToString:@"critical"] &&
         [staleForecast[@"stale"] boolValue] &&
         showsRiskOnlyWhenForecasted &&
+        compactAccountPicker &&
         dashboardShowsAllAccounts &&
         dashboardUsesHostScroller &&
         dashboardShowsStartingRefresh &&

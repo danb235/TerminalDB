@@ -17,6 +17,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)claudeStatusBar:(ClaudeStatusBar *)statusBar
  didRequestRemoveProfile:(ClaudeProfile *)profile;
 - (void)claudeStatusBarDidRequestUsagePanel:(ClaudeStatusBar *)statusBar;
+- (void)claudeStatusBar:(ClaudeStatusBar *)statusBar didRequestSharedSignIn:(nullable ClaudeProfile *)profile;
+- (void)claudeStatusBarDidRequestAccountSync:(ClaudeStatusBar *)statusBar;
 
 @end
 
@@ -29,6 +31,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, strong, readonly, nullable) NSView *usagePanelView;
 @property(nonatomic, copy, nullable) void (^usagePanelDismissHandler)(void);
 @property(nonatomic) BOOL peerMode;
+@property(nonatomic, copy) NSString *accountWorkstationName;
 @property(nonatomic, copy, nullable) void (^peerRefreshHandler)(void);
 - (NSDictionary *)peerUsagePresentation;
 - (void)applyPeerState:(NSDictionary *)state;

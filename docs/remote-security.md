@@ -52,8 +52,14 @@ input is rejected; missing acknowledgements are shown as uncertain without
 resending commands. A prepared command approval is one use, expires, and binds
 the user, session, directory and control generation.
 
-Host credentials remain on their workstation. Profile names and usage summaries
+Ordinary host credentials remain on their workstation. Profile names and usage summaries
 can appear remotely, but API keys and Claude credential files are not exported.
+The optional [shared Claude account service](shared-claude-accounts.md) transfers
+only separately generated reusable Claude Code tokens after explicit account-sync
+approval on both Macs. Pairing by itself never enables credential sharing.
+Tokens use device-only Keychain storage and pinned mutual TLS; removals dominate
+concurrent offline updates. Turning sync off or unpairing cannot revoke copies
+already received; provider revocation is required to invalidate those tokens.
 Entering a new API key through settings sends it only to the selected host over
 the authenticated connection. Appearance and keyboard preferences remain local.
 Terminal output, repository text and AI suggestions are untrusted content.

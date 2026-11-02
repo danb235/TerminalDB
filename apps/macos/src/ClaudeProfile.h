@@ -17,6 +17,13 @@ extern NSNotificationName const ClaudeProfilesDidChangeNotification;
 @property(nonatomic, copy, readonly) NSString *statusLineCachePath;
 @property(nonatomic, copy, readonly) NSString *usageHistoryPath;
 @property(nonatomic, copy, readonly) NSString *keychainService;
+@property(nonatomic, copy, readonly, nullable) NSString *sharedAccountIdentifier;
+@property(nonatomic, readonly) NSTimeInterval sharedExpiresAt;
+@property(nonatomic, readonly) BOOL knownSignedIn;
+@property(nonatomic, readonly) BOOL catalogOnly;
+@property(nonatomic, copy, readonly) NSArray<NSString *> *catalogLocations;
+@property(nonatomic, copy, readonly) NSString *accountOrganization;
+@property(nonatomic, copy, readonly) NSString *catalogIdentifier;
 
 @end
 
@@ -39,6 +46,9 @@ extern NSNotificationName const ClaudeProfilesDidChangeNotification;
      subscriptionType:(nullable NSString *)subscriptionType;
 - (void)prepareRuntimeFilesForProfile:(ClaudeProfile *)profile;
 - (void)markProfileReadyForInteractiveClaude:(ClaudeProfile *)profile;
+- (void)refreshSharedAccounts;
+- (void)recordSignInState:(BOOL)signedIn forProfile:(ClaudeProfile *)profile;
+- (NSArray<NSDictionary *> *)localAccountCatalog;
 
 @end
 

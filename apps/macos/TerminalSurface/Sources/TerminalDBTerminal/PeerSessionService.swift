@@ -3,6 +3,13 @@ import AppKit
 
 @objc(TDBSessionServer)
 public final class TDBSessionServer: NSObject {
+    private let accounts = SharedAccountService()
+    @objc public var accountsChanged: (() -> Void)?
+    @objc public var localAccountCatalog: (() -> NSArray)?
+    @objc(removeSharedAccount:completion:)
+    public func removeSharedAccount(_ id: String, completion: @escaping (NSDictionary) -> Void) {
+        accounts.handle("accounts.remove", payload: ["accountId": id]) { completion($0 as NSDictionary) }
+    }
     // Host-side adapter only. The networking process never owns a PTY or a
     // provider credential. All execution and terminal state live here.
     @objc public var requestHandler: ((NSDictionary, @escaping (NSDictionary) -> Void) -> Void)?
@@ -14,6 +21,10 @@ public final class TDBSessionServer: NSObject {
     private let readable: Set<String> = ["session.list", "session.attach", "session.snapshot", "host.state", "receipt", "ledger.query", "product.list", "project.files", "project.preview", "health.ping"]
 
     @objc public func start() throws {
+        accounts.changed = { [weak self] in
+            self?.accountsChanged?()
+            self?.publish(["type": "accounts.changed"])
+        }
         let listener = try PeerLocalListener(name: "host")
         listener.accepted = { [weak self] connection, hello in self?.accept(connection, hello: hello) }
         self.listener = listener
@@ -64,6 +75,26 @@ public final class TDBSessionServer: NSObject {
         inFlight.insert(receiptKey)
         DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in self?.inFlight.remove(receiptKey) }
         let session = message["sessionId"] as? String ?? ""
+        if operation.hasPrefix("accounts.") {
+            // Export/import and browser sign-in are local management only.
+            // A remote terminal controller cannot extract a bearer token or
+            // cause a browser sign-in on another Mac through the session API.
+            guard operation == "accounts.catalog" || client.principal.hasPrefix("local:") else {
+                inFlight.remove(receiptKey)
+                client.connection.send(["type": "reply", "requestId": requestID, "error": "Manage account sharing on this Mac."])
+                return
+            }
+            var accountRequest = message
+            if operation == "accounts.sync.digest" || operation == "accounts.sync.export" {
+                accountRequest["localCatalog"] = localAccountCatalog?() ?? []
+            }
+            accounts.handle(operation, payload: accountRequest, audit: client.connection.peerAudit, authenticate: true) { [weak self, weak client] payload in
+                self?.inFlight.remove(receiptKey)
+                var reply = payload; reply["type"] = "reply"; reply["requestId"] = requestID
+                client?.connection.send(reply)
+            }
+            return
+        }
         let reply: ([String: Any]) -> Void = { [weak self, weak client] payload in
             guard let self else { return }
             self.inFlight.remove(receiptKey)

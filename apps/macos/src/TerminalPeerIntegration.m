@@ -5,6 +5,7 @@
 
 BOOL TerminalDBRunsSessionHost(void) {
     return [NSProcessInfo.processInfo.arguments containsObject:@"--session-host"] ||
+        [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.terminaldb.session-host"] ||
         [NSProcessInfo.processInfo.processName isEqualToString:@"TerminalDBSessionHost"];
 }
 
@@ -25,7 +26,10 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
 
 - (NSDictionary *)peerSessionState {
     NSMutableArray *accounts = [NSMutableArray array];
+    NSMutableSet *accountIDs = [NSMutableSet set];
     for (ClaudeProfile *profile in self.profileManager.profiles) {
+        if ([accountIDs containsObject:profile.catalogIdentifier]) continue;
+        [accountIDs addObject:profile.catalogIdentifier];
         [accounts addObject:[[self rootController] remoteUsageForProfile:profile]];
     }
     NSMutableArray *records = [NSMutableArray array];
@@ -46,7 +50,7 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
         @"canRevertPatch": @(self.lastAIApplyPatchPath.length > 0 &&
             [NSFileManager.defaultManager fileExistsAtPath:self.lastAIApplyPatchPath]),
         @"permissionMode": [TerminalDBPreferences() stringForKey:@"TerminalDBPermissionMode"] ?: @"ask",
-        @"accountId": self.selectedProfile.identifier ?: @"",
+        @"accountId": self.selectedProfile.catalogIdentifier ?: @"",
         @"accounts": accounts, @"records": records, @"ledgerCount": @(allRecords.count),
         @"usageState": [self.claudeStatusBar peerUsagePresentation],
         @"record": self.ledgerBar.currentRecord ?: @{},
@@ -72,9 +76,24 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
 }
 
 - (void)startSessionHost {
+    [self.profileManager refreshSharedAccounts];
     self.sessionServer = [[TDBSessionServer alloc] init];
     self.peerApprovals = [NSMutableDictionary dictionary];
     __weak AppDelegate *weakRoot = self;
+    self.sessionServer.localAccountCatalog = ^NSArray * { return [weakRoot.profileManager localAccountCatalog]; };
+    self.sessionServer.accountsChanged = ^{
+        AppDelegate *root = weakRoot;
+        [root.profileManager refreshSharedAccounts];
+        for (AppDelegate *controller in root.windowControllers) {
+            if (controller.selectedProfile && ![root.profileManager profileWithIdentifier:controller.selectedProfile.identifier]) {
+                controller.selectedProfile = nil;
+                [controller writeWindowProfileFile];
+                [controller.claudeStatusBar selectProfile:nil];
+            }
+            [controller writeWindowProfileFile];
+            [controller publishPeerState];
+        }
+    };
     self.sessionServer.requestHandler = ^(NSDictionary *request, void (^reply)(NSDictionary *)) {
         @try { [weakRoot handlePeerHostRequest:request reply:reply]; }
         @catch (NSException *exception) { reply(@{@"error": @"The workstation rejected a malformed operation."}); }
@@ -174,10 +193,21 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
         if (![snapshot isKindOfClass:NSDictionary.class] || [controller hasForegroundProcessInThisPane]) {
             reply(@{@"error": @"This saved conversation can only be restored at an idle shell prompt."}); return;
         }
-        ClaudeProfile *profile = [root.profileManager profileWithIdentifier:snapshot[@"account_id"] ?: @""];
-        if (!profile) for (ClaudeProfile *candidate in root.profileManager.profiles)
-            if ([candidate.label isEqual:snapshot[@"account_label"]]) { profile = candidate; break; }
-        if (profile) [controller claudeStatusBar:controller.claudeStatusBar didSelectProfile:profile];
+        NSString *accountID = [snapshot[@"account_id"] isKindOfClass:NSString.class] ? snapshot[@"account_id"] : @"";
+        NSString *accountLabel = [snapshot[@"account_label"] isKindOfClass:NSString.class] ? snapshot[@"account_label"] : @"";
+        ClaudeProfile *profile = [root.profileManager profileWithIdentifier:accountID];
+        // Stable account references must never fall back to another subscription
+        // with the same display name. Only label-only legacy saves may match by
+        // name, and then only when that name identifies exactly one account.
+        if (accountID.length == 0 && accountLabel.length > 0) {
+            NSArray *matches = [root.profileManager.profiles filteredArrayUsingPredicate:
+                [NSPredicate predicateWithBlock:^BOOL(ClaudeProfile *candidate, NSDictionary *bindings) {
+                    return !candidate.catalogOnly && [candidate.label isEqual:accountLabel];
+                }]];
+            if (matches.count == 1) profile = matches.firstObject;
+        }
+        if (accountID.length > 0 || accountLabel.length > 0)
+            [controller claudeStatusBar:controller.claudeStatusBar didSelectProfile:profile.catalogOnly ? nil : profile];
         NSMutableArray *messages = [NSMutableArray array];
         for (id message in [snapshot[@"chat_messages"] isKindOfClass:NSArray.class] ? snapshot[@"chat_messages"] : @[]) {
             if ([message isKindOfClass:NSDictionary.class] && [message[@"role"] isKindOfClass:NSString.class] && [message[@"content"] isKindOfClass:NSString.class]) [messages addObject:message];
@@ -250,6 +280,9 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
         controller.privateSession = [request[@"enabled"] boolValue];
     } else if ([operation isEqualToString:@"account.select"]) {
         ClaudeProfile *profile = [root.profileManager profileWithIdentifier:request[@"accountId"] ?: @""];
+        if ([request[@"accountId"] length] > 0 && (profile == nil || profile.catalogOnly)) {
+            reply(@{@"error": @"Make this account available with a reusable sign-in, or wait for account sync to finish on this Mac.", @"code": @"account-not-available"}); return;
+        }
         if ([controller hasForegroundProcessInThisPane]) { reply(@{@"error": @"Wait for the active command to finish before changing Claude accounts."}); return; }
         [controller claudeStatusBar:controller.claudeStatusBar didSelectProfile:profile];
     } else if ([operation isEqualToString:@"account.add"]) {
@@ -264,6 +297,10 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
         [controller publishPeerState]; reply(@{@"accountId": profile.identifier, @"busy": @(busy)}); return;
     } else if ([operation isEqualToString:@"account.remove"]) {
         ClaudeProfile *profile = [root.profileManager profileWithIdentifier:request[@"accountId"] ?: @""];
+        if (profile.sharedAccountIdentifier.length > 0) {
+            [root.sessionServer removeSharedAccount:profile.sharedAccountIdentifier completion:reply];
+            return;
+        }
         for (AppDelegate *view in root.windowControllers) {
             if ([view.selectedProfile.identifier isEqual:profile.identifier] && [view hasForegroundProcessInThisPane]) {
                 reply(@{@"error": @"A session using this Claude account is busy. Wait for its shell prompt before removing it."}); return;
@@ -613,6 +650,7 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
     AppDelegate *shown = owner.peerFocusedPane ?: owner;
     TDBSessionClient *client = shown.sessionClient;
     NSString *host = [shown peerWorkstationLabel];
+    shown.claudeStatusBar.accountWorkstationName = host;
     owner.workstationsButton.title = [host stringByAppendingString:@" ▾"];
     [owner.workstationsButton setAccessibilityValue:host];
     owner.workstationsButton.toolTip = [NSString stringWithFormat:@"This session is on %@. Open this menu to start or resume a terminal on a Mac.", host];

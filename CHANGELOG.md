@@ -7,6 +7,11 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Show one Claude account picker across approved Macs, with reusable sign-ins
+  stored in Keychain and explicit account-sync approval on both Macs. Accounts
+  added or removed offline sync automatically when LAN or VPN connectivity returns.
+- Keep account selection specific to each tab and its execution workstation;
+  simplify account rows while keeping usage and renewal under Usage & Settings.
 - Keep terminal connections open after temporary buffer pressure clears, reduce
   account-usage work during typing, and keep input-review warnings visible.
 - Give background helpers separate macOS identities so opening and quitting
