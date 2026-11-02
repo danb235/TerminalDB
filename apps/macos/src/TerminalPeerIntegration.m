@@ -616,7 +616,7 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
     owner.workstationsButton.title = [host stringByAppendingString:@" ▾"];
     [owner.workstationsButton setAccessibilityValue:host];
     owner.workstationsButton.toolTip = [NSString stringWithFormat:@"This session is on %@. Open this menu to start or resume a terminal on a Mac.", host];
-    owner.peerControlButton.title = client.ended ? @"Session Ended" : client.snapshotFailed ? @"Retry" : client.synchronizing ? @"Restoring…" : client.inputUncertain ? @"Review Input" : !client.connected ? @"Retry" : client.controlling ? @"You Have Control" : @"Take Control";
+    owner.peerControlButton.title = client.ended ? @"Session Ended" : client.synchronizing ? @"Restoring…" : client.inputUncertain ? @"Review Input" : client.snapshotFailed ? @"Retry" : !client.connected ? @"Retry" : client.controlling ? @"You Have Control" : @"Take Control";
     owner.peerControlButton.enabled = client && !client.ended && !client.synchronizing && (!client.controlling || client.inputUncertain || !client.connected || client.snapshotFailed);
     owner.peerControlButton.toolTip = client.ended ? @"This shell has ended. Start a new terminal from the Workstations menu."
         : client.inputUncertain ? @"Check the terminal before typing again. Unconfirmed input is never repeated automatically."
