@@ -79,6 +79,8 @@ struct PeerSettings: Codable {
     var pendingRevocations: [String: [String]]?
     // Pairing alone never opts a Mac into subscription credential sharing.
     var accountPeers: [String]?
+    // AWS roles require a separate two-sided opt-in from Claude accounts.
+    var awsPeers: [String]?
 }
 
 final class PeerTrustStore {

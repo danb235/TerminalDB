@@ -68,6 +68,7 @@ uses:
 - Anthropic API chat and model discovery
 - a Claude Code subscription session
 - Claude usage refresh
+- AWS CLI browser sign-in and renewal of explicitly shared AWS profiles
 - GitHub release update checks
 - links opened explicitly from the application
 
@@ -85,3 +86,9 @@ SHA 256 checksums, and creates a GitHub release.
 The session and peer helpers replace GUI-owned live sessions and the cloud
 remote implementation. See [peer architecture](remote-architecture.md) for the
 current process boundaries, transport, authority and recovery contract.
+
+AWS access uses a separate host-side service and bounded peer exchange. It
+shares selected temporary role credentials, with an independent two-sided
+scope, while the official AWS CLI retains its local sign-in and refresh state.
+Native profile setup preserves original configuration and uses a dedicated
+pre-AppKit `credential_process` launcher. See [shared AWS access](shared-aws-access.md).

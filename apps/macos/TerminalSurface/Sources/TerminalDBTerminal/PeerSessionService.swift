@@ -4,6 +4,7 @@ import AppKit
 @objc(TDBSessionServer)
 public final class TDBSessionServer: NSObject {
     private let accounts = SharedAccountService()
+    private let aws = SharedAWSService()
     @objc public var accountsChanged: (() -> Void)?
     @objc public var localAccountCatalog: (() -> NSArray)?
     @objc(removeSharedAccount:completion:)
@@ -21,6 +22,8 @@ public final class TDBSessionServer: NSObject {
     private let readable: Set<String> = ["session.list", "session.attach", "session.snapshot", "host.state", "receipt", "ledger.query", "product.list", "project.files", "project.preview", "health.ping"]
 
     @objc public func start() throws {
+        aws.changed = { [weak self] in self?.publish(["type": "aws.changed"]) }
+        aws.start()
         accounts.changed = { [weak self] in
             self?.accountsChanged?()
             self?.publish(["type": "accounts.changed"])
@@ -75,6 +78,19 @@ public final class TDBSessionServer: NSObject {
         inFlight.insert(receiptKey)
         DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in self?.inFlight.remove(receiptKey) }
         let session = message["sessionId"] as? String ?? ""
+        if operation.hasPrefix("aws.") {
+            guard operation == "aws.catalog" || client.principal.hasPrefix("local:") else {
+                inFlight.remove(receiptKey)
+                client.connection.send(["type": "reply", "requestId": requestID, "error": "Manage AWS access on this Mac."])
+                return
+            }
+            aws.handle(operation, payload: message, audit: client.connection.peerAudit, authenticate: true) { [weak self, weak client] payload in
+                self?.inFlight.remove(receiptKey)
+                var reply = payload; reply["type"] = "reply"; reply["requestId"] = requestID
+                client?.connection.send(reply)
+            }
+            return
+        }
         if operation.hasPrefix("accounts.") {
             // Export/import and browser sign-in are local management only.
             // A remote terminal controller cannot extract a bearer token or

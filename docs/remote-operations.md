@@ -71,6 +71,16 @@ select the optional checkbox to request removal from other paired Macs. Hosts
 that cannot be reached remain visibly pending and can be retried. To pair again,
 remove the old pairing on both Macs first.
 
+## Shared AWS access
+
+For AWS CLI access across Macs, use TerminalDB → AWS Access. Enable AWS sync
+independently on both paired Macs, sign in with detected profiles or share a
+current login, and install each receiving profile mapping once. A receiving Mac can use cached temporary
+access while the source sleeps, until AWS's expiry. If no signed-in Mac is
+reachable to renew it, use Sign In on This Mac. Never synchronize `.aws` caches
+manually or run global SSO logout to remove one shared profile. See
+[setup and recovery](shared-aws-access.md).
+
 ## Legacy cloud retirement
 
 Do not treat source removal as deployed-resource deletion. First inventory the

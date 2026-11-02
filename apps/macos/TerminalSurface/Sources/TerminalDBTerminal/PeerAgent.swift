@@ -46,8 +46,16 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
     private var incomingAccountStages: [String: String] = [:]
     private var accountLinks: Set<String> = []
     private var accountManagerChecks: Set<String> = []
+    private var awsBusy: Set<String> = []
+    private var awsStatus: [String: String] = [:]
+    private var awsCursor = 0
+    private var incomingAWSStages: [String: String] = [:]
+    private var awsLinks: Set<String> = []
     private func canSyncAccounts(_ id: String) -> Bool {
         trust.contains(id) && (trust.settings.accountPeers ?? []).contains(id) && !sleeping
+    }
+    private func canSyncAWS(_ id: String) -> Bool {
+        trust.contains(id) && (trust.settings.awsPeers ?? []).contains(id) && !sleeping
     }
 
     @objc public func start() throws {
@@ -72,7 +80,9 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
         }
         browser.delegate = self
         browser.searchForServices(ofType: PeerProtocol.serviceType, inDomain: "local.")
-        accountTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in self?.syncAccounts() }
+        accountTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+            self?.syncAccounts(); self?.syncAWS()
+        }
         sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
             self.sleeping = true; self.gate.close(); self.expirePairing()
@@ -193,7 +203,7 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
             var result = payload; result["type"] = "reply"; result["requestId"] = request
             connection.send(result)
         }
-        if operation.hasPrefix("accounts."), !authenticatedAccounts {
+        if (operation.hasPrefix("accounts.") || operation.hasPrefix("aws.")), !authenticatedAccounts {
             guard accountManagerChecks.count < 8, accountManagerChecks.insert(connection.id).inserted else {
                 reply(["error": "Account settings are busy. Try again."]); return
             }
@@ -210,6 +220,17 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
         }
         do {
             switch operation {
+            case "aws.sync.configure":
+                guard let peers = message["peers"] as? [String], peers.count <= 128,
+                      peers.allSatisfy({ trust.contains($0) }) else { throw PeerFailure("Choose paired Macs for AWS access.") }
+                let previous = Set(trust.settings.awsPeers ?? [])
+                try trust.update { $0.awsPeers = Array(Set(peers)).sorted() }
+                for id in previous.subtracting(peers) {
+                    for link in links.values where link.peerID == id && awsLinks.contains(link.id) { link.close() }
+                    awsStatus.removeValue(forKey: id)
+                }
+                reply(state()); broadcastState(); syncAWS()
+            case "aws.sync.now": syncAWS(); reply(state())
             case "accounts.sync.configure":
                 guard let peers = message["peers"] as? [String], peers.count <= 128,
                       peers.allSatisfy({ trust.contains($0) }) else { throw PeerFailure("Choose paired Macs for account sync.") }
@@ -262,6 +283,7 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
                     }
                     settings.peers.removeValue(forKey: id)
                     settings.accountPeers?.removeAll { $0 == id }
+                    settings.awsPeers?.removeAll { $0 == id }
                     settings.pendingRevocations?.removeValue(forKey: id)
                 }
                 disconnectPeer(id)
@@ -329,12 +351,26 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
                 self.receiveAccountSync(message, link: link)
                 return
             }
+            if (message["type"] as? String)?.hasPrefix("aws.sync.") == true {
+                applicationAccepted = true
+                guard self.canSyncAWS(link.peerID) else {
+                    link.send(["type": "aws.sync.denied"])
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { link.close() }
+                    return
+                }
+                self.receiveAWSSync(message, link: link)
+                return
+            }
             if message["type"] as? String == "revocation.apply" {
                 applicationAccepted = true
                 guard let target = message["target"] as? String, target.count == 64,
                       target.allSatisfy({ $0.isHexDigit }), target != self.identity.fingerprint else { link.close(); return }
                 do {
-                    try self.trust.update { $0.peers.removeValue(forKey: target) }
+                    try self.trust.update {
+                        $0.peers.removeValue(forKey: target)
+                        $0.accountPeers?.removeAll { $0 == target }
+                        $0.awsPeers?.removeAll { $0 == target }
+                    }
                     self.disconnectPeer(target)
                     link.send(["type": "revocation.result", "accepted": true]); self.broadcastState()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1) { link.close() }
@@ -467,6 +503,8 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
                 self.pendingPairs.removeValue(forKey: link.id)
                 self.incomingAccountStages.removeValue(forKey: link.id)
                 self.accountLinks.remove(link.id)
+                self.incomingAWSStages.removeValue(forKey: link.id)
+                self.awsLinks.remove(link.id)
             }
         }
     }
@@ -511,6 +549,7 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
         return ["status": status, "detail": statusDetail, "fingerprint": identity.fingerprint,
                 "hardwareBacked": identity.hardwareBacked, "pairingOpen": gate.isOpen, "port": trust.settings.listenPort,
                 "peers": peers, "accountPeers": trust.settings.accountPeers ?? [], "accountStatus": accountStatus,
+                "awsPeers": trust.settings.awsPeers ?? [], "awsStatus": awsStatus,
                 "pendingRemovals": (trust.settings.pendingRevocations ?? [:]).keys.sorted().map { trust.settings.peers[$0]?.name ?? "Unavailable Mac" },
                 "nearby": nearby.keys.sorted().map { service -> [String: Any] in
                     let data = serviceTXT[service] ?? services[service]?.txtRecordData() ?? Data()
@@ -601,6 +640,96 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
                         }
                     }
                     link.send(["type": "accounts.sync.hello", "digest": digest])
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 30) { finish("Waiting to sync. Check LAN, VPN and Keychain.") }
+                }
+            }
+        }
+    }
+
+    private func receiveAWSSync(_ message: [String: Any], link: PeerTLSLink) {
+        guard canSyncAWS(link.peerID) else { link.close(); return }
+        if message["type"] as? String == "aws.sync.hello" {
+            guard incomingAWSStages[link.id] == nil, incomingAWSStages.count < 8 else { link.close(); return }
+            incomingAWSStages[link.id] = "checking"
+            awsLinks.insert(link.id)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30) { link.close() }
+            PeerAccountHostRPC.call("aws.sync.digest") { [weak self, weak link] result in
+                guard let self, let link, self.canSyncAWS(link.peerID) else { link?.close(); return }
+                guard let digest = result["digest"] as? String else { link.close(); return }
+                let same = message["digest"] as? String == digest
+                self.incomingAWSStages[link.id] = same ? "done" : "ready"
+                link.send(["type": same ? "aws.sync.current" : "aws.sync.ready"])
+                if same { self.awsStatus[link.peerID] = "Up to date"; self.broadcastState() }
+            }
+        } else if message["type"] as? String == "aws.sync.exchange", let bundle = message["bundle"] as? [String: Any] {
+            guard incomingAWSStages[link.id] == "ready" else { link.close(); return }
+            incomingAWSStages[link.id] = "importing"
+            PeerAccountHostRPC.call("aws.sync.import", payload: ["bundle": bundle]) { [weak self, weak link] result in
+                guard let self, let link, self.canSyncAWS(link.peerID), result["error"] == nil else { link?.close(); return }
+                PeerAccountHostRPC.call("aws.sync.export") { [weak self, weak link] response in
+                    guard let self, let link, self.canSyncAWS(link.peerID), let bundle = response["bundle"] else { link?.close(); return }
+                    link.send(["type": "aws.sync.result", "bundle": bundle])
+                    self.awsStatus[link.peerID] = "Up to date"; self.broadcastState()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5) { link.close() }
+                }
+            }
+        } else { link.close() }
+    }
+
+    private func syncAWS() {
+        let peers = (trust.settings.awsPeers ?? []).filter { canSyncAWS($0) }.sorted()
+        guard !peers.isEmpty else { return }
+        let ordered = (0..<peers.count).map { peers[(awsCursor + $0) % peers.count] }
+        awsCursor = (awsCursor + 8) % peers.count
+        for id in ordered.prefix(8) where awsBusy.count < 8 && !awsBusy.contains(id) {
+            awsBusy.insert(id)
+            PeerAccountHostRPC.call("aws.sync.digest") { [weak self] result in
+                guard let self else { return }
+                guard self.canSyncAWS(id), let digest = result["digest"] else { self.awsBusy.remove(id); return }
+                self.connect(peerID: id, cancelled: { !self.canSyncAWS(id) }) { [weak self] connection in
+                    guard let self else { return }
+                    guard case .success(let link) = connection else {
+                        self.awsBusy.remove(id); self.awsStatus[id] = "Waiting for LAN or VPN"; self.broadcastState(); return
+                    }
+                    self.awsLinks.insert(link.id)
+                    var done = false
+                    var stage = "hello"
+                    func finish(_ detail: String) {
+                        guard !done else { return }; done = true
+                        stage = "done"
+                        self.awsBusy.remove(id); self.awsStatus[id] = detail
+                        link.receive = nil; link.disconnected = nil; link.close(); self.broadcastState()
+                    }
+                    link.disconnected = { finish("Waiting to sync. Check TerminalDB is updated on both Macs.") }
+                    link.receive = { [weak self, weak link] message in
+                        guard !done, let self, let link, self.canSyncAWS(id) else { finish("AWS sync is off"); return }
+                        switch message["type"] as? String {
+                        case "aws.sync.current":
+                            guard stage == "hello" else { finish("AWS sync needs attention"); return }
+                            finish("Up to date")
+                        case "aws.sync.denied":
+                            guard stage == "hello" else { finish("AWS sync needs attention"); return }
+                            finish("Enable AWS sync on the other Mac too")
+                        case "aws.sync.ready":
+                            guard stage == "hello" else { finish("AWS sync needs attention"); return }
+                            stage = "exporting"
+                            PeerAccountHostRPC.call("aws.sync.export") { result in
+                                guard !done, stage == "exporting", self.canSyncAWS(id), let bundle = result["bundle"] else { finish("Unlock Keychain to sync AWS access"); return }
+                                stage = "awaitingResult"
+                                link.send(["type": "aws.sync.exchange", "bundle": bundle])
+                            }
+                        case "aws.sync.result":
+                            guard stage == "awaitingResult" else { finish("AWS sync needs attention"); return }
+                            stage = "importing"
+                            guard let bundle = message["bundle"] as? [String: Any] else { finish("AWS sync could not finish"); return }
+                            PeerAccountHostRPC.call("aws.sync.import", payload: ["bundle": bundle]) { result in
+                                guard !done else { return }
+                                finish(result["error"] == nil ? "Up to date" : "AWS sync needs attention")
+                            }
+                        default: finish("Update TerminalDB on both Macs to sync AWS access")
+                        }
+                    }
+                    link.send(["type": "aws.sync.hello", "digest": digest])
                     DispatchQueue.main.asyncAfter(deadline: .now() + 30) { finish("Waiting to sync. Check LAN, VPN and Keychain.") }
                 }
             }

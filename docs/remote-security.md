@@ -60,6 +60,12 @@ approval on both Macs. Pairing by itself never enables credential sharing.
 Tokens use device-only Keychain storage and pinned mutual TLS; removals dominate
 concurrent offline updates. Turning sync off or unpairing cannot revoke copies
 already received; provider revocation is required to invalidate those tokens.
+AWS sharing has its own two-sided approval, separate from Claude sharing. It
+exports only selected profiles' short-lived credentials; SSO access/refresh
+tokens, client registrations and console-login device keys remain local. AWS
+expiry is authoritative, profile/principal binding is checked, snapshots reject
+replay, and the credential launcher returns secrets only through the documented
+AWS process-provider channel. See [shared AWS access](shared-aws-access.md).
 Entering a new API key through settings sends it only to the selected host over
 the authenticated connection. Appearance and keyboard preferences remain local.
 Terminal output, repository text and AI suggestions are untrusted content.

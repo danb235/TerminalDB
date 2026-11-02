@@ -19,7 +19,7 @@ SCRIPT_RESOURCES := \
 	Resources/Scripts/claude-status-bridge.sh \
 	Resources/Scripts/claude-tab-state.sh
 
-.PHONY: all release run install test test-ci test-surface qa-tabs qa-claude-state qa-claude-status qa-peers qa-peer-network qa-signature qa-icon qa-secrets clean
+.PHONY: all release run install test test-ci test-surface qa-tabs qa-claude-state qa-claude-status qa-peers qa-peer-network qa-aws-network qa-signature qa-icon qa-secrets clean
 
 all: $(BIN)
 
@@ -159,3 +159,6 @@ clean:
 # Requires an interactive Mac with Local Network permission; separate from CI.
 qa-peer-network: all
 	python3 Tests/peer-network-qa.py $(BIN)
+
+qa-aws-network: all
+	python3 Tests/aws-peer-network-qa.py $(BIN)

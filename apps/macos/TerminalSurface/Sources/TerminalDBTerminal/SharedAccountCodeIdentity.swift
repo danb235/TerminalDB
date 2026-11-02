@@ -23,7 +23,10 @@ enum SharedAccountCodeIdentity {
     static func allowsLocalManagement(audit: Data) -> Bool {
         allowsLocalManagement(attributes: [kSecGuestAttributeAudit: audit])
     }
-    private static func allowsLocalManagement(attributes: [CFString: Any]) -> Bool {
+    static func allowsCredentialLauncher(audit: Data) -> Bool {
+        allowsLocalManagement(attributes: [kSecGuestAttributeAudit: audit], credentialLauncher: true)
+    }
+    private static func allowsLocalManagement(attributes: [CFString: Any], credentialLauncher: Bool = false) -> Bool {
         if fixture { return true }
         var guest: SecCode?
         guard SecCodeCopyGuestWithAttributes(nil, attributes as CFDictionary, [], &guest) == errSecSuccess,
@@ -35,8 +38,12 @@ enum SharedAccountCodeIdentity {
               let hash = (info as? [CFString: Any])?[kSecCodeInfoUnique] as? Data else { return false }
         var app = Bundle.main.bundleURL
         if ["TerminalDBSessionHost.app", "TerminalDBPeerAgent.app"].contains(app.lastPathComponent) { for _ in 0..<4 { app.deleteLastPathComponent() } }
-        let paths = [app.appendingPathComponent("Contents/MacOS/TerminalDB"),
-                     app.appendingPathComponent("Contents/Library/LoginItems/TerminalDBPeerAgent.app/Contents/MacOS/TerminalDBPeerAgent")]
+        // The AWS process provider may read temporary credentials through its
+        // exact installed host binary, without gaining management authority.
+        let paths = credentialLauncher
+            ? [app.appendingPathComponent("Contents/Library/LoginItems/TerminalDBSessionHost.app/Contents/MacOS/TerminalDBSessionHost")]
+            : [app.appendingPathComponent("Contents/MacOS/TerminalDB"),
+               app.appendingPathComponent("Contents/Library/LoginItems/TerminalDBPeerAgent.app/Contents/MacOS/TerminalDBPeerAgent")]
         return paths.contains { path in
             var expected: SecStaticCode?, details: CFDictionary?
             guard SecStaticCodeCreateWithPath(path as CFURL, [], &expected) == errSecSuccess, let expected,
