@@ -80,12 +80,14 @@ struct AWSProfileInstallation: Codable, Equatable {
 final class AWSProfileConfiguration {
     let configURL: URL
     let root: URL
+    private let ssoCacheURL: URL
     private static let maximumBytes = 1_048_576
     private static let unsafeAuthentication = Set(["aws_access_key_id", "aws_secret_access_key", "aws_session_token", "aws_security_token", "credential_process", "credential_source", "source_profile", "role_arn", "web_identity_token_file"])
     private static let sourceKeys = Set(["sso_session", "sso_start_url", "sso_region", "sso_account_id", "sso_role_name", "login_session"])
 
-    init(configURL: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".aws/config"), root: URL = PeerPaths.root.appendingPathComponent("aws-profiles")) {
+    init(configURL: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".aws/config"), root: URL = PeerPaths.root.appendingPathComponent("aws-profiles"), ssoCacheURL: URL? = nil) {
         self.configURL = configURL; self.root = root
+        self.ssoCacheURL = ssoCacheURL ?? (SharedAccountCodeIdentity.fixture ? root.deletingLastPathComponent() : FileManager.default.homeDirectoryForCurrentUser).appendingPathComponent(".aws/sso/cache")
     }
 
     func discover() throws -> [AWSProfileDescriptor] {
@@ -118,14 +120,10 @@ final class AWSProfileConfiguration {
         if profile.kind == "login" { lines.append("login_session = \(profile.loginSession)") }
         else {
             lines += ["sso_account_id = \(profile.accountID)", "sso_role_name = \(profile.roleName)"]
-            if profile.ssoSessionName.isEmpty {
-                lines += ["sso_start_url = \(profile.ssoStartURL)", "sso_region = \(profile.ssoRegion)"]
-            } else {
-                // AWS caches modern SSO by session *name*. Reuse a native local
-                // alias only when its portal and region match; an imported Mac's
-                // alias must not borrow another local organization's cache.
-                let session = try backingSessionName(for: profile)
+            if let session = try resolvedSSOSessionName(for: profile) {
                 lines += ["sso_session = \(session)", "", "[sso-session \(session)]", "sso_start_url = \(profile.ssoStartURL)", "sso_region = \(profile.ssoRegion)", "sso_registration_scopes = sso:account:access"]
+            } else {
+                lines += ["sso_start_url = \(profile.ssoStartURL)", "sso_region = \(profile.ssoRegion)"]
             }
         }
         let file = backingConfiguration(for: profile)
@@ -137,23 +135,92 @@ final class AWSProfileConfiguration {
         let alias = (try? JSONSerialization.data(withJSONObject: [profile.name, profile.ssoSessionName])) ?? Data()
         return root.appendingPathComponent(profile.id + "-" + AWSProfileDescriptor.hash(alias).prefix(24) + ".config")
     }
-    func loginArguments(for profile: AWSProfileDescriptor) -> [String] {
-        (profile.kind == "sso" ? ["sso", "login"] : ["login"]) + ["--profile", profile.name]
+    func loginArguments(for profile: AWSProfileDescriptor) throws -> [String] {
+        if let session = try resolvedSSOSessionName(for: profile) {
+            return ["sso", "login", "--sso-session", session]
+        }
+        return (profile.kind == "sso" ? ["sso", "login"] : ["login"]) + ["--profile", profile.name]
     }
 
-    private func backingSessionName(for profile: AWSProfileDescriptor) throws -> String {
+    func resolvedSSOSessionName(for profile: AWSProfileDescriptor) throws -> String? {
+        try profile.validate()
+        guard profile.kind == "sso" else { return nil }
         let document = try INI(data: read(configURL, missing: true) ?? Data())
         func matches(_ section: INI.Section) -> Bool {
             section.fields["sso_start_url"] == profile.ssoStartURL && section.fields["sso_region"] == profile.ssoRegion
         }
+        // An explicit native alias remains authoritative when it exists.
+        if let section = document.profile(profile.name),
+           let native = try descriptor(name: profile.name, fields: section.fields, document: document), native.id == profile.id {
+            return native.ssoSessionName.isEmpty ? nil : native.ssoSessionName
+        }
+        // Preserve the local session of a deliberately replaced native alias.
+        // Do not borrow another local user's session just because portals match.
+        for installation in try installations() where installation.descriptor.id == profile.id && (installation.targetName == profile.name || installation.descriptor.name == profile.name) {
+            if let original = installation.originalProfile,
+               let section = try INI(data: Data(original.utf8)).profile(installation.targetName),
+               let native = try descriptor(name: installation.targetName, fields: section.fields, document: document), native.id == profile.id {
+                return native.ssoSessionName.isEmpty ? nil : native.ssoSessionName
+            }
+        }
+        guard !profile.ssoSessionName.isEmpty else { return nil }
         if let local = document.sections.first(where: { $0.name == "sso-session " + profile.ssoSessionName }), matches(local) {
             return profile.ssoSessionName
         }
-        let session = "terminaldb-" + profile.id
+        // All roles imported from one named session share the same local login.
+        // Keep different named sessions separate even when their portals match.
+        let identity = try JSONSerialization.data(withJSONObject: [profile.ssoStartURL, profile.ssoRegion, profile.ssoSessionName])
+        let session = "terminaldb-sso-" + AWSProfileDescriptor.hash(identity)
         if let local = document.sections.first(where: { $0.name == "sso-session " + session }), !matches(local) {
             throw PeerFailure("The private AWS session name already belongs to another portal. Review the AWS configuration before signing in.")
         }
         return session
+    }
+
+    // Cached SSO token freshness is independent of longer-lived account/role
+    // credentials. The official AWS CLI owns authentication and token refresh.
+    // Only status metadata leaves this bounded, local-only read.
+    func authenticationStatus(for profile: AWSProfileDescriptor, now: Date = Date()) -> [String: Any] {
+        guard profile.kind == "sso" else { return ["state": "notApplicable"] }
+        var result: [String: Any] = ["state": "unknown"]
+        do {
+            let session = try resolvedSSOSessionName(for: profile)
+            if let session { result["sessionName"] = session }
+            let key = session ?? profile.ssoStartURL
+            let filename = Insecure.SHA1.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined() + ".json"
+            guard var bytes = try read(ssoCacheURL.appendingPathComponent(filename), missing: true, maximumBytes: 65_536) else {
+                result["state"] = "missing"; return result
+            }
+            defer { bytes.resetBytes(in: 0..<bytes.count) }
+            let metadata = try JSONDecoder().decode(SSOCacheMetadata.self, from: bytes)
+            guard metadata.hasAccessToken, metadata.startURL == profile.ssoStartURL, metadata.region == profile.ssoRegion,
+                  let expiry = Self.ssoDate(metadata.expiresAt), expiry.timeIntervalSince1970.isFinite else { return result }
+            result["expiresAt"] = expiry.timeIntervalSince1970
+            result["state"] = expiry > now ? "current" : "expired"
+        } catch { /* Unreadable or unsafe cache is unknown, never signed in. */ }
+        return result
+    }
+
+    private struct SSOCacheMetadata: Decodable {
+        var startURL: String
+        var region: String
+        var expiresAt: String
+        var hasAccessToken: Bool
+        enum CodingKeys: String, CodingKey { case startUrl, region, expiresAt, accessToken }
+        init(from decoder: Decoder) throws {
+            let fields = try decoder.container(keyedBy: CodingKeys.self)
+            startURL = try fields.decode(String.self, forKey: .startUrl)
+            region = try fields.decode(String.self, forKey: .region)
+            expiresAt = try fields.decode(String.self, forKey: .expiresAt)
+            hasAccessToken = !(try fields.decodeIfPresent(String.self, forKey: .accessToken) ?? "").isEmpty
+        }
+    }
+    private static func ssoDate(_ text: String) -> Date? {
+        let normalized = text.hasSuffix("UTC") ? String(text.dropLast(3)) + "Z" : text
+        let formatter = ISO8601DateFormatter()
+        if let value = formatter.date(from: normalized) { return value }
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: normalized)
     }
 
     func installations() throws -> [AWSProfileInstallation] {
@@ -360,7 +427,7 @@ final class AWSProfileConfiguration {
         let fd = Darwin.open(url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else { throw PeerFailure("The AWS configuration directory could not be opened safely.") }; return fd
     }
-    private func read(_ url: URL, missing: Bool) throws -> Data? {
+    private func read(_ url: URL, missing: Bool, maximumBytes: Int = AWSProfileConfiguration.maximumBytes) throws -> Data? {
         if missing && !FileManager.default.fileExists(atPath: url.deletingLastPathComponent().path) { return nil }
         let dir = try directoryFD(url.deletingLastPathComponent()); defer { Darwin.close(dir) }
         let fd = openat(dir, url.lastPathComponent, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
@@ -368,14 +435,14 @@ final class AWSProfileConfiguration {
         guard fd >= 0 else { throw PeerFailure("The AWS configuration could not be read safely. Symbolic links are not supported.") }
         defer { Darwin.close(fd) }
         var st = stat()
-        guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, st.st_uid == getuid(), st.st_nlink == 1, st.st_mode & 0o022 == 0, st.st_size <= Self.maximumBytes else { throw PeerFailure("The AWS configuration is not a supported regular file.") }
+        guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, st.st_uid == getuid(), st.st_nlink == 1, st.st_mode & 0o022 == 0, st.st_size <= maximumBytes else { throw PeerFailure("The AWS configuration is not a supported regular file.") }
         var result = Data(); var buffer = [UInt8](repeating: 0, count: 8192)
         while true {
             let count = Darwin.read(fd, &buffer, buffer.count)
             if count < 0 && errno == EINTR { continue }
             guard count >= 0 else { throw PeerFailure("The AWS configuration could not be read.") }
             if count == 0 { break }; result.append(contentsOf: buffer.prefix(count))
-            guard result.count <= Self.maximumBytes else { throw PeerFailure("The AWS configuration is too large.") }
+            guard result.count <= maximumBytes else { throw PeerFailure("The AWS configuration is too large.") }
         }
         return result
     }

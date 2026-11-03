@@ -53,8 +53,10 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
             view.catalog = ["profiles": try [object(engineering), object(production)],
                             "configuredProfileIDs": [engineering.id, production.id], "sources": [production.id],
                             "accounts": [["profileId": production.id, "descriptor": try object(production), "available": true, "expires": Date().addingTimeInterval(3600).timeIntervalSince1970],
-                                         ["profileId": team.id, "descriptor": try object(team), "available": true]],
-                            "installed": [], "sourceStatus": [:], "signInProfile": ""]
+                                         ["profileId": team.id, "descriptor": try object(team), "available": true, "expires": Date().addingTimeInterval(3600).timeIntervalSince1970]],
+                            "installed": [], "sourceStatus": [:], "signInProfile": "",
+                            "authentication": [engineering.id: ["state": "missing", "sessionName": "workspace-sso"],
+                                               production.id: ["state": "expired", "sessionName": "workspace-sso", "expiresAt": Date().addingTimeInterval(-3600).timeIntervalSince1970]]]
             view.panel.contentView?.layoutSubtreeIfNeeded(); view.render()
             var checks = 0
             for width in [600.0, 700.0, 1000.0] {
@@ -85,6 +87,15 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
                                       actionX.map { abs($0 - actionRect.minX) < 1 } ?? true]
                     guard conditions.allSatisfy({ $0 }) else { fputs("AWS profile row layout regression failed.\n", stderr); return false }
                     checks += conditions.count; actionX = actionRect.minX
+                    if let authentication = child("aws-profile-authentication") as? NSTextField {
+                        let authenticationRect = rect(authentication)
+                        let authenticationLayout = [!identityRect.intersects(authenticationRect), !authenticationRect.intersects(stateRect),
+                                                    authenticationRect.maxX <= actionRect.minX - 8,
+                                                    authentication.maximumNumberOfLines == 1, authenticationRect.height >= 14,
+                                                    !authentication.isHidden, !(authentication.toolTip ?? "").isEmpty]
+                        guard authenticationLayout.allSatisfy({ $0 }) else { fputs("AWS SSO status layout regression failed.\n", stderr); return false }
+                        checks += authenticationLayout.count
+                    }
                 }
             }
             let engineeringRow = view.list.arrangedSubviews.first { row in
@@ -100,6 +111,74 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
             let routing = [requested.count == 1, requested.first?.0 == "aws.signIn.start", requested.first?.1["profileId"] as? String == engineering.id]
             guard routing.allSatisfy({ $0 }) else { fputs("AWS profile action routing regression failed.\n", stderr); return false }
             checks += routing.count
+            func profileRow(_ name: String) -> NSView? {
+                view.list.arrangedSubviews.first { row in row.subviews.contains { ($0 as? NSTextField)?.stringValue == name } }
+            }
+            func field(_ row: NSView?, _ identifier: String) -> NSTextField? {
+                row?.subviews.first { $0.identifier?.rawValue == identifier } as? NSTextField
+            }
+            func primary(_ row: NSView?) -> NSButton? {
+                row?.subviews.first { $0.identifier?.rawValue == "aws-profile-primary" } as? NSButton
+            }
+            let expiredRow = profileRow("production")
+            let expired = [primary(expiredRow)?.title == "Sign In", primary(expiredRow)?.isEnabled == true,
+                           field(expiredRow, "aws-profile-authentication")?.stringValue == "SSO needs renewal · workspace-sso",
+                           field(expiredRow, "aws-profile-state")?.stringValue.hasPrefix("Cached access until ") == true,
+                           field(expiredRow, "aws-profile-authentication")?.textColor == .systemOrange]
+            guard expired.allSatisfy({ $0 }) else { fputs("AWS cached-access SSO expiry regression failed.\n", stderr); return false }
+            checks += expired.count
+            primary(expiredRow)?.performClick(nil)
+            let cachedRouting = [requested.count == 2, requested.last?.0 == "aws.signIn.start", requested.last?.1["profileId"] as? String == production.id]
+            guard cachedRouting.allSatisfy({ $0 }) else { return false }; checks += cachedRouting.count
+
+            view.catalog["signInProfile"] = production.id
+            view.catalog["signInProfiles"] = [engineering.id, production.id]
+            view.render()
+            for name in ["engineering", "production"] {
+                let row = profileRow(name)
+                let grouped = [primary(row)?.title == "Signing In…", primary(row)?.isEnabled == false,
+                               field(row, "aws-profile-authentication")?.stringValue == "Signing in to SSO…"]
+                guard grouped.allSatisfy({ $0 }) else { return false }; checks += grouped.count
+            }
+            // Cancellation keeps cached credentials visible and immediately
+            // restores the session-renewal action instead of a Ready badge.
+            view.catalog["signInProfile"] = ""; view.catalog["signInProfiles"] = []
+            view.render()
+            let cancelled = [primary(profileRow("production"))?.title == "Sign In", primary(profileRow("production"))?.isEnabled == true,
+                             field(profileRow("production"), "aws-profile-state")?.stringValue.hasPrefix("Cached access until ") == true]
+            guard cancelled.allSatisfy({ $0 }) else { return false }; checks += cancelled.count
+            view.catalog["authentication"] = [production.id: ["state": "current", "sessionName": "workspace-sso", "expiresAt": Date().addingTimeInterval(3600).timeIntervalSince1970],
+                                              engineering.id: ["state": "current", "sessionName": "workspace-sso", "expiresAt": Date().addingTimeInterval(3600).timeIntervalSince1970]]
+            view.render()
+            let current = [primary(profileRow("production"))?.title == "Sign In Again",
+                           field(profileRow("production"), "aws-profile-authentication")?.stringValue == "SSO signed in · workspace-sso",
+                           field(profileRow("production"), "aws-profile-state")?.stringValue.hasPrefix("Cached access until ") == true]
+            guard current.allSatisfy({ $0 }) else { return false }; checks += current.count
+            // A shared SSO login authenticates unshared sibling profiles too.
+            // Missing role-cache material must not make the UI claim sign-in
+            // is required again while the shared session is current.
+            let sibling = profileRow("engineering")
+            let unshared = [primary(sibling)?.title == "Sign In Again", primary(sibling)?.isEnabled == true,
+                            field(sibling, "aws-profile-authentication")?.stringValue == "SSO signed in · workspace-sso",
+                            field(sibling, "aws-profile-state")?.stringValue == "Not shared"]
+            guard unshared.allSatisfy({ $0 }) else { return false }; checks += unshared.count
+            primary(sibling)?.performClick(nil)
+            let siblingRouting = [requested.count == 3, requested.last?.0 == "aws.signIn.start", requested.last?.1["profileId"] as? String == engineering.id]
+            guard siblingRouting.allSatisfy({ $0 }) else { return false }; checks += siblingRouting.count
+            view.catalog["authentication"] = [production.id: ["state": "unrecognized-future-state"]]
+            view.render()
+            let unknown = [primary(profileRow("production"))?.title == "Sign In",
+                           field(profileRow("production"), "aws-profile-authentication")?.stringValue == "SSO status unavailable"]
+            guard unknown.allSatisfy({ $0 }) else { return false }; checks += unknown.count
+            view.catalog["installed"] = [["profileId": team.id, "descriptor": try object(team), "targetName": "received-team"]]
+            view.catalog["authentication"] = [team.id: ["state": "missing"]]
+            view.render()
+            let receiver = profileRow("received-team")
+            let receiving = [primary(receiver)?.title == "Sign In", primary(receiver)?.isEnabled == true,
+                             field(receiver, "aws-profile-authentication")?.stringValue == "SSO sign-in available on This Mac",
+                             field(receiver, "aws-profile-authentication")?.textColor == .secondaryLabelColor,
+                             field(receiver, "aws-profile-state")?.stringValue.hasPrefix("Cached access until ") == true]
+            guard receiving.allSatisfy({ $0 }) else { return false }; checks += receiving.count
             print("AWS interface layout checks passed: \(checks)")
             return true
         } catch { fputs("AWS interface layout fixtures could not be prepared.\n", stderr); return false }
@@ -228,7 +307,8 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
         } else {
             body = ["profiles": catalog["profiles"] ?? [], "configuredProfileIDs": catalog["configuredProfileIDs"] ?? [], "accounts": catalog["accounts"] ?? [],
                     "installed": catalog["installed"] ?? [], "sourceStatus": catalog["sourceStatus"] ?? [:],
-                    "sources": catalog["sources"] ?? [], "signIn": catalog["signInProfile"] ?? ""]
+                    "sources": catalog["sources"] ?? [], "signIn": catalog["signInProfile"] ?? "",
+                    "signInProfiles": catalog["signInProfiles"] ?? [], "authentication": catalog["authentication"] ?? [:]]
         }
         guard let data = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]) else { return }
         let signature = "\(syncing):\(pending):" + String(decoding: data, as: UTF8.self)
@@ -271,6 +351,8 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
         profileRows = AWSProfilePresentation.rows(catalog: catalog)
         let sources = Set(catalog["sources"] as? [String] ?? [])
         let states = catalog["sourceStatus"] as? [String: String] ?? [:]
+        var signingIn = Set(catalog["signInProfiles"] as? [String] ?? [])
+        if let selected = catalog["signInProfile"] as? String, !selected.isEmpty { signingIn.insert(selected) }
         if profileRows.isEmpty {
             addRow(NSStackView(views: [label("No supported AWS profiles yet. Configure an SSO or console-login profile with the AWS CLI, or choose Sharing to receive profiles from your Macs.")]))
             return
@@ -282,40 +364,52 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
             title.identifier = .init("aws-profile-name")
             title.setAccessibilityIdentifier("aws-profile-name")
             var availability = states[id] ?? (item.hasLocalProfile && !source ? "Not shared" : item.status)
-            let needsRenewal = states[id] == "Sign in on this Mac to renew"
+            let showsAuthentication = item.descriptor.kind == "sso" && (item.hasLocalProfile || item.isInstalled || source)
+            let optionalLocalSignIn = item.isInstalled && !item.hasLocalProfile && !source && item.available && item.authentication.state == "missing"
+            let needsRenewal = states[id] == "Sign in on this Mac to renew" || (showsAuthentication && item.authentication.needsRenewal)
             if let expires = item.expiration, item.available {
                 let time = DateFormatter.localizedString(from: Date(timeIntervalSince1970: expires), dateStyle: .none, timeStyle: .short)
-                availability = (source || item.isInstalled ? "Expires " : "Shared access · Expires ") + time
-                if needsRenewal { availability += " · Sign-in needed for renewal" }
+                availability = (showsAuthentication ? "Cached access until " : (source || item.isInstalled ? "Access until " : "Shared access until ")) + time
             }
             let identity = NSTextField(labelWithString: item.identitySummary)
             let state = NSTextField(labelWithString: availability)
-            for label in [title, identity, state] {
+            let authenticationText = optionalLocalSignIn ? "SSO sign-in available on This Mac" : item.authentication.label
+            let authentication = NSTextField(labelWithString: signingIn.contains(id) ? "Signing in to SSO…" : authenticationText)
+            authentication.identifier = .init("aws-profile-authentication")
+            authentication.setAccessibilityIdentifier("aws-profile-authentication")
+            authentication.font = .systemFont(ofSize: 12)
+            authentication.textColor = needsRenewal && !optionalLocalSignIn && !signingIn.contains(id) ? .systemOrange : .secondaryLabelColor
+            for label in [title, identity, authentication, state] {
                 label.lineBreakMode = .byTruncatingMiddle
                 label.maximumNumberOfLines = 1
                 label.toolTip = label.stringValue
                 label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             }
             for label in [identity, state] { label.font = .systemFont(ofSize: 12); label.textColor = .secondaryLabelColor }
+            authentication.lineBreakMode = .byTruncatingTail
+            if let expiry = item.authentication.expiration {
+                authentication.toolTip = item.authentication.label + "\nSSO token expiry: " + DateFormatter.localizedString(from: Date(timeIntervalSince1970: expiry), dateStyle: .short, timeStyle: .short)
+            }
             identity.identifier = .init("aws-profile-identity"); state.identifier = .init("aws-profile-state")
             let primary: NSView
             if item.status == "Choose Account Again" {
                 primary = button("Review…") { [weak self] in self?.showDetails(item) }
-            } else if !item.isInstalled && (!item.hasLocalProfile || (!source && item.available)) {
-                primary = button("Use on This Mac…") { [weak self] in self?.install(item) }
-            } else if !item.available || needsRenewal {
-                primary = signInButton(needsRenewal ? "Renew Sign-In" : "Sign In", profile: id)
+            } else if signingIn.contains(id) {
+                primary = signInButton("Signing In…", profile: id)
+            } else if item.hasLocalProfile || item.isInstalled || source {
+                let signedIn = showsAuthentication ? item.authentication.state == "current" : (item.available && !needsRenewal)
+                primary = signInButton(signedIn ? "Sign In Again" : "Sign In", profile: id)
             } else {
-                let ready = NSTextField(labelWithString: "Ready")
-                ready.textColor = .secondaryLabelColor; ready.alignment = .right; ready.font = .systemFont(ofSize: 12)
-                primary = ready
+                primary = button("Use on This Mac…") { [weak self] in self?.install(item) }
             }
             primary.identifier = .init("aws-profile-primary")
             let menu = NSMenu(); menu.autoenablesItems = false; menu.delegate = self
             if !source && item.hasLocalProfile {
                 addMenuItem("Share Current Sign-In", to: menu) { [weak self] in self?.request("aws.source.enable", ["profileId": id]) }
             }
-            if item.available && !needsRenewal { addMenuItem("Sign In on This Mac", to: menu, enabled: (catalog["signInProfile"] as? String ?? "").isEmpty) { [weak self] in self?.request("aws.signIn.start", ["profileId": id]) } }
+            if !item.isInstalled && item.available && ((item.hasLocalProfile && !source) || (!item.hasLocalProfile && source)) {
+                addMenuItem(source ? "Use on This Mac…" : "Use Shared Access on This Mac…", to: menu) { [weak self] in self?.install(item) }
+            }
             if source { addMenuItem("Refresh Access", to: menu) { [weak self] in self?.request("aws.refresh", ["profileId": id]) } }
             else { addMenuItem("Sync Now", to: menu) { [weak self] in self?.syncNow() } }
             if item.isInstalled {
@@ -338,10 +432,11 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
             more.toolTip = "Profile actions"
             let row = NSView(); row.identifier = .init("aws-profile-row"); row.translatesAutoresizingMaskIntoConstraints = false
             let divider = NSBox(); divider.boxType = .separator
-            for child in [title, identity, state, primary, more, divider] { child.translatesAutoresizingMaskIntoConstraints = false; row.addSubview(child) }
+            let children: [NSView] = [title, identity] + (showsAuthentication ? [authentication] : []) + [state, primary, more, divider]
+            for child in children { child.translatesAutoresizingMaskIntoConstraints = false; row.addSubview(child) }
             list.addArrangedSubview(row)
             NSLayoutConstraint.activate([
-                row.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor, constant: -12), row.heightAnchor.constraint(equalToConstant: 80),
+                row.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor, constant: -12), row.heightAnchor.constraint(equalToConstant: showsAuthentication ? 100 : 80),
                 more.trailingAnchor.constraint(equalTo: row.trailingAnchor), more.widthAnchor.constraint(equalToConstant: 32),
                 more.heightAnchor.constraint(equalToConstant: 28), more.centerYAnchor.constraint(equalTo: row.centerYAnchor),
                 primary.trailingAnchor.constraint(equalTo: more.leadingAnchor, constant: -12), primary.widthAnchor.constraint(equalToConstant: 128),
@@ -351,11 +446,20 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
                 identity.leadingAnchor.constraint(equalTo: title.leadingAnchor), identity.trailingAnchor.constraint(equalTo: title.trailingAnchor),
                 identity.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 3), identity.heightAnchor.constraint(equalToConstant: 16),
                 state.leadingAnchor.constraint(equalTo: title.leadingAnchor), state.trailingAnchor.constraint(equalTo: title.trailingAnchor),
-                state.topAnchor.constraint(equalTo: identity.bottomAnchor, constant: 3), state.heightAnchor.constraint(equalToConstant: 16),
+                state.topAnchor.constraint(equalTo: showsAuthentication ? authentication.bottomAnchor : identity.bottomAnchor, constant: 3), state.heightAnchor.constraint(equalToConstant: 16),
                 divider.leadingAnchor.constraint(equalTo: row.leadingAnchor), divider.trailingAnchor.constraint(equalTo: row.trailingAnchor),
                 divider.bottomAnchor.constraint(equalTo: row.bottomAnchor), divider.heightAnchor.constraint(equalToConstant: 1)
             ])
+            if showsAuthentication {
+                NSLayoutConstraint.activate([
+                    authentication.leadingAnchor.constraint(equalTo: title.leadingAnchor),
+                    authentication.trailingAnchor.constraint(equalTo: title.trailingAnchor),
+                    authentication.topAnchor.constraint(equalTo: identity.bottomAnchor, constant: 3),
+                    authentication.heightAnchor.constraint(equalToConstant: 16)
+                ])
+            }
         }
+        addRow(NSStackView(views: [label("Profiles in the same SSO session share one sign-in.")]))
     }
 
     private func addMenuItem(_ title: String, to menu: NSMenu, enabled: Bool = true, action: @escaping () -> Void) {
@@ -373,6 +477,7 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
     private func showDetails(_ item: AWSProfilePresentation) {
         let alert = NSAlert(); alert.messageText = item.name
         var lines = [item.identitySummary]
+        if item.descriptor.kind == "sso" { lines.append(item.authentication.label) }
         if !item.localNames.isEmpty { lines.append("Local names: " + item.localNames.joined(separator: ", ")) }
         if !item.installedNames.isEmpty { lines.append("Managed names: " + item.installedNames.joined(separator: ", ")) }
         let otherNames = item.sharedNames.filter { !item.localNames.contains($0) && !item.installedNames.contains($0) }
@@ -385,7 +490,7 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
     }
     @objc private func showHelp() {
         let alert = NSAlert(); alert.messageText = "Shared AWS Access"
-        alert.informativeText = "Only selected profiles are shared with explicitly approved Macs. Browser sign-ins remain on their original Mac; each receiver keeps temporary access until AWS’s expiry.\n\nYou can sign in on any Mac. Profiles shared while away arrive automatically after LAN or VPN reconnects. Disabling sharing stops future transfers; revoke access in AWS when immediate termination is required. Claude sharing is configured separately."
+        alert.informativeText = "Only selected profiles are shared with explicitly approved Macs. Browser sign-ins remain on their original Mac; each receiver keeps temporary access until AWS’s expiry.\n\nOne SSO sign-in renews all profiles using that same session on This Mac. Only profiles you choose are shared.\n\nYou can sign in on any Mac. Profiles shared while away arrive automatically after LAN or VPN reconnects. Disabling sharing stops future transfers; revoke access in AWS when immediate termination is required. Claude sharing is configured separately."
         alert.addButton(withTitle: "Done"); alert.beginSheetModal(for: panel)
     }
     private func install(_ item: AWSProfilePresentation, suggestedName: String? = nil) {

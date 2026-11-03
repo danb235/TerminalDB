@@ -1,12 +1,13 @@
 import Foundation
 import Darwin
+import CryptoKit
 
 enum AWSProfileConfigurationTests {
     static func run(root: URL) throws -> Int {
         let base = root.appendingPathComponent("aws-configuration")
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let config = base.appendingPathComponent("config")
-        let managed = AWSProfileConfiguration(configURL: config, root: base.appendingPathComponent("managed"))
+        let managed = AWSProfileConfiguration(configURL: config, root: base.appendingPathComponent("managed"), ssoCacheURL: base.appendingPathComponent("sso-cache"))
         var count = 0
         func check(_ value: @autoclosure () throws -> Bool) throws {
             guard try value() else { throw PeerFailure("An AWS profile configuration regression failed after \(count) checks.") }; count += 1
@@ -112,8 +113,8 @@ enum AWSProfileConfigurationTests {
         try check(!backingText.contains("static") && !backingText.contains("credential_process"))
         let aliasBacking = try managed.prepareBackingConfig(legacy)
         try check(aliasBacking != backing && (try String(contentsOf: backing, encoding: .utf8)) == backingText)
-        try check(managed.loginArguments(for: source) == ["sso", "login", "--profile", "workspace"])
-        try check(managed.loginArguments(for: login) == ["login", "--profile", "web-login"])
+        try check(try managed.loginArguments(for: source) == ["sso", "login", "--sso-session", "work-session"])
+        try check(try managed.loginArguments(for: login) == ["login", "--profile", "web-login"])
         try check(rejected { _ = try managed.install(source, targetName: "workspace", launcherPath: "/Applications/TerminalDB.app/helper") })
         let aliasReplacement = try managed.install(source, targetName: "legacy", launcherPath: "/Applications/TerminalDB.app/helper", allowReplacingSource: true)
         try check(aliasReplacement.targetName == "legacy" && aliasReplacement.descriptor.id == source.id)
@@ -152,6 +153,82 @@ enum AWSProfileConfigurationTests {
         try check(rejected { try managed.restore(changedProfile) })
         try check(try String(contentsOf: config, encoding: .utf8) == beforeUnsafeRestore)
         try check(rejected { _ = try managed.install(source, targetName: "workspace-shared", launcherPath: helper) })
+        // A received same-name mapping retains the original local session, not
+        // the sending Mac's alias; its sibling local roles use that same login.
+        try write(original)
+        var incoming = source; incoming.ssoSessionName = "sending-mac-session"
+        let receivedMapping = try managed.install(incoming, targetName: "workspace", launcherPath: helper, allowReplacingSource: true)
+        try check(try managed.resolvedSSOSessionName(for: incoming) == "work-session")
+        try check(try managed.loginArguments(for: incoming) == ["sso", "login", "--sso-session", "work-session"])
+        try managed.restore(receivedMapping)
+        try check(try Data(contentsOf: config) == Data(original.utf8))
+
+        var legacyIncoming = legacy; legacyIncoming.name = "received-legacy"
+        let namedOriginal = try managed.install(legacyIncoming, targetName: "workspace", launcherPath: helper, allowReplacingSource: true)
+        try check(try managed.resolvedSSOSessionName(for: legacyIncoming) == "work-session")
+        try check(try String(contentsOf: managed.prepareBackingConfig(legacyIncoming), encoding: .utf8).contains("sso_session = work-session"))
+        try managed.restore(namedOriginal)
+        var namedIncoming = source; namedIncoming.name = "received-named"
+        let legacyOriginal = try managed.install(namedIncoming, targetName: "legacy", launcherPath: helper, allowReplacingSource: true)
+        try check(try managed.resolvedSSOSessionName(for: namedIncoming) == nil)
+        try check(try managed.loginArguments(for: namedIncoming) == ["sso", "login", "--profile", "received-named"])
+        try check(!(try String(contentsOf: managed.prepareBackingConfig(namedIncoming), encoding: .utf8)).contains("sso_session ="))
+        try managed.restore(legacyOriginal)
+        try check(try Data(contentsOf: config) == Data(original.utf8))
+
+        // SSO freshness does not borrow the account's longer-lived role cache.
+        let cache = base.appendingPathComponent("sso-cache")
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        func cachePath(_ key: String) -> URL {
+            cache.appendingPathComponent(Insecure.SHA1.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined() + ".json")
+        }
+        let tokenFile = cachePath("work-session")
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        var metadata: [String: Any] = ["startUrl": source.ssoStartURL, "region": source.ssoRegion,
+                                     "expiresAt": ISO8601DateFormatter().string(from: now.addingTimeInterval(3600)),
+                                     "accessToken": "synthetic-sso-access", "refreshToken": "synthetic-refresh"]
+        func saveMetadata() throws {
+            try JSONSerialization.data(withJSONObject: metadata).write(to: tokenFile)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tokenFile.path)
+        }
+        try check(managed.authenticationStatus(for: source, now: now)["state"] as? String == "missing")
+        try saveMetadata()
+        let current = managed.authenticationStatus(for: source, now: now)
+        try check(current["state"] as? String == "current" && current["sessionName"] as? String == "work-session")
+        try check(current["expiresAt"] as? Double == now.addingTimeInterval(3600).timeIntervalSince1970)
+        let statusText = String(data: try JSONSerialization.data(withJSONObject: current), encoding: .utf8)!
+        try check(!statusText.contains("synthetic") && !statusText.contains("accessToken") && !statusText.contains("refreshToken"))
+        let otherAccount = AWSProfileDescriptor(name: "project-data", kind: "sso", ssoStartURL: source.ssoStartURL, ssoRegion: source.ssoRegion, accountID: "999999999999", roleName: "Reader", ssoSessionName: "work-session")
+        try check(managed.authenticationStatus(for: otherAccount, now: now)["expiresAt"] as? Double == current["expiresAt"] as? Double)
+        metadata["expiresAt"] = ISO8601DateFormatter().string(from: now.addingTimeInterval(-1)); try saveMetadata()
+        try check(managed.authenticationStatus(for: source, now: now)["state"] as? String == "expired")
+        try check(managed.authenticationStatus(for: otherAccount, now: now)["state"] as? String == "expired")
+        metadata["expiresAt"] = "2033-05-18T04:33:20.000Z"; try saveMetadata()
+        try check(managed.authenticationStatus(for: source, now: now)["state"] as? String == "current")
+        metadata["expiresAt"] = "2033-05-18T04:33:20UTC"; try saveMetadata()
+        try check(managed.authenticationStatus(for: source, now: now)["state"] as? String == "current")
+        metadata["startUrl"] = "https://different.awsapps.com/start"; try saveMetadata()
+        try check(managed.authenticationStatus(for: source, now: now)["state"] as? String == "unknown")
+        metadata["startUrl"] = source.ssoStartURL; metadata.removeValue(forKey: "accessToken"); try saveMetadata()
+        try check(managed.authenticationStatus(for: source, now: now)["state"] as? String == "unknown")
+        metadata["accessToken"] = "synthetic-sso-access"; try saveMetadata()
+        try FileManager.default.setAttributes([.posixPermissions: 0o666], ofItemAtPath: tokenFile.path)
+        try check(managed.authenticationStatus(for: source, now: now)["state"] as? String == "unknown")
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tokenFile.path)
+        try Data(repeating: 65, count: 65_537).write(to: tokenFile)
+        try check(managed.authenticationStatus(for: source, now: now)["state"] as? String == "unknown")
+        try FileManager.default.removeItem(at: tokenFile)
+        let cacheTarget = cache.appendingPathComponent("other-cache")
+        try Data("{}".utf8).write(to: cacheTarget)
+        try FileManager.default.createSymbolicLink(at: tokenFile, withDestinationURL: cacheTarget)
+        try check(managed.authenticationStatus(for: source, now: now)["state"] as? String == "unknown")
+        try FileManager.default.removeItem(at: tokenFile)
+        try saveMetadata()
+        try FileManager.default.copyItem(at: tokenFile, to: cachePath(legacy.ssoStartURL))
+        try check(managed.authenticationStatus(for: legacy, now: now)["state"] as? String == "current")
+        try check(managed.authenticationStatus(for: login, now: now)["state"] as? String == "notApplicable")
+        try check(try Data(contentsOf: config) == Data(original.utf8))
+
         // Duplicate auth fields, malformed descriptors, links and oversized input
         // are rejected using only disposable files.
         try write("[profile duplicate]\nsso_start_url = https://example.awsapps.com/start\nsso_start_url = https://second.invalid/start\n")
@@ -181,7 +258,13 @@ enum AWSProfileConfigurationTests {
         let receiver = AWSProfileConfiguration(configURL: receiverConfig, root: receiverRoot.appendingPathComponent("managed"))
         let receiverInstall = try receiver.install(source, targetName: "workspace-shared", launcherPath: helper)
         let receiverBacking = try String(contentsOf: URL(fileURLWithPath: receiverInstall.backingConfigurationPath), encoding: .utf8)
-        try check(receiverBacking.contains("[sso-session terminaldb-" + source.id + "]") && !receiverBacking.contains("sso_session = work-session"))
+        let importedSession = try receiver.resolvedSSOSessionName(for: source)!
+        try check(receiverBacking.contains("[sso-session " + importedSession + "]") && !receiverBacking.contains("sso_session = work-session"))
+        var sibling = source; sibling.accountID = "999999999999"; sibling.name = "other-role"
+        sibling = AWSProfileDescriptor(name: sibling.name, kind: "sso", ssoStartURL: sibling.ssoStartURL, ssoRegion: sibling.ssoRegion, accountID: sibling.accountID, roleName: "Reader", ssoSessionName: sibling.ssoSessionName)
+        try check(try receiver.resolvedSSOSessionName(for: sibling) == importedSession)
+        var separate = source; separate.ssoSessionName = "separate-person"
+        try check(try receiver.resolvedSSOSessionName(for: separate) != importedSession)
         try check(try receiver.discover().isEmpty)
         try receiver.restore(receiverInstall)
         try check(try String(contentsOf: receiverConfig, encoding: .utf8) == noEOL)
@@ -195,8 +278,8 @@ enum AWSProfileConfigurationTests {
         try Data(otherPortal.utf8).write(to: receiverConfig)
         let collisionBacking = try receiver.prepareBackingConfig(source)
         let collisionText = try String(contentsOf: collisionBacking, encoding: .utf8)
-        try check(collisionText.contains("sso_session = terminaldb-" + source.id) && !collisionText.contains("other.awsapps.com"))
-        let deliberatePrivateCollision = otherPortal + "[sso-session terminaldb-" + source.id + "]\nsso_start_url = https://other.awsapps.com/start\nsso_region = us-east-1\n"
+        try check(collisionText.contains("sso_session = " + importedSession) && !collisionText.contains("other.awsapps.com"))
+        let deliberatePrivateCollision = otherPortal + "[sso-session " + importedSession + "]\nsso_start_url = https://other.awsapps.com/start\nsso_region = us-east-1\n"
         try Data(deliberatePrivateCollision.utf8).write(to: receiverConfig)
         try check(rejected { _ = try receiver.prepareBackingConfig(source) })
         let lockedConfig = receiverRoot.appendingPathComponent("locked-config")

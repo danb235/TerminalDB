@@ -1,0 +1,131 @@
+name: Install Build
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-build-main
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify trusted source and app version
+        id: version
+        env:
+          BUILD_EVENT: ${{ github.event_name }}
+          BUILD_REF: ${{ github.ref }}
+          BUILD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "${BUILD_EVENT}" == "workflow_dispatch" && "${BUILD_REF}" == "refs/heads/main" ]]
+          [[ "$(git rev-parse HEAD)" == "${BUILD_SHA}" ]]
+          INSTALL_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' apps/macos/Info.plist)"
+          INSTALL_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' apps/macos/Info.plist)"
+          [[ "${INSTALL_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "${INSTALL_BUILD}" =~ ^[0-9]+$ ]]
+          printf 'version=%s\nbuild=%s\n' "${INSTALL_VERSION}" "${INSTALL_BUILD}" >> "${GITHUB_OUTPUT}"
+
+      - name: Test before signing
+        run: make test-ci
+
+      - name: Import stable signing identity
+        env:
+          TERMINALDB_SIGNING_P12: ${{ secrets.TERMINALDB_SIGNING_P12 }}
+          TERMINALDB_SIGNING_PASSWORD: ${{ secrets.TERMINALDB_SIGNING_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          if [[ -z "${TERMINALDB_SIGNING_P12:-}" ]]; then
+            echo "::error::A stable TerminalDB signing identity is required for installation builds."
+            exit 1
+          fi
+          trap 'rm -f "${RUNNER_TEMP}/terminaldb-signing.p12"' EXIT
+          KEYCHAIN_PATH="${RUNNER_TEMP}/terminaldb.keychain-db"
+          security create-keychain -p ci "${KEYCHAIN_PATH}"
+          security set-keychain-settings -lut 3600 "${KEYCHAIN_PATH}"
+          security unlock-keychain -p ci "${KEYCHAIN_PATH}"
+          printf '%s' "${TERMINALDB_SIGNING_P12}" |
+            base64 --decode > "${RUNNER_TEMP}/terminaldb-signing.p12"
+          security import "${RUNNER_TEMP}/terminaldb-signing.p12" \
+            -k "${KEYCHAIN_PATH}" \
+            -P "${TERMINALDB_SIGNING_PASSWORD}" \
+            -A \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k ci \
+            "${KEYCHAIN_PATH}" \
+            >/dev/null
+          EXISTING_KEYCHAINS=()
+          while IFS= read -r KEYCHAIN; do
+            EXISTING_KEYCHAINS+=("${KEYCHAIN//\"/}")
+          done < <(security list-keychains -d user)
+          security list-keychains \
+            -d user \
+            -s "${KEYCHAIN_PATH}" \
+            "${EXISTING_KEYCHAINS[@]}"
+          security find-identity -v -p codesigning "${KEYCHAIN_PATH}" |
+            grep -F '"TerminalDB Self-Signed"' >/dev/null
+
+      - name: Build and verify universal installation bundle
+        env:
+          INSTALL_VERSION: ${{ steps.version.outputs.version }}
+          INSTALL_BUILD: ${{ steps.version.outputs.build }}
+        run: |
+          set -euo pipefail
+          TERMINALDB_VERSION="${INSTALL_VERSION}" \
+            TERMINALDB_BUILD="${INSTALL_BUILD}" \
+            ./apps/macos/Scripts/build-app.sh release
+          APP="apps/macos/build/TerminalDB.app"
+          for BUNDLE in "${APP}" \
+            "${APP}/Contents/Library/LoginItems/TerminalDBSessionHost.app" \
+            "${APP}/Contents/Library/LoginItems/TerminalDBPeerAgent.app"; do
+            codesign --verify --deep --strict --verbose=2 "${BUNDLE}"
+            codesign -dv --verbose=4 "${BUNDLE}" 2>&1 |
+              grep -F 'Authority=TerminalDB Self-Signed' >/dev/null
+            EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "${BUNDLE}/Contents/Info.plist")"
+            lipo "${BUNDLE}/Contents/MacOS/${EXECUTABLE}" -verify_arch arm64 x86_64
+            [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${BUNDLE}/Contents/Info.plist")" == "${INSTALL_VERSION}" ]]
+            [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "${BUNDLE}/Contents/Info.plist")" == "${INSTALL_BUILD}" ]]
+          done
+          ARTIFACT_DIRECTORY="${RUNNER_TEMP}/terminaldb-install-artifact"
+          mkdir -p "${ARTIFACT_DIRECTORY}"
+          INSTALL_ZIP="TerminalDB-install-${INSTALL_VERSION}-${INSTALL_BUILD}.zip"
+          ditto -c -k --sequesterRsrc --keepParent "${APP}" "${ARTIFACT_DIRECTORY}/${INSTALL_ZIP}"
+          (
+            cd "${ARTIFACT_DIRECTORY}"
+            shasum -a 256 "${INSTALL_ZIP}" > SHA256.txt
+          )
+
+      - name: Upload installation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TerminalDB-install-${{ steps.version.outputs.version }}-${{ steps.version.outputs.build }}
+          path: ${{ runner.temp }}/terminaldb-install-artifact/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+      - name: Remove temporary signing material
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -f "${RUNNER_TEMP}/terminaldb-signing.p12"
+          if [[ -f "${RUNNER_TEMP}/terminaldb.keychain-db" ]]; then
+            security delete-keychain "${RUNNER_TEMP}/terminaldb.keychain-db"
+          fi

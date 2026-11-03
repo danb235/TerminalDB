@@ -10,8 +10,9 @@ manages commands run on **This Mac**; each workstation keeps its own mappings.
    ends. AWS sharing is independent of Claude sharing and off by default.
    Selected Macs also exchange profiles received from their other approved Macs.
 2. TerminalDB detects existing SSO and console-login profiles in `~/.aws/config`.
-   Choose Sign In beside a profile, or Share Current Sign-In to reuse an already
-   valid login. TerminalDB chooses the correct official AWS login flow. Your
+   Choose Sign In beside any profile in an SSO session. Complete the official
+   AWS browser flow once to renew the shared session for all its local profiles.
+   Share Current Sign-In reuses access that is already valid. Your
    existing source profile and its command-line name stay unchanged.
 3. On another approved Mac, choose Use on This Mac once. Existing name
    conflicts require approval; unrelated profiles are preserved.
@@ -29,6 +30,25 @@ Original receiving profile configuration is backed up before migration. Remove s
 publishing this Mac's selected access and restores its managed mapping when
 the configuration has not been edited independently. Removal never runs the
 global `aws sso logout` command or signs unrelated profiles out.
+
+## Sign-in status
+
+Each local SSO profile shows the shared SSO session's cached authentication
+status separately from its temporary account/role access. **SSO needs renewal**
+or **SSO sign-in needed** can appear while cached profile access is still usable.
+**Sign In** stays visible; **Sign In Again** renews a current session without a
+terminal command. Profiles sharing that session show the same browser sign-in
+progress. A cancelled or failed sign-in keeps existing cached access but does not
+claim a renewed SSO login.
+
+Status reflects the local AWS CLI token cache, not a guarantee that AWS has not
+revoked access. An unreadable or unsafe cache shows **SSO status unavailable**.
+A receiving Mac can use valid shared credentials without a local SSO sign-in;
+signing in there is optional until that Mac needs to provide renewed access.
+
+Renewing SSO authentication does not enable sharing for every account or role.
+Only profiles explicitly selected for sharing are published. Already-enabled
+profiles in the same SSO session renew their access after browser sign-in.
 
 ## Offline use and expiry
 
