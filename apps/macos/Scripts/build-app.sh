@@ -87,14 +87,11 @@ for component in TerminalDBSessionHost TerminalDBPeerAgent TerminalDB; do
     component_app="${CONTENTS_DIR}/Library/LoginItems/${component}.app"
     identifier="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${component_app}/Contents/Info.plist")"
   fi
-  requirements=()
-  if [[ "${signing_identity}" == "-" ]]; then requirements=(--requirements "=designated => identifier \"${identifier}\""); fi
-  codesign \
-    --force \
-    --sign "${signing_identity}" \
-    --identifier "${identifier}" \
-    "${requirements[@]}" \
-    "${component_app}"
+  codesign_args=(--force --sign "${signing_identity}" --identifier "${identifier}")
+  if [[ "${signing_identity}" == "-" ]]; then
+    codesign_args+=(--requirements "=designated => identifier \"${identifier}\"")
+  fi
+  codesign "${codesign_args[@]}" "${component_app}"
 done
 
 codesign --verify --deep --strict --verbose=2 "${APP_DIR}"

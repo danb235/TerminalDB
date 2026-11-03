@@ -81,13 +81,28 @@ jobs:
             -s "${KEYCHAIN_PATH}" \
             "${EXISTING_KEYCHAINS[@]}"
 
+      # Older immutable tags also need a shell that supports empty signing arrays.
+      - name: Set up release Bash
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          set -euo pipefail
+          brew install bash
+          RELEASE_BASH="$(brew --prefix bash)/bin/bash"
+          if [[ ! -x "${RELEASE_BASH}" ]]; then
+            echo "The release Bash executable is unavailable." >&2
+            exit 1
+          fi
+          "${RELEASE_BASH}" -c '(( BASH_VERSINFO[0] >= 5 ))'
+          printf 'RELEASE_BASH=%s\n' "${RELEASE_BASH}" >> "${GITHUB_ENV}"
+
       - name: Build and package
         run: |
           set -euo pipefail
           VERSION="${RELEASE_TAG#v}"
           TERMINALDB_VERSION="${VERSION}" \
             TERMINALDB_BUILD="${GITHUB_RUN_NUMBER}" \
-            ./apps/macos/Scripts/build-app.sh release
+            "${RELEASE_BASH}" ./apps/macos/Scripts/build-app.sh release
 
           APP="apps/macos/build/TerminalDB.app"
           BIN="${APP}/Contents/MacOS/TerminalDB"
