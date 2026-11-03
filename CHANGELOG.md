@@ -7,6 +7,13 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Renew the shared AWS SSO session from any of its profiles using TerminalDB's
+  Sign In action. Show SSO renewal status separately from cached account access,
+  keep sign-in available, and update related profiles after browser sign-in.
+
+
 ## [0.6.5] - 2026-11-03
 
 TerminalDB now runs entirely in native macOS apps. Work across explicitly paired

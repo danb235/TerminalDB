@@ -206,6 +206,8 @@ final class SharedAWSService {
     private var jobs: [String: SharedAWSCommand] = [:]
     private var renewing: Set<String> = []
     private var signInProfile: String?
+    private var signInSessionKey: String?
+    private var signInRenewalGeneration: UInt64 = 0
     private var phase = ""
     private var sourceStatus: [String: String] = [:]
     private static let maximumLocalSources = 16
@@ -261,7 +263,7 @@ final class SharedAWSService {
                           let profile = try self.configuration.discover().first(where: { $0.id == id }) else {
                         throw PeerFailure("Choose an AWS SSO or browser-login profile configured on this Mac, or use Sign In first.")
                     }
-                    guard self.signInProfile != id else { throw PeerFailure("Complete or cancel this AWS sign-in before sharing its current access.") }
+                    guard !self.isSigningIn(profile) else { throw PeerFailure("Complete or cancel this AWS session sign-in before sharing its current access.") }
                     guard self.document.sources[id] != nil || self.document.sources.count < Self.maximumLocalSources else {
                         throw PeerFailure("Share up to 16 AWS profiles from this Mac. Stop sharing one before adding another.")
                     }
@@ -277,6 +279,7 @@ final class SharedAWSService {
                     let profile = try self.profile(payload)
                     let target = payload["targetName"] as? String ?? profile.name
                     if operation == "aws.share" {
+                        guard !self.isSigningIn(profile) else { throw PeerFailure("Complete or cancel this AWS session sign-in before sharing its current access.") }
                         guard try self.localProfiles().contains(where: { $0.id == profile.id }) else {
                             throw PeerFailure("Sign in on this Mac before sharing this AWS profile.")
                         }
@@ -302,54 +305,81 @@ final class SharedAWSService {
                 case "aws.signIn.start":
                     guard self.signInProfile == nil else { throw PeerFailure("Complete or cancel the AWS sign-in already open in your browser.") }
                     let profile = try self.profile(payload)
-                    guard self.jobs.count < 4 || self.jobs["refresh:" + profile.id] != nil else {
-                        throw PeerFailure("AWS is renewing other profiles. Try Sign In again in a moment.")
-                    }
                     guard self.document.sources[profile.id] != nil || self.document.sources.count < Self.maximumLocalSources else {
                         throw PeerFailure("Share up to 16 AWS profiles from this Mac. Stop sharing one before adding another.")
                     }
-                    // Coalesce any older renewal before opening a browser.
-                    // New source enrollment happens only after authentication
-                    // succeeds; cancellation must not enable background export.
-                    self.cancelRefresh(profile.id)
+                    // One browser sign-in owns the SSO session, not just its
+                    // selected account/role. Fence every related renewal before
+                    // authentication so old exports cannot overwrite new access.
+                    let sessionKey = try self.sessionKey(for: profile)
+                    self.signInRenewalGeneration &+= 1
+                    let renewalGeneration = self.signInRenewalGeneration
+                    for source in Array(self.document.sources.values) where source.descriptor.id == profile.id || (sessionKey != nil && (try? self.sessionKey(for: source.descriptor)) == sessionKey) {
+                        self.cancelRefresh(source.descriptor.id)
+                    }
+                    guard self.jobs.count < 4 else {
+                        throw PeerFailure("AWS is renewing other profiles. Try Sign In again in a moment.")
+                    }
+                    // New enrollment remains explicit and happens only after
+                    // authentication succeeds, never from a sibling profile.
                     let config = try self.configuration.prepareBackingConfig(profile)
                     let executable = try SharedAWSCLI.executable(root: self.root)
                     let environment = try SharedAWSCLI.environment(root: self.root, config: config)
                     let command = SharedAWSCommand(queue: self.queue)
                     let key = "signin:" + profile.id
-                    self.jobs[key] = command; self.signInProfile = profile.id
-                    self.phase = "Complete AWS sign-in in your browser on this Mac."
+                    self.jobs[key] = command; self.signInProfile = profile.id; self.signInSessionKey = sessionKey
+                    self.phase = profile.kind == "sso" ? "Complete AWS sign-in in your browser. This signs in all profiles using this SSO session on this Mac." : "Complete AWS sign-in in your browser on this Mac."
                     self.notify()
                     var launched = false
                     defer {
                         if !launched {
-                            self.jobs.removeValue(forKey: key); self.signInProfile = nil
+                            self.jobs.removeValue(forKey: key); self.signInProfile = nil; self.signInSessionKey = nil
                             command.cancel()
                         }
                     }
-                    try command.start(executable: executable, arguments: self.configuration.loginArguments(for: profile),
-                                      environment: environment, timeout: 600, capture: false) { [weak self] result in
-                        guard let self else { return }
-                        self.jobs.removeValue(forKey: key); self.signInProfile = nil
+                    try command.start(executable: executable, arguments: try self.configuration.loginArguments(for: profile),
+                                      environment: environment, timeout: 600, capture: false) { [weak self, weak command] result in
+                        guard let self, let command, self.jobs[key] === command else { return }
+                        self.jobs.removeValue(forKey: key); self.signInProfile = nil; self.signInSessionKey = nil
                         switch result {
                         case .success:
                             do {
                                 _ = try self.saveSource(profile, forceRenewal: true)
-                                self.phase = "Signed in. Your approved Macs receive renewed credentials when connected."
-                                self.refresh(profile.id, manual: true)
+                                let related = Array(self.document.sources.values).filter {
+                                    $0.descriptor.id == profile.id || (sessionKey != nil && (try? self.sessionKey(for: $0.descriptor)) == sessionKey)
+                                }.map { $0.descriptor.id }
+                                for id in related {
+                                    self.document.sources[id]?.lastAttempt = 0
+                                    self.document.sources[id]?.lastExpiry = 0
+                                    self.document.sources[id]?.failed = false
+                                }
+                                try self.save()
+                                if profile.kind == "sso" {
+                                    let state = self.configuration.authenticationStatus(for: profile)["state"] as? String
+                                    if state == "current" {
+                                        self.phase = "SSO session signed in. Its profiles can renew access on this Mac."
+                                    } else if state == "expired" || state == "missing" {
+                                        self.phase = "AWS sign-in finished, but this SSO session still needs sign-in. Choose Sign In again. Cached profile access is kept until it expires."
+                                    } else {
+                                        self.phase = "AWS sign-in finished, but its SSO status could not be verified. Check the session status before relying on renewal."
+                                    }
+                                } else {
+                                    self.phase = "Signed in. Your approved Macs receive renewed credentials when connected."
+                                }
+                                self.refreshSignedInSources(related, generation: renewalGeneration)
                             } catch {
                                 self.phase = "AWS sign-in finished locally, but sharing could not be saved. Open AWS Access and try again."
                             }
                         case .failure:
-                            self.phase = "AWS sign-in did not finish. Try Sign In again."
+                            self.phase = "AWS sign-in did not finish. Try Sign In again. Existing cached profile access is kept until it expires."
                         }
                         self.notify()
                     }
                     launched = true
                     reply(["accepted": true])
                 case "aws.signIn.cancel":
-                    if let id = self.signInProfile { self.jobs["signin:" + id]?.cancel() }
-                    self.phase = "AWS sign-in cancelled."; self.notify(); reply(["accepted": true])
+                    self.cancelSignIn()
+                    self.phase = "AWS sign-in cancelled. Existing cached profile access is kept until it expires."; self.notify(); reply(["accepted": true])
                 case "aws.refresh":
                     if let id = payload["profileId"] as? String {
                         guard self.document.sources[id] != nil else { throw PeerFailure("Sign in on this Mac to renew this AWS profile.") }
@@ -358,7 +388,7 @@ final class SharedAWSService {
                     reply(["accepted": true])
                 case "aws.remove":
                     let profile = try self.profile(payload)
-                    self.jobs["signin:" + profile.id]?.cancel()
+                    if self.signInProfile == profile.id { self.cancelSignIn() }
                     let previous = self.document.sources.removeValue(forKey: profile.id)
                     do { try self.save() }
                     catch { self.document.sources[profile.id] = previous; throw error }
@@ -383,7 +413,7 @@ final class SharedAWSService {
                         self.refresh(id, manual: false)
                         reply(["credentials": credentials.processOutput()])
                     } catch {
-                        guard self.document.sources[id] != nil, !self.renewing.contains(id), self.signInProfile != id else { throw error }
+                        guard let source = self.document.sources[id], !self.renewing.contains(id), !self.isSigningIn(source.descriptor) else { throw error }
                         self.document.sources[id]?.lastExpiry = 0
                         self.refresh(id, manual: false) {
                             do { reply(["credentials": try self.store.credentials(forProfile: id).processOutput()]) }
@@ -441,6 +471,38 @@ final class SharedAWSService {
         renewing.remove(id)
         command?.cancel()
     }
+    // Resolve only local, validated metadata. A shared account/role identity
+    // does not imply that two aliases use the same local SSO login session.
+    private func sessionKey(for profile: AWSProfileDescriptor) throws -> String? {
+        guard profile.kind == "sso" else { return nil }
+        let name = try configuration.resolvedSSOSessionName(for: profile) ?? ""
+        let data = try JSONSerialization.data(withJSONObject: [profile.ssoStartURL, profile.ssoRegion, name])
+        return AWSProfileDescriptor.hash(data)
+    }
+    private func isSigningIn(_ profile: AWSProfileDescriptor) -> Bool {
+        guard signInProfile != nil else { return false }
+        if profile.id == signInProfile { return true }
+        guard let signInSessionKey else { return false }
+        return (try? sessionKey(for: profile)) == signInSessionKey
+    }
+    private func cancelSignIn() {
+        guard let id = signInProfile else { return }
+        // Detach first: a cancelled process may report termination after a
+        // newer browser login starts. It must not clear that new operation.
+        let command = jobs.removeValue(forKey: "signin:" + id)
+        signInProfile = nil; signInSessionKey = nil
+        command?.cancel()
+    }
+    private func refreshSignedInSources(_ ids: [String], generation: UInt64) {
+        guard generation == signInRenewalGeneration, let id = ids.first else { return }
+        // Run in bounded batches even when the SSO session has many profiles.
+        // Every refresh rechecks source enrollment and the selected descriptor.
+        if jobs.count >= 4 {
+            queue.asyncAfter(deadline: .now() + 0.2) { [weak self] in self?.refreshSignedInSources(ids, generation: generation) }
+            return
+        }
+        refresh(id, manual: true) { [weak self] in self?.refreshSignedInSources(Array(ids.dropFirst()), generation: generation) }
+    }
     private func localProfiles() throws -> [AWSProfileDescriptor] {
         var profiles = try configuration.discover()
         for source in document.sources.values where !profiles.contains(where: { $0.id == source.descriptor.id }) { profiles.append(source.descriptor) }
@@ -454,7 +516,10 @@ final class SharedAWSService {
         throw PeerFailure("This AWS profile is no longer available. Reconnect the Mac that shared it.")
     }
     private func catalog() throws -> [String: Any] {
-        let profiles = try localProfiles().map { try JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) }
+        let local = try localProfiles()
+        let profiles = try local.map { try JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) }
+        var authentication: [String: [String: Any]] = [:]
+        for profile in local where authentication[profile.id] == nil { authentication[profile.id] = configuration.authenticationStatus(for: profile) }
         let installed: [[String: Any]] = try configuration.installations().map {
             ["profileId": $0.descriptor.id, "targetName": $0.targetName, "source": document.sources[$0.descriptor.id] != nil,
              "descriptor": try JSONSerialization.jsonObject(with: JSONEncoder().encode($0.descriptor))]
@@ -463,6 +528,8 @@ final class SharedAWSService {
                 "configuredProfileIDs": Array(Set(try configuration.discover().map(\.id))).sorted(),
                 "localProfileNames": try configuration.configuredNames(),
                 "phase": phase, "sourceStatus": sourceStatus, "signInProfile": signInProfile ?? "",
+                "signInProfiles": Array(Set(local.filter { isSigningIn($0) }.map(\.id))).sorted(),
+                "authentication": authentication,
                 "sources": document.sources.keys.sorted()]
     }
     private func notify() { DispatchQueue.main.async { self.changed?() } }
@@ -474,7 +541,7 @@ final class SharedAWSService {
         } catch { /* The native catalog reports recoverable configuration failures. */ }
     }
     private func refresh(_ id: String, manual: Bool, completion: (() -> Void)? = nil) {
-        guard let source = document.sources[id], !renewing.contains(id), signInProfile != id, jobs.count < 4 else { completion?(); return }
+        guard let source = document.sources[id], !renewing.contains(id), !isSigningIn(source.descriptor), jobs.count < 4 else { completion?(); return }
         let now = Date().timeIntervalSince1970
         guard manual || source.lastExpiry <= now + 300 else { completion?(); return }
         guard manual || !source.failed || now < source.lastAttempt || now - source.lastAttempt >= 300 else { completion?(); return }
@@ -749,12 +816,12 @@ enum SharedAWSServiceTests {
         setenv("TERMINALDB_PEER_STATE_DIR", root.path, 1); setenv("TERMINALDB_AWS_QA_EXECUTABLE", fake.path, 1)
         let program = """
         #!/usr/bin/python3
-        import sys,json,datetime,os,time
+        import sys,json,datetime,os,time,configparser,hashlib
         from pathlib import Path
         args=sys.argv[1:]
         if (Path(os.environ['HOME'])/'capture-config').exists():
             profile=args[args.index('--profile')+1] if '--profile' in args else ''
-            call={'operation':args[0], 'profile':profile, 'config':Path(os.environ['AWS_CONFIG_FILE']).read_text()}
+            call={'operation':args[0], 'profile':profile, 'session':args[args.index('--sso-session')+1] if '--sso-session' in args else '', 'config':Path(os.environ['AWS_CONFIG_FILE']).read_text()}
             with (Path(os.environ['HOME'])/'fixture-calls.jsonl').open('a') as output: output.write(json.dumps(call)+'\\n')
         if args[:2]==['configure','export-credentials']:
             if (Path(os.environ['HOME'])/'export-delay').exists():
@@ -765,11 +832,23 @@ enum SharedAWSServiceTests {
             if not expiry.exists(): expiry.write_text((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(minutes=10)).isoformat())
             print(json.dumps({'Version':1,'AccessKeyId':'tdb-test-access-key'+generation,'SecretAccessKey':'tdb-test-secret-key'+generation,'SessionToken':'tdb-test-session-token'+generation,'Expiration':expiry.read_text()}))
         elif args[:2]==['sts','get-caller-identity']:
-            print(json.dumps({'Account':'123456789012','Arn':'arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_ReadOnly_0123456789abcdef/synthetic'}))
+            config=configparser.RawConfigParser(); config.read(os.environ['AWS_CONFIG_FILE'])
+            section=next(s for s in config.sections() if s.startswith('profile ') or s=='default')
+            account=config.get(section,'sso_account_id'); role=config.get(section,'sso_role_name')
+            print(json.dumps({'Account':account,'Arn':'arn:aws:sts::'+account+':assumed-role/AWSReservedSSO_'+role+'_0123456789abcdef/synthetic'}))
         elif args[:2]==['sso','login']:
             if (Path(os.environ['HOME'])/'signin-delay').exists():
                 (Path(os.environ['HOME'])/'signin-started').write_text('ready')
                 time.sleep(0.8)
+            if (Path(os.environ['HOME'])/'signin-fail').exists(): sys.exit(1)
+            if '--sso-session' in args:
+                session=args[args.index('--sso-session')+1]
+                config=configparser.RawConfigParser(); config.read(os.environ['AWS_CONFIG_FILE'])
+                section='sso-session '+session
+                cache=Path(os.environ['HOME'])/'.aws/sso/cache'; cache.mkdir(parents=True,exist_ok=True)
+                token=cache/(hashlib.sha1(session.encode()).hexdigest()+'.json')
+                token.write_text(json.dumps({'accessToken':'tdb-test-sso-token','startUrl':config.get(section,'sso_start_url'),'region':config.get(section,'sso_region'),'expiresAt':(datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ')}))
+                token.chmod(0o600)
         else: sys.exit(1)
         """
         try Data(program.utf8).write(to: fake)
@@ -962,7 +1041,7 @@ enum SharedAWSServiceTests {
         try check(try aliasRequest("aws.signIn.start", ["profileId": aliasID])["accepted"] as? Bool == true)
         try check(try waitReady("a-current", session: "cache-current"))
         let signedInCall = try lastCall("sso")
-        try check(signedInCall?["profile"] as? String == "a-current" && (signedInCall?["config"] as? String)?.contains("sso_session = cache-current\n") == true)
+        try check(signedInCall?["session"] as? String == "cache-current" && (signedInCall?["config"] as? String)?.contains("sso_session = cache-current\n") == true)
         let sourcePath = aliasRoot.appendingPathComponent("aws-service.json")
         func selectedAlias() throws -> String? { try JSONDecoder().decode(SharedAWSLocalDocument.self, from: Data(contentsOf: sourcePath)).sources[aliasID]?.descriptor.name }
         try check(try selectedAlias() == "a-current")
@@ -1016,6 +1095,116 @@ enum SharedAWSServiceTests {
         try Data(afterPartial.replacingOccurrences(of: "# Edited outside TerminalDB\n", with: "").utf8).write(to: aliasConfig)
         try check(try aliasRequest("aws.remove", ["profileId": aliasID])["error"] == nil)
         try check(try Data(contentsOf: aliasConfig) == Data(nativeAliases.utf8))
+        // A browser login renews one named SSO session across account/role
+        // profiles, while credential publication stays explicitly selected.
+        let sessionRoot = root.appendingPathComponent("shared-session")
+        try FileManager.default.createDirectory(at: sessionRoot.appendingPathComponent("aws-fixture"), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let sessionCLI = sessionRoot.appendingPathComponent("aws")
+        try FileManager.default.copyItem(at: fake, to: sessionCLI)
+        setenv("TERMINALDB_AWS_QA_EXECUTABLE", sessionCLI.path, 1)
+        try Data().write(to: sessionRoot.appendingPathComponent("capture-config"))
+        func sessionProfile(_ name: String, role: String, session: String = "team") -> String {
+            "[profile \(name)]\nsso_session = \(session)\nsso_account_id = 123456789012\nsso_role_name = \(role)\nregion = us-east-1\n\n"
+        }
+        let sessionConfig = sessionRoot.appendingPathComponent("aws-fixture/config")
+        let sessionBytes = Data((sessionProfile("alpha", role: "ReadOnly") + sessionProfile("beta", role: "Developer") + sessionProfile("unshared", role: "Analyst") + sessionProfile("other", role: "Audit", session: "other-team") +
+            "[sso-session team]\nsso_start_url = https://example.awsapps.com/start\nsso_region = us-east-1\n\n[sso-session other-team]\nsso_start_url = https://example.awsapps.com/start\nsso_region = us-east-1\n").utf8)
+        try sessionBytes.write(to: sessionConfig)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: sessionConfig.path)
+        let cache = sessionRoot.appendingPathComponent(".aws/sso/cache")
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        // SHA-1 filenames are AWS CLI's documented cache convention. These are
+        // disposable metadata fixtures; no real token is read or generated.
+        func expiredSession(_ name: String) throws {
+            let command = Process(); command.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+            command.arguments = ["-c", "import pathlib,hashlib,json,sys; p=pathlib.Path(sys.argv[1])/(hashlib.sha1(sys.argv[2].encode()).hexdigest()+'.json'); p.write_text(json.dumps({'accessToken':'tdb-test-expired-token','startUrl':'https://example.awsapps.com/start','region':'us-east-1','expiresAt':'2020-01-01T00:00:00Z'})); p.chmod(0o600)", cache.path, name]
+            command.standardInput = FileHandle.nullDevice; command.standardOutput = FileHandle.nullDevice; command.standardError = FileHandle.nullDevice
+            try command.run(); command.waitUntilExit()
+            guard command.terminationStatus == 0 else { throw PeerFailure("The synthetic SSO cache could not be prepared.") }
+        }
+        try expiredSession("team"); try expiredSession("other-team")
+        let sessionService = SharedAWSService(root: sessionRoot)
+        func sessionRequest(_ operation: String, _ payload: [String: Any] = [:]) throws -> [String: Any] {
+            var response: [String: Any]?
+            sessionService.handle(operation, payload: payload) { response = $0 }
+            let deadline = Date().addingTimeInterval(10)
+            while response == nil && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+            guard let response else { throw PeerFailure("The synthetic shared SSO operation did not finish.") }
+            return response
+        }
+        let discovered = try sessionRequest("aws.catalog")["profiles"] as! [[String: Any]]
+        let ids = Dictionary(uniqueKeysWithValues: discovered.map { ($0["name"] as! String, $0["id"] as! String) })
+        let alpha = ids["alpha"]!, beta = ids["beta"]!, unshared = ids["unshared"]!, other = ids["other"]!
+        func authState(_ catalog: [String: Any], _ id: String) -> String? {
+            (catalog["authentication"] as? [String: [String: Any]])?[id]?["state"] as? String
+        }
+        func waitSessionReady(_ expected: String, _ expectedSources: [String]) throws -> Bool {
+            let deadline = Date().addingTimeInterval(8)
+            while Date() < deadline {
+                let state = try sessionRequest("aws.catalog")
+                let statuses = state["sourceStatus"] as? [String: String] ?? [:]
+                if state["signInProfile"] as? String == "", expectedSources.allSatisfy({ statuses[$0] == "Ready to share" }) {
+                    var matches = true
+                    for id in expectedSources {
+                        let value = try sessionRequest("aws.credentials", ["profileId": id])
+                        if (value["credentials"] as? [String: Any])?["AccessKeyId"] as? String != expected { matches = false }
+                    }
+                    if matches { return true }
+                }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+            }
+            return false
+        }
+        for id in [alpha, beta, other] { try check(try sessionRequest("aws.source.enable", ["profileId": id])["error"] == nil) }
+        try check(try waitSessionReady("tdb-test-access-key", [alpha, beta, other]))
+        let cachedButExpired = try sessionRequest("aws.catalog")
+        try check(authState(cachedButExpired, alpha) == "expired" && authState(cachedButExpired, beta) == "expired")
+        try check((cachedButExpired["accounts"] as? [[String: Any]])?.filter { $0["available"] as? Bool == true }.count == 3)
+        try Data("session-renewed".utf8).write(to: sessionRoot.appendingPathComponent("generation"))
+        try Data().write(to: sessionRoot.appendingPathComponent("signin-delay"))
+        try check(try sessionRequest("aws.signIn.start", ["profileId": alpha])["accepted"] as? Bool == true)
+        let signingIn = try sessionRequest("aws.catalog")
+        try check(Set(signingIn["signInProfiles"] as? [String] ?? []) == Set([alpha, beta, unshared]))
+        try check(try sessionRequest("aws.source.enable", ["profileId": unshared])["error"] != nil)
+        try check(try waitSessionReady("tdb-test-access-key-session-renewed", [alpha, beta]))
+        let signedIn = try sessionRequest("aws.catalog")
+        try check(authState(signedIn, alpha) == "current" && authState(signedIn, beta) == "current" && authState(signedIn, unshared) == "current")
+        try check(authState(signedIn, other) == "expired")
+        try check(Set(signedIn["sources"] as? [String] ?? []) == Set([alpha, beta, other]))
+        let unrelated = try sessionRequest("aws.credentials", ["profileId": other])
+        try check((unrelated["credentials"] as? [String: Any])?["AccessKeyId"] as? String == "tdb-test-access-key")
+        let sessionCalls = try String(contentsOf: sessionRoot.appendingPathComponent("fixture-calls.jsonl"), encoding: .utf8).split(separator: "\n").compactMap { try JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+        try check(sessionCalls.filter { $0["operation"] as? String == "sso" }.count == 1)
+        try check(sessionCalls.first { $0["operation"] as? String == "sso" }?["session"] as? String == "team")
+        try check(try Data(contentsOf: sessionConfig) == sessionBytes)
+        // Cancellation and failure retain cached access but never turn an
+        // expired shared SSO login into a successful authentication state.
+        try expiredSession("team")
+        try check(try sessionRequest("aws.signIn.start", ["profileId": beta])["accepted"] as? Bool == true)
+        try check(try sessionRequest("aws.signIn.cancel")["accepted"] as? Bool == true)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.9))
+        let cancelledSession = try sessionRequest("aws.catalog")
+        try check(cancelledSession["signInProfile"] as? String == "" && authState(cancelledSession, alpha) == "expired")
+        try check((try sessionRequest("aws.credentials", ["profileId": alpha])["credentials"] as? [String: Any])?["AccessKeyId"] as? String == "tdb-test-access-key-session-renewed")
+        try Data().write(to: sessionRoot.appendingPathComponent("signin-fail"))
+        try check(try sessionRequest("aws.signIn.start", ["profileId": alpha])["accepted"] as? Bool == true)
+        let failedDeadline = Date().addingTimeInterval(5)
+        var failedSession: [String: Any] = [:]
+        repeat {
+            failedSession = try sessionRequest("aws.catalog")
+            if failedSession["signInProfile"] as? String == "" { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        } while Date() < failedDeadline
+        try check(failedSession["signInProfile"] as? String == "" && authState(failedSession, beta) == "expired")
+        try check((try sessionRequest("aws.credentials", ["profileId": beta])["credentials"] as? [String: Any])?["AccessKeyId"] as? String == "tdb-test-access-key-session-renewed")
+        try check(Set(failedSession["sources"] as? [String] ?? []) == Set([alpha, beta, other]))
+        try FileManager.default.removeItem(at: sessionRoot.appendingPathComponent("signin-fail"))
+        try check(try sessionRequest("aws.signIn.start", ["profileId": alpha])["accepted"] as? Bool == true)
+        try check(try sessionRequest("aws.signIn.cancel")["accepted"] as? Bool == true)
+        try check(try sessionRequest("aws.signIn.start", ["profileId": beta])["accepted"] as? Bool == true)
+        try check(try waitSessionReady("tdb-test-access-key-session-renewed", [alpha, beta]))
+        try check(authState(try sessionRequest("aws.catalog"), alpha) == "current")
+        try check(try Data(contentsOf: sessionConfig) == sessionBytes)
         return count
     }
 }

@@ -2,6 +2,29 @@ import Foundation
 
 // A profile name is a local alias. The validated descriptor identity, rather
 // than its display name or the latest publishing Mac, determines each row.
+struct AWSProfileAuthentication {
+    let state: String
+    let sessionName: String?
+    let expiration: Double?
+
+    init(_ value: [String: Any]?) {
+        let candidate = value?["state"] as? String ?? "unknown"
+        state = ["current", "expired", "missing", "unknown", "notApplicable"].contains(candidate) ? candidate : "unknown"
+        sessionName = (value?["sessionName"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        expiration = value?["expiresAt"] as? Double
+    }
+    var needsRenewal: Bool { state != "current" && state != "notApplicable" }
+    var summary: String {
+        switch state {
+        case "current": return "SSO signed in"
+        case "expired": return "SSO needs renewal"
+        case "missing": return "SSO sign-in needed"
+        default: return "SSO status unavailable"
+        }
+    }
+    var label: String { summary + (sessionName.map { " · " + $0 } ?? "") }
+}
+
 struct AWSProfilePresentation {
     var id: String
     var descriptor: AWSProfileDescriptor
@@ -12,6 +35,7 @@ struct AWSProfilePresentation {
     var available: Bool
     var expiration: Double?
     var status: String
+    var authentication: AWSProfileAuthentication
 
     var name: String { installedNames.first ?? localNames.first ?? descriptor.name }
     var hasLocalProfile: Bool { !localNames.isEmpty }
@@ -28,6 +52,7 @@ struct AWSProfilePresentation {
         let locals = profiles.filter { configured?.contains($0.id) ?? true }
         let shared = catalog["accounts"] as? [[String: Any]] ?? []
         let installed = catalog["installed"] as? [[String: Any]] ?? []
+        let authentication = catalog["authentication"] as? [String: [String: Any]] ?? [:]
         var candidates: [String: [AWSProfileDescriptor]] = [:]
         for local in locals { candidates[local.id, default: []].append(local) }
         for profile in profiles { candidates[profile.id, default: []].append(profile) }
@@ -47,7 +72,8 @@ struct AWSProfilePresentation {
                         sharedNames: names, sourceNames: unique(account?["sourceNames"] as? [String] ?? []),
                         available: account?["available"] as? Bool == true,
                         expiration: account?["expires"] as? Double,
-                        status: account?["status"] as? String ?? "Not shared")
+                        status: account?["status"] as? String ?? "Not shared",
+                        authentication: AWSProfileAuthentication(authentication[id]))
         }.sorted { a, b in a.name == b.name ? before(a.identitySummary, b.identitySummary) : before(a.name, b.name) }
     }
 
