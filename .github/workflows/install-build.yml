@@ -79,8 +79,24 @@ jobs:
             -d user \
             -s "${KEYCHAIN_PATH}" \
             "${EXISTING_KEYCHAINS[@]}"
-          security find-identity -v -p codesigning "${KEYCHAIN_PATH}" |
+          # Match the release build's identity inventory. A self-signed identity
+          # is usable for codesigning but is omitted by the valid-only (-v) filter.
+          security find-identity -p codesigning "${KEYCHAIN_PATH}" |
             grep -F '"TerminalDB Self-Signed"' >/dev/null
+
+      - name: Set up installation Bash
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          set -euo pipefail
+          brew install bash
+          INSTALL_BASH="$(brew --prefix bash)/bin/bash"
+          if [[ ! -x "${INSTALL_BASH}" ]]; then
+            echo "The installation Bash executable is unavailable." >&2
+            exit 1
+          fi
+          "${INSTALL_BASH}" -c '(( BASH_VERSINFO[0] >= 5 ))'
+          printf 'INSTALL_BASH=%s\n' "${INSTALL_BASH}" >> "${GITHUB_ENV}"
 
       - name: Build and verify universal installation bundle
         env:
@@ -90,7 +106,7 @@ jobs:
           set -euo pipefail
           TERMINALDB_VERSION="${INSTALL_VERSION}" \
             TERMINALDB_BUILD="${INSTALL_BUILD}" \
-            ./apps/macos/Scripts/build-app.sh release
+            "${INSTALL_BASH}" ./apps/macos/Scripts/build-app.sh release
           APP="apps/macos/build/TerminalDB.app"
           for BUNDLE in "${APP}" \
             "${APP}/Contents/Library/LoginItems/TerminalDBSessionHost.app" \
