@@ -3363,7 +3363,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                 isEqualToString:@"Show AI Chat"] &&
             second.workstationsButton.image != nil &&
             [[second.workstationsButton accessibilityLabel]
-                isEqualToString:@"Workstations"] &&
+                isEqualToString:@"Macs and sessions"] &&
             second.workstationsButton.action == @selector(showWorkstationMenu:);
         [second showAssistantPane];
         BOOL chatExpanded =

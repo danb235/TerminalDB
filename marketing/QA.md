@@ -1,0 +1,92 @@
+# Marketing website QA
+
+Run this pass on the release candidate served from `marketing/`. Keep automated
+checks and browser outcomes separate. No real credentials or terminal contents
+should appear in screenshots or recorded evidence.
+
+## Automated checks
+
+Run `python3 marketing/test_site.py`. The check validates document and heading
+structure, links and section order, local assets and screenshot dimensions,
+required product boundaries, generic profile copy, security headers, and
+credential patterns. It does not prove visual layout, download availability, or
+native functionality.
+
+## Visible browser pass
+
+1. At desktop widths of 1440 and 1024 pixels, open the top of the page. Confirm
+   the hero has a clear title and primary download action; the native screenshot
+   is readable and does not cover text. Check aligned card padding and headings
+   through the workstation, Claude, AWS, usage, tools, privacy, and download areas.
+2. At 768, 390, and 320 pixels, inspect the entire page. Confirm navigation wraps
+   intentionally, columns stack, profile examples fit, images retain aspect ratio,
+   buttons remain usable, and no text or page content creates horizontal scroll.
+3. Use every header link, the logo, and footer links. Confirm each internal
+   destination appears below the sticky header. Check the three download buttons
+   target the same latest stable `TerminalDB-macOS.zip` asset. Follow Release notes
+   and GitHub documentation links and verify the release asset is available.
+4. Use only the keyboard from a fresh page load. Reveal Skip to content, activate
+   it, then navigate links and FAQ summaries. Check visible focus and natural tab
+   order. Open and close each FAQ using Enter or Space. No pointer-only control
+   should be necessary.
+5. Enable reduced motion and reload. Confirm anchor navigation does not animate.
+   Disable JavaScript and repeat navigation and FAQ interaction. At 200% zoom,
+   confirm text and controls remain accessible without overlapping.
+6. Inspect both native screenshots at full size. Confirm they show the release
+   interface and only synthetic data. Alt text should describe the visible app,
+   not an obsolete layout or a long transcription of account values.
+7. Read as a new user: a new tab starts on This Mac; another workstation is an
+   explicit choice; both pairing approvals and both account-sync approvals are
+   clear; LAN works without internet; away access uses the user's VPN. No public
+   terminal ports, browser terminals, cloud account requirement, or security
+   guarantee should be implied.
+8. Read the account edge cases. A reusable Claude account added away from home
+   syncs on return to approved Macs. Ordinary local sign-ins need Share Sign-In.
+   AWS profiles are detected generically, collisions offer aliases, and cached
+   access expires unless renewed. Unpairing cannot revoke copies already issued.
+9. Confirm download requirements are visible: macOS 13+, Apple Silicon and Intel,
+   not notarized, GitHub source and checksum verification, and first-launch
+   instructions. Do not imply that the app has completed Developer ID notarization.
+10. With browser network inspection, reload and expand FAQ disclosures. The page
+    should request only its own HTML, CSS, favicon, and two screenshots. It should
+    make no analytics, font CDN, script, account, or terminal connection requests.
+    External GitHub requests should occur only after following a link.
+
+## Release evidence, November 3, 2026
+
+Automated validation:
+
+- Passed `python3 marketing/test_site.py` after refreshing both native captures,
+  matching their 1920 × 1264 dimensions, and fixing the skip destination's focus.
+- Static review confirms no scripts, external fonts, analytics, forms, embeds, or
+  account endpoints. The production CSP disallows scripts, connection requests,
+  frames, and form submission. This is source/header evidence, not a browser
+  network-inspector result.
+
+Visible browser and native capture outcomes:
+
+- At 1440 and 1024 pixel desktop widths and 768, 390, and 320 pixel widths, the
+  page had no horizontal overflow.
+- Workstations, Claude, AWS, and Privacy header links reached their sections
+  with a 104 pixel offset below the sticky header.
+- All eight FAQ disclosures opened and closed using Enter.
+- Skip to content transferred keyboard focus to the main landmark after adding
+  its `tabindex="-1"` destination.
+- The GitHub security documentation link opened successfully.
+- Both product images are current native 0.6.5 screenshots at 1920 × 1264. The
+  capture app used a private synthetic shell and three fictional reusable Claude
+  accounts. Fictional usage/history show the current interface without a pace
+  warning. No real terminal contents, account credentials, or device identities
+  were captured. Screenshot URLs are versioned to replace previously cached UI.
+
+Not executed or still pending:
+
+- Public release asset download and availability: pending publication. All three
+  download links are statically verified to target the same latest stable
+  universal `TerminalDB-macOS.zip` asset.
+- OS reduced-motion setting, JavaScript-disabled browsing, 200% browser zoom,
+  and browser network inspection were not executed. Static CSS includes reduced
+  motion handling, and the page has no JavaScript dependency, but those checks
+  must not be reported as visible passes.
+- Native application functionality and physical Mac/VPN scenarios are covered
+  separately; this website pass does not substitute for those tests.
