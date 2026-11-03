@@ -5,7 +5,7 @@ private final class AWSAccessList: NSStackView {
 }
 
 @objc(TDBAWSAccessPanel)
-public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate {
+public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate {
     private static var current: TDBAWSAccessPanel?
     private let panel: NSPanel
     private let host = TDBSessionClient()
@@ -14,12 +14,14 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate {
     private let scroll = NSScrollView()
     private let status = NSTextField(wrappingLabelWithString: "")
     private let subtitle = NSTextField(wrappingLabelWithString: "")
-    private let tabs = NSSegmentedControl(labels: ["Profiles", "Sync Macs"], trackingMode: .selectOne, target: nil, action: nil)
+    private let tabs = NSSegmentedControl(labels: ["Profiles", "Sharing"], trackingMode: .selectOne, target: nil, action: nil)
     private let cancel = NSButton(title: "Cancel Sign-In", target: nil, action: nil)
     private var timer: Timer?
     private var rowsSignature = ""
     private var choices: [(String, NSButton)] = []
     private var actions: [String: () -> Void] = [:]
+    private var buttonActions: [ObjectIdentifier: () -> Void] = [:]
+    private var requestForTesting: ((String, [String: Any]) -> Void)?
     private var catalog: [String: Any] = [:]
     private var peerState: [String: Any] = [:]
     private var pending = false
@@ -27,36 +29,107 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate {
     private var syncSaving = false
     private var closeAfterSync = false
     private var actionError: String?
+    private var profileRows: [AWSProfilePresentation] = []
+    private var trackingMenu = false
 
     @objc public static func present() {
         if let current { current.panel.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
         let view = TDBAWSAccessPanel(); current = view; view.show()
     }
 
+    // AppKit geometry is exercised after NSApplication initializes, without
+    // presenting a window, connecting a helper, or loading real account data.
+    @objc public static func runInterfaceSelfTests() -> Bool {
+        guard Thread.isMainThread else { return false }
+        do {
+            func object(_ profile: AWSProfileDescriptor) throws -> [String: Any] {
+                try JSONSerialization.jsonObject(with: JSONEncoder().encode(profile)) as! [String: Any]
+            }
+            let engineering = AWSProfileDescriptor(name: "engineering", kind: "sso", ssoStartURL: "https://example.awsapps.com/start", ssoRegion: "us-east-1", accountID: "111111111111", roleName: "Developer")
+            let production = AWSProfileDescriptor(name: "production", kind: "sso", ssoStartURL: "https://example.awsapps.com/start", ssoRegion: "us-east-1", accountID: "222222222222", roleName: "ReadOnly")
+            let team = AWSProfileDescriptor(name: String(repeating: "team-", count: 16), kind: "sso", ssoStartURL: "https://another.awsapps.com/start", ssoRegion: "us-east-1", accountID: "333333333333", roleName: String(repeating: "LongRole", count: 20))
+            let view = TDBAWSAccessPanel()
+            defer { view.panel.close() }
+            view.catalog = ["profiles": try [object(engineering), object(production)],
+                            "configuredProfileIDs": [engineering.id, production.id], "sources": [production.id],
+                            "accounts": [["profileId": production.id, "descriptor": try object(production), "available": true, "expires": Date().addingTimeInterval(3600).timeIntervalSince1970],
+                                         ["profileId": team.id, "descriptor": try object(team), "available": true]],
+                            "installed": [], "sourceStatus": [:], "signInProfile": ""]
+            view.panel.contentView?.layoutSubtreeIfNeeded(); view.render()
+            var checks = 0
+            for width in [600.0, 700.0, 1000.0] {
+                view.panel.setContentSize(NSSize(width: width, height: 560))
+                guard let content = view.panel.contentView else { return false }
+                content.layoutSubtreeIfNeeded(); view.list.layoutSubtreeIfNeeded()
+                let rows = view.list.arrangedSubviews.filter { $0.identifier?.rawValue == "aws-profile-row" }
+                guard rows.count == 3 else { return false }
+                let clip = view.scroll.contentView.convert(view.scroll.contentView.bounds, to: content)
+                let document = view.list.convert(view.list.bounds, to: content)
+                var actionX: CGFloat?
+                for row in rows {
+                    func child(_ identifier: String) -> NSView? { row.subviews.first { $0.identifier?.rawValue == identifier } }
+                    guard let title = child("aws-profile-name") as? NSTextField,
+                          let identity = child("aws-profile-identity") as? NSTextField,
+                          let state = child("aws-profile-state") as? NSTextField,
+                          let action = child("aws-profile-primary"), let more = child("aws-profile-actions") else { return false }
+                    func rect(_ item: NSView) -> NSRect { item.superview!.convert(item.alignmentRect(forFrame: item.frame), to: content) }
+                    let nameRect = rect(title), identityRect = rect(identity), stateRect = rect(state), actionRect = rect(action), moreRect = rect(more)
+                    let conditions = [nameRect.width >= 150, nameRect.height >= 16,
+                                      identityRect.width >= 150, identityRect.height >= 14, stateRect.height >= 14,
+                                      !nameRect.intersects(identityRect), !identityRect.intersects(stateRect),
+                                      nameRect.maxX <= actionRect.minX - 8, stateRect.maxX <= actionRect.minX - 8,
+                                      actionRect.maxX <= moreRect.minX - 8, moreRect.maxX <= clip.maxX + 1,
+                                      nameRect.minX >= clip.minX - 1, moreRect.maxX <= document.maxX + 1,
+                                      title.font?.pointSize == 14, identity.maximumNumberOfLines == 1, state.maximumNumberOfLines == 1,
+                                      identity.toolTip == identity.stringValue, !title.isHidden,
+                                      actionX.map { abs($0 - actionRect.minX) < 1 } ?? true]
+                    guard conditions.allSatisfy({ $0 }) else { fputs("AWS profile row layout regression failed.\n", stderr); return false }
+                    checks += conditions.count; actionX = actionRect.minX
+                }
+            }
+            let engineeringRow = view.list.arrangedSubviews.first { row in
+                row.subviews.contains { ($0 as? NSTextField)?.stringValue == "engineering" }
+            }
+            guard let signIn = engineeringRow?.subviews.first(where: { $0.identifier?.rawValue == "aws-profile-primary" }) as? NSButton else { return false }
+            var requested: [(String, [String: Any])] = []
+            view.requestForTesting = { requested.append(($0, $1)) }
+            // Presentation IDs must never replace the callback's routing key.
+            // Exercise the actual NSButton target/action, not the closure itself.
+            signIn.identifier = .init("aws-profile-primary")
+            signIn.performClick(nil)
+            let routing = [requested.count == 1, requested.first?.0 == "aws.signIn.start", requested.first?.1["profileId"] as? String == engineering.id]
+            guard routing.allSatisfy({ $0 }) else { fputs("AWS profile action routing regression failed.\n", stderr); return false }
+            checks += routing.count
+            print("AWS interface layout checks passed: \(checks)")
+            return true
+        } catch { fputs("AWS interface layout fixtures could not be prepared.\n", stderr); return false }
+    }
+
     private override init() {
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 700, height: 650),
+        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 700, height: 560),
                         styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         super.init()
         panel.title = "AWS Access — " + PeerProtocol.displayName(Host.current().localizedName ?? "This Mac")
         panel.isReleasedWhenClosed = false; panel.delegate = self
-        let title = NSTextField(labelWithString: "AWS profiles on This Mac")
-        title.font = .systemFont(ofSize: 22, weight: .semibold)
+        let title = NSTextField(labelWithString: "AWS Profiles")
+        title.font = .systemFont(ofSize: 20, weight: .semibold)
         subtitle.textColor = .secondaryLabelColor
         tabs.selectedSegment = 0; tabs.target = self; tabs.action = #selector(changeTab)
         tabs.setAccessibilityLabel("AWS access view")
-        list.orientation = .vertical; list.alignment = .leading; list.spacing = 12
+        list.orientation = .vertical; list.alignment = .leading; list.spacing = 0
         list.identifier = .init("AWSProfiles")
+        list.autoresizingMask = [.width]
         scroll.documentView = list; scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
-        scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 290).isActive = true
-        let note = label("Each Mac keeps temporary access until AWS’s expiry time. Renewal needs a reachable, signed-in Mac. You can sign in on any Mac.", small: true)
+        scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
+        let help = NSButton(title: "About Shared Access", target: self, action: #selector(showHelp)); help.isBordered = false
         let done = NSButton(title: "Done", target: self, action: #selector(closePanel)); done.keyEquivalent = "\u{1b}"
         cancel.target = self; cancel.action = #selector(cancelSignIn); cancel.isHidden = true
-        let footer = NSStackView(views: [cancel, NSView(), done]); footer.orientation = .horizontal
+        let footer = NSStackView(views: [help, NSView(), cancel, done]); footer.orientation = .horizontal; footer.spacing = 12
         status.font = .systemFont(ofSize: 12); status.textColor = .secondaryLabelColor
         status.setAccessibilityLabel("AWS access status")
-        let stack = NSStackView(views: [title, subtitle, tabs, scroll, note, status, footer])
-        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 14
+        let stack = NSStackView(views: [title, subtitle, tabs, scroll, status, footer])
+        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
         let content = panel.contentView!; content.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -66,7 +139,7 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate {
             stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -22)
         ])
         for view in stack.arrangedSubviews { view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
-        panel.minSize = NSSize(width: 640, height: 600)
+        panel.minSize = NSSize(width: 600, height: 520)
         agent.agentManagement = true
         updateSubtitle()
     }
@@ -81,14 +154,14 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate {
     private func label(_ text: String, small: Bool = false) -> NSTextField {
         let view = NSTextField(wrappingLabelWithString: text)
         view.textColor = .secondaryLabelColor
-        view.font = .systemFont(ofSize: small ? 11 : 12)
+        view.font = .systemFont(ofSize: 12)
         return view
     }
 
     private func updateSubtitle() {
         subtitle.stringValue = tabs.selectedSegment == 0
-            ? "Use these profiles in commands on This Mac. Your AWS browser sign-in stays on the Mac where you sign in."
-            : "Choose the paired Macs allowed to exchange selected AWS profiles. Enable AWS sync on both Macs. Claude sync settings are separate."
+            ? "Manage profiles for commands on This Mac. Existing profiles are detected automatically."
+            : "Choose which paired Macs may exchange selected AWS access. Approval is required on both Macs."
     }
 
     @objc private func changeTab() {
@@ -117,7 +190,7 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate {
 
     private func clearRows() {
         for view in list.arrangedSubviews { list.removeArrangedSubview(view); view.removeFromSuperview() }
-        actions.removeAll(); choices.removeAll()
+        actions.removeAll(); buttonActions.removeAll(); choices.removeAll()
     }
 
     private func addRow(_ row: NSStackView) {
@@ -130,7 +203,7 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate {
 
     private func button(_ title: String, action: @escaping () -> Void) -> NSButton {
         let value = NSButton(title: title, target: self, action: #selector(invokeAction(_:)))
-        let id = UUID().uuidString; value.identifier = .init(id); actions[id] = action
+        buttonActions[ObjectIdentifier(value)] = action
         value.isEnabled = !pending
         return value
     }
@@ -141,10 +214,11 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate {
     }
 
     @objc private func invokeAction(_ sender: NSButton) {
-        guard let id = sender.identifier?.rawValue else { return }; actions[id]?()
+        buttonActions[ObjectIdentifier(sender)]?()
     }
 
     private func render() {
+        guard !trackingMenu else { return }
         let syncing = tabs.selectedSegment == 1
         var body: [String: Any]
         if syncing {
@@ -152,16 +226,19 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate {
             body = ["peers": peerState["peers"] ?? [], "enabled": enabled,
                     "connected": agent.connected, "states": peerState["awsStatus"] ?? [:]]
         } else {
-            body = ["profiles": catalog["profiles"] ?? [], "accounts": catalog["accounts"] ?? [],
+            body = ["profiles": catalog["profiles"] ?? [], "configuredProfileIDs": catalog["configuredProfileIDs"] ?? [], "accounts": catalog["accounts"] ?? [],
                     "installed": catalog["installed"] ?? [], "sourceStatus": catalog["sourceStatus"] ?? [:],
                     "sources": catalog["sources"] ?? [], "signIn": catalog["signInProfile"] ?? ""]
         }
         guard let data = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]) else { return }
         let signature = "\(syncing):\(pending):" + String(decoding: data, as: UTF8.self)
         guard signature != rowsSignature else { return }
+        let position = scroll.contentView.bounds.origin
         rowsSignature = signature; clearRows()
         if syncing { renderMacs() } else { renderProfiles() }
         list.frame = NSRect(x: 0, y: 0, width: scroll.contentSize.width, height: list.fittingSize.height)
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: min(position.y, max(0, list.frame.height - scroll.contentSize.height))))
+        scroll.reflectScrolledClipView(scroll.contentView)
     }
 
     private func renderMacs() {
@@ -180,90 +257,164 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate {
             let choice = NSButton(checkboxWithTitle: name, target: self, action: #selector(syncMacChanged(_:)))
             choice.state = enabled.contains(id) ? .on : .off
             choices.append((id, choice))
-            addRow(NSStackView(views: [choice, label(states[id] ?? (enabled.contains(id) ? "Waiting for the other Mac" : "AWS sync is off"))]))
+            let detail = label(enabled.contains(id) ? states[id] ?? "Waiting for the other Mac" : "Sharing off")
+            let row = NSStackView(views: [choice, NSView(), detail]); row.orientation = .horizontal; row.alignment = .centerY; row.spacing = 12
+            row.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
+            detail.widthAnchor.constraint(lessThanOrEqualTo: row.widthAnchor, multiplier: 0.46).isActive = true
+            choice.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            addRow(NSStackView(views: [row]))
         }
-        addRow(NSStackView(views: [label("Macs exchange profiles shared here and profiles received from other approved Macs. Turning sync off stops future transfers; copied credentials remain valid until AWS expires or revokes them.", small: true)]))
+        addRow(NSStackView(views: [label("Sharing includes profiles received from your other approved Macs. Changes save automatically.", small: true)]))
     }
 
     private func renderProfiles() {
-        let profiles = catalog["profiles"] as? [[String: Any]] ?? []
-        let accounts = catalog["accounts"] as? [[String: Any]] ?? []
-        let installed = catalog["installed"] as? [[String: Any]] ?? []
+        profileRows = AWSProfilePresentation.rows(catalog: catalog)
         let sources = Set(catalog["sources"] as? [String] ?? [])
         let states = catalog["sourceStatus"] as? [String: String] ?? [:]
-        var descriptors: [String: [String: Any]] = [:]
-        for p in profiles { if let id = p["id"] as? String { descriptors[id] = p } }
-        for a in accounts {
-            if let id = a["profileId"] as? String, let d = a["descriptor"] as? [String: Any] { descriptors[id] = d }
-        }
-        for item in installed {
-            if let id = item["profileId"] as? String, let d = item["descriptor"] as? [String: Any], descriptors[id] == nil {
-                descriptors[id] = d
-            }
-        }
-        if descriptors.isEmpty {
-            addRow(NSStackView(views: [label("No AWS profiles are available yet. Configure an AWS SSO or console-login profile with the AWS CLI, or enable Sync Macs to receive a shared profile.")]))
+        if profileRows.isEmpty {
+            addRow(NSStackView(views: [label("No supported AWS profiles yet. Configure an SSO or console-login profile with the AWS CLI, or choose Sharing to receive profiles from your Macs.")]))
             return
         }
-        for (id, descriptor) in descriptors.sorted(by: { ($0.value["name"] as? String ?? "") < ($1.value["name"] as? String ?? "") }) {
-            let account = accounts.first { $0["profileId"] as? String == id }
-            let mapping = installed.first { $0["profileId"] as? String == id }
-            let source = sources.contains(id)
-            let local = profiles.contains { $0["id"] as? String == id }
-            let name = mapping?["targetName"] as? String ?? descriptor["name"] as? String ?? "AWS profile"
-            let title = NSTextField(labelWithString: name); title.font = .systemFont(ofSize: 16, weight: .semibold)
-            let details = [descriptor["accountID"] as? String, descriptor["roleName"] as? String].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
-            let row = NSStackView(views: [title])
-            if !details.isEmpty { row.addArrangedSubview(label(details)) }
-            var availability = states[id] ?? account?["status"] as? String ?? "Not shared yet"
-            if let expires = account?["expires"] as? Double, account?["available"] as? Bool == true {
+        for item in profileRows {
+            let id = item.id, source = sources.contains(item.id)
+            let title = NSTextField(labelWithString: item.name)
+            title.font = .systemFont(ofSize: 14, weight: .semibold); title.lineBreakMode = .byTruncatingMiddle
+            title.identifier = .init("aws-profile-name")
+            title.setAccessibilityIdentifier("aws-profile-name")
+            var availability = states[id] ?? (item.hasLocalProfile && !source ? "Not shared" : item.status)
+            let needsRenewal = states[id] == "Sign in on this Mac to renew"
+            if let expires = item.expiration, item.available {
                 let time = DateFormatter.localizedString(from: Date(timeIntervalSince1970: expires), dateStyle: .none, timeStyle: .short)
-                availability = "Temporary access available · Expires \(time)"
-                if states[id] == "Sign in on this Mac to renew" { availability += " · Sign in here to renew" }
+                availability = (source || item.isInstalled ? "Expires " : "Shared access · Expires ") + time
+                if needsRenewal { availability += " · Sign-in needed for renewal" }
             }
-            row.addArrangedSubview(label(availability))
-            if let source = account?["sourceName"] as? String, !source.isEmpty { row.addArrangedSubview(label("Provided by \(source)", small: true)) }
-            let buttons = NSStackView(); buttons.orientation = .horizontal; buttons.spacing = 8
-            if mapping == nil && !source && account?["available"] as? Bool != true && local {
-                buttons.addArrangedSubview(signInButton("Sign In", profile: id))
-                buttons.addArrangedSubview(button("Share Current Sign-In") { [weak self] in self?.request("aws.source.enable", ["profileId": id]) })
-            } else if mapping == nil && !source {
-                buttons.addArrangedSubview(button("Use on This Mac…") { [weak self] in
-                    self?.install(id: id, name: descriptor["name"] as? String ?? name, local: local)
-                })
+            let identity = NSTextField(labelWithString: item.identitySummary)
+            let state = NSTextField(labelWithString: availability)
+            for label in [title, identity, state] {
+                label.lineBreakMode = .byTruncatingMiddle
+                label.maximumNumberOfLines = 1
+                label.toolTip = label.stringValue
+                label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            }
+            for label in [identity, state] { label.font = .systemFont(ofSize: 12); label.textColor = .secondaryLabelColor }
+            identity.identifier = .init("aws-profile-identity"); state.identifier = .init("aws-profile-state")
+            let primary: NSView
+            if item.status == "Choose Account Again" {
+                primary = button("Review…") { [weak self] in self?.showDetails(item) }
+            } else if !item.isInstalled && (!item.hasLocalProfile || (!source && item.available)) {
+                primary = button("Use on This Mac…") { [weak self] in self?.install(item) }
+            } else if !item.available || needsRenewal {
+                primary = signInButton(needsRenewal ? "Renew Sign-In" : "Sign In", profile: id)
             } else {
-                buttons.addArrangedSubview(signInButton("Sign In on This Mac", profile: id))
-                if source {
-                    buttons.addArrangedSubview(button("Refresh") { [weak self] in self?.request("aws.refresh", ["profileId": id]) })
-                } else {
-                    buttons.addArrangedSubview(button("Sync Now") { [weak self] in self?.syncNow() })
-                }
-                buttons.addArrangedSubview(button("Remove…") { [weak self] in self?.remove(id: id, name: name) })
+                let ready = NSTextField(labelWithString: "Ready")
+                ready.textColor = .secondaryLabelColor; ready.alignment = .right; ready.font = .systemFont(ofSize: 12)
+                primary = ready
             }
-            row.addArrangedSubview(buttons)
+            primary.identifier = .init("aws-profile-primary")
+            let menu = NSMenu(); menu.autoenablesItems = false; menu.delegate = self
+            if !source && item.hasLocalProfile {
+                addMenuItem("Share Current Sign-In", to: menu) { [weak self] in self?.request("aws.source.enable", ["profileId": id]) }
+            }
+            if item.available && !needsRenewal { addMenuItem("Sign In on This Mac", to: menu, enabled: (catalog["signInProfile"] as? String ?? "").isEmpty) { [weak self] in self?.request("aws.signIn.start", ["profileId": id]) } }
+            if source { addMenuItem("Refresh Access", to: menu) { [weak self] in self?.request("aws.refresh", ["profileId": id]) } }
+            else { addMenuItem("Sync Now", to: menu) { [weak self] in self?.syncNow() } }
+            if item.isInstalled {
+                addMenuItem("Use Another Profile Name…", to: menu) { [weak self] in
+                    guard let self else { return }
+                    let rows = AWSProfilePresentation.rows(catalog: self.catalog)
+                    let current = rows.first { $0.id == id } ?? item
+                    let suggested = current.suggestedAdditionalName(rows: rows, occupiedNames: Set(self.catalog["localProfileNames"] as? [String] ?? []))
+                    self.install(current, suggestedName: suggested)
+                }
+            }
+            addMenuItem("Profile Details…", to: menu) { [weak self] in self?.showDetails(item) }
+            if source || item.isInstalled {
+                menu.addItem(.separator())
+                addMenuItem("Remove from This Mac…", to: menu) { [weak self] in self?.remove(id: id, name: item.name) }
+            }
+            let more = NSButton(image: NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "Profile actions") ?? NSImage(), target: self, action: #selector(showActions(_:)))
+            more.isBordered = false; more.menu = menu; more.isEnabled = !pending
+            more.identifier = .init("aws-profile-actions"); more.setAccessibilityLabel("Actions for \(item.name)")
+            more.toolTip = "Profile actions"
+            let row = NSView(); row.identifier = .init("aws-profile-row"); row.translatesAutoresizingMaskIntoConstraints = false
             let divider = NSBox(); divider.boxType = .separator
-            divider.heightAnchor.constraint(equalToConstant: 1).isActive = true
-            row.addArrangedSubview(divider)
-            addRow(row)
+            for child in [title, identity, state, primary, more, divider] { child.translatesAutoresizingMaskIntoConstraints = false; row.addSubview(child) }
+            list.addArrangedSubview(row)
+            NSLayoutConstraint.activate([
+                row.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor, constant: -12), row.heightAnchor.constraint(equalToConstant: 80),
+                more.trailingAnchor.constraint(equalTo: row.trailingAnchor), more.widthAnchor.constraint(equalToConstant: 32),
+                more.heightAnchor.constraint(equalToConstant: 28), more.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+                primary.trailingAnchor.constraint(equalTo: more.leadingAnchor, constant: -12), primary.widthAnchor.constraint(equalToConstant: 128),
+                primary.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+                title.leadingAnchor.constraint(equalTo: row.leadingAnchor), title.trailingAnchor.constraint(equalTo: primary.leadingAnchor, constant: -12),
+                title.topAnchor.constraint(equalTo: row.topAnchor, constant: 12), title.heightAnchor.constraint(equalToConstant: 18),
+                identity.leadingAnchor.constraint(equalTo: title.leadingAnchor), identity.trailingAnchor.constraint(equalTo: title.trailingAnchor),
+                identity.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 3), identity.heightAnchor.constraint(equalToConstant: 16),
+                state.leadingAnchor.constraint(equalTo: title.leadingAnchor), state.trailingAnchor.constraint(equalTo: title.trailingAnchor),
+                state.topAnchor.constraint(equalTo: identity.bottomAnchor, constant: 3), state.heightAnchor.constraint(equalToConstant: 16),
+                divider.leadingAnchor.constraint(equalTo: row.leadingAnchor), divider.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+                divider.bottomAnchor.constraint(equalTo: row.bottomAnchor), divider.heightAnchor.constraint(equalToConstant: 1)
+            ])
         }
     }
 
-    private func install(id: String, name: String, local: Bool) {
+    private func addMenuItem(_ title: String, to menu: NSMenu, enabled: Bool = true, action: @escaping () -> Void) {
+        let item = NSMenuItem(title: title, action: #selector(invokeMenuAction(_:)), keyEquivalent: "")
+        let id = UUID().uuidString; item.representedObject = id; item.target = self; actions[id] = action
+        item.isEnabled = enabled && !pending
+        menu.addItem(item)
+    }
+    @objc private func showActions(_ sender: NSButton) { sender.menu?.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.minY), in: sender) }
+    public func menuWillOpen(_ menu: NSMenu) { trackingMenu = true }
+    public func menuDidClose(_ menu: NSMenu) { trackingMenu = false; DispatchQueue.main.async { [weak self] in self?.render() } }
+    @objc private func invokeMenuAction(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }; actions[id]?()
+    }
+    private func showDetails(_ item: AWSProfilePresentation) {
+        let alert = NSAlert(); alert.messageText = item.name
+        var lines = [item.identitySummary]
+        if !item.localNames.isEmpty { lines.append("Local names: " + item.localNames.joined(separator: ", ")) }
+        if !item.installedNames.isEmpty { lines.append("Managed names: " + item.installedNames.joined(separator: ", ")) }
+        let otherNames = item.sharedNames.filter { !item.localNames.contains($0) && !item.installedNames.contains($0) }
+        if !otherNames.isEmpty { lines.append("Names on other Macs: " + otherNames.joined(separator: ", ")) }
+        if !item.sourceNames.isEmpty { lines.append("Provided by: " + item.sourceNames.joined(separator: ", ")) }
+        if item.status == "Choose Account Again" { lines.append("Different sign-ins are providing conflicting identities. Sign in with the intended account and stop sharing the older identity before using this profile. TerminalDB will not choose credentials silently.") }
+        lines.append("Matching AWS identities share one row. Local profile names are preserved; identical names alone do not identify an account.")
+        alert.informativeText = lines.joined(separator: "\n\n"); alert.addButton(withTitle: "Done")
+        alert.beginSheetModal(for: panel)
+    }
+    @objc private func showHelp() {
+        let alert = NSAlert(); alert.messageText = "Shared AWS Access"
+        alert.informativeText = "Only selected profiles are shared with explicitly approved Macs. Browser sign-ins remain on their original Mac; each receiver keeps temporary access until AWS’s expiry.\n\nYou can sign in on any Mac. Profiles shared while away arrive automatically after LAN or VPN reconnects. Disabling sharing stops future transfers; revoke access in AWS when immediate termination is required. Claude sharing is configured separately."
+        alert.addButton(withTitle: "Done"); alert.beginSheetModal(for: panel)
+    }
+    private func install(_ item: AWSProfilePresentation, suggestedName: String? = nil) {
+        let name = item.name, suggested = suggestedName ?? item.suggestedName(rows: profileRows, occupiedNames: Set(catalog["localProfileNames"] as? [String] ?? []))
         let alert = NSAlert()
         alert.messageText = "Use \(name) on This Mac?"
-        alert.informativeText = "Ordinary AWS commands will use the name below with --profile. If you keep an existing name, future browser sign-ins happen through TerminalDB’s Sign In button. Its original settings are backed up. Choose a different name to keep your current AWS login commands."
-        let field = NSTextField(string: name); field.frame = NSRect(x: 0, y: 0, width: 340, height: 24)
+        let context: String
+        if suggestedName != nil {
+            context = "Add another name for this AWS access. Existing names stay available."
+        } else if item.hasLocalProfile {
+            context = "TerminalDB will back up this profile’s settings and manage its sign-ins. Renew access with Sign In here. Choose a new name to keep the original profile separate."
+        } else if suggested != item.descriptor.name {
+            context = "A different profile already uses that name. Use the suggested name to keep both."
+        } else {
+            context = "This profile will use shared access from your approved Macs."
+        }
+        alert.informativeText = context + "\n\nUse this name with --profile in AWS commands."
+        let field = NSTextField(string: suggested); field.frame = NSRect(x: 0, y: 0, width: 340, height: 24)
         field.setAccessibilityLabel("AWS profile name on This Mac"); alert.accessoryView = field
         alert.addButton(withTitle: "Use Profile"); alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: panel) { [weak self] response in
             guard response == .alertFirstButtonReturn else { return }
-            self?.request("aws.use", ["profileId": id, "targetName": field.stringValue, "replaceSource": local && field.stringValue == name])
+            self?.request("aws.use", ["profileId": item.id, "targetName": field.stringValue, "replaceSource": item.localNames.contains(field.stringValue)])
         }
     }
 
     private func remove(id: String, name: String) {
         let alert = NSAlert(); alert.messageText = "Remove \(name) from TerminalDB on This Mac?"
-        alert.informativeText = "This stops publishing this Mac’s access and restores its original profile when safe. It does not sign out of unrelated AWS profiles or revoke temporary credentials already copied to other Macs."
+        alert.informativeText = "This stops sharing this AWS access from This Mac and removes its TerminalDB-managed profile aliases. Their original settings are restored when safe. Other AWS profiles stay unchanged. Temporary credentials already copied to other Macs remain valid until AWS expires or revokes them."
         alert.addButton(withTitle: "Remove Profile"); alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: panel) { [weak self] response in
             if response == .alertFirstButtonReturn { self?.request("aws.remove", ["profileId": id]) }
@@ -271,6 +422,7 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate {
     }
 
     private func request(_ operation: String, _ payload: [String: Any]) {
+        if let requestForTesting { requestForTesting(operation, payload); return }
         guard !pending else { return }; pending = true; rowsSignature = ""; render()
         actionError = nil
         status.stringValue = operation == "aws.signIn.start" ? "Starting AWS sign-in in your browser on This Mac…" : "Updating AWS access…"
@@ -305,7 +457,7 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate {
                 self.peerState = result as? [String: Any] ?? self.peerState
                 if self.syncDraft != desired { self.saveSync(); return }
                 self.syncDraft = nil
-                self.status.stringValue = "Saved. Enable AWS sync on the other Mac too."
+                self.status.stringValue = "Sharing preferences saved."
                 if self.closeAfterSync { self.panel.close(); return }
             }
             self.rowsSignature = ""

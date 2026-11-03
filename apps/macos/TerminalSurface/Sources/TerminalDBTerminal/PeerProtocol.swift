@@ -15,7 +15,10 @@ enum PeerProtocol {
     static let maximumFrame = 1_048_576
     static let maximumMessage = 8 * maximumFrame
     static let maximumQueuedBytes = 16 * maximumFrame
-    static let serviceType = "_terminaldb._tcp."
+    // Disposable test installations never advertise into normal discovery.
+    // This is presentation isolation; TLS identity and approval remain mandatory.
+    static var isTestInstance: Bool { ProcessInfo.processInfo.environment["TERMINALDB_PEER_EPHEMERAL_IDENTITY"] == "1" }
+    static var serviceType: String { isTestInstance ? "_terminaldb-qa._tcp." : "_terminaldb._tcp." }
     static let defaultPort = 49377
     static let maximumConnections = 32
 

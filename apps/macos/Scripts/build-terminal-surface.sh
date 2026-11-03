@@ -10,9 +10,10 @@ scratch="${package}/.build/terminaldb-${arch}"
 objects="build/terminal-surface/${arch}"
 mkdir -p "${objects}"
 ./Scripts/prepare-terminal-package.sh "${scratch}"
-xcrun swift build --package-path "${package}" --scratch-path "${scratch}" --arch "${arch}" \
+# Keep the CLI build engine consistent across Command Line Tools upgrades.
+xcrun swift build --build-system native --package-path "${package}" --scratch-path "${scratch}" --arch "${arch}" \
   --configuration release --product TerminalDBTerminal
-package_bin="$(xcrun swift build --package-path "${package}" --scratch-path "${scratch}" --arch "${arch}" \
+package_bin="$(xcrun swift build --build-system native --package-path "${package}" --scratch-path "${scratch}" --arch "${arch}" \
   --configuration release --show-bin-path)"
 generated_header="$(find "${scratch}" -path '*/TerminalDBTerminal.build/include/TerminalDBTerminal-Swift.h' -print -quit)"
 if [[ -z "${generated_header}" || "${TERMINALDB_FORCE_SWIFT_HEADER:-0}" == "1" ]]; then

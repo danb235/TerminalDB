@@ -1058,6 +1058,10 @@ static NSString *TerminalLedgerCSVCell(id value) {
 @property(nonatomic, strong) NSButton *detailsButton;
 @property(nonatomic, copy) NSString *command;
 @property(nonatomic, copy, nullable) NSDictionary *record;
+@property(nonatomic) NSInteger presentationKind;
+@property(nonatomic, strong) NSButton *recoveryButton;
+@property(nonatomic, strong) NSButton *overflowButton;
+@property(nonatomic, readwrite) BOOL actionFailureVisible;
 @end
 
 @implementation TerminalLedgerBar
@@ -1070,13 +1074,11 @@ static NSString *TerminalLedgerCSVCell(id value) {
     self = [super initWithFrame:frame];
     if (self == nil) return nil;
     _theme = theme;
+    _executionWorkstation = @"This Mac";
     self.wantsLayer = YES;
 
     _stateLabel = [NSTextField labelWithString:@"READY"];
-    _stateLabel.font =
-        [NSFont fontWithName:theme.fontName size:9.5]
-            ?: [NSFont monospacedSystemFontOfSize:9.5
-                                           weight:NSFontWeightSemibold];
+    _stateLabel.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
     _stateLabel.textColor = theme.ansiColors[6];
     [self addSubview:_stateLabel];
 
@@ -1091,10 +1093,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
     [self addSubview:_commandLabel];
 
     _metadataLabel = [NSTextField labelWithString:@""];
-    _metadataLabel.font =
-        [NSFont fontWithName:theme.fontName size:9.5]
-            ?: [NSFont monospacedSystemFontOfSize:9.5
-                                           weight:NSFontWeightRegular];
+    _metadataLabel.font = [NSFont systemFontOfSize:11];
     _metadataLabel.textColor = theme.statusBarForeground;
     _metadataLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
     [self addSubview:_metadataLabel];
@@ -1114,13 +1113,13 @@ static NSString *TerminalLedgerCSVCell(id value) {
 
     _historyButton = [self buttonWithTitle:@"History"
                                     action:@selector(showHistory:)];
-    _askButton = [self buttonWithTitle:@"✦ Ask AI"
+    _askButton = [self buttonWithTitle:@"Ask AI"
                                 action:@selector(askAI:)];
     _pasteButton = [self buttonWithTitle:@"Paste"
                                   action:@selector(pasteCommand:)];
     _commandCopyButton = [self buttonWithTitle:@"Copy"
                                         action:@selector(copyCommand:)];
-    _rerunButton = [self buttonWithTitle:@"↻ Rerun"
+    _rerunButton = [self buttonWithTitle:@"Rerun"
                                   action:@selector(rerunCommand:)];
     _bookmarkButton = [self buttonWithTitle:@"☆"
                                      action:@selector(toggleBookmark:)];
@@ -1128,6 +1127,12 @@ static NSString *TerminalLedgerCSVCell(id value) {
                                     action:@selector(saveAsRunbook:)];
     _detailsButton = [self buttonWithTitle:@"Details"
                                     action:@selector(showDetails:)];
+    _recoveryButton = [self buttonWithTitle:@"Try Now" action:@selector(recover:)];
+    _recoveryButton.bezelStyle = NSBezelStyleRounded;
+    _overflowButton = [self buttonWithTitle:@"More" action:@selector(showOverflow:)];
+    _overflowButton.image = [NSImage imageWithSystemSymbolName:@"ellipsis" accessibilityDescription:@"More command actions"];
+    _overflowButton.imagePosition = NSImageOnly;
+    [_overflowButton setAccessibilityLabel:@"More command actions"];
     [self showReadyInDirectory:NSHomeDirectory()];
     return self;
 }
@@ -1141,7 +1146,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
     button.title = title;
     button.bezelStyle = NSBezelStyleAccessoryBarAction;
     button.controlSize = NSControlSizeSmall;
-    button.font = [NSFont systemFontOfSize:10 weight:NSFontWeightMedium];
+    button.font = [NSFont systemFontOfSize:12 weight:NSFontWeightMedium];
     button.contentTintColor = self.theme.statusBarActiveForeground;
     button.target = self;
     button.action = action;
@@ -1149,106 +1154,153 @@ static NSString *TerminalLedgerCSVCell(id value) {
     return button;
 }
 
+- (BOOL)recoveryVisible { return self.presentationKind == 3; }
+
+- (CGFloat)preferredHeightForWidth:(CGFloat)width {
+    if (self.presentationKind == 0) return 0;
+    if (self.presentationKind == 3) return width < 520 ? 112 : 80;
+    return self.presentationKind == 2 ? 56 : 44;
+}
+
+- (void)setPresentation:(NSInteger)kind {
+    BOOL changed = self.presentationKind != kind;
+    self.presentationKind = kind;
+    [self setNeedsLayout:YES]; [self setNeedsDisplay:YES];
+    if (changed && self.presentationChanged) self.presentationChanged();
+}
+
 - (void)drawRect:(NSRect)dirtyRect {
     (void)dirtyRect;
-    [[NSColor colorWithSRGBRed:0.106 green:0.106 blue:0.122 alpha:1.0]
-        setFill];
-    NSRectFill(self.bounds);
-    NSColor *border = self.record != nil
-        ? [self.theme.ansiColors[6] colorWithAlphaComponent:0.34]
-        : self.theme.statusBarBorder;
-    [border setStroke];
-    NSBezierPath *block = [NSBezierPath
-        bezierPathWithRoundedRect:NSInsetRect(self.bounds, 7, 7)
-                          xRadius:6
-                          yRadius:6];
-    block.lineWidth = 1;
-    [block stroke];
+    [self.theme.statusBarBackground setFill]; NSRectFill(self.bounds);
     [self.theme.statusBarBorder setFill];
-    NSRectFill(NSMakeRect(0, NSHeight(self.bounds) - 1,
-                          NSWidth(self.bounds), 1));
+    NSRectFill(NSMakeRect(0, NSHeight(self.bounds) - 1, NSWidth(self.bounds), 1));
 }
 
 - (void)layout {
     [super layout];
     CGFloat width = NSWidth(self.bounds);
-    CGFloat right = width - 13;
-    NSArray<NSButton *> *buttons = @[
-        self.detailsButton, self.runbookButton, self.rerunButton,
-        self.askButton, self.commandCopyButton, self.pasteButton,
-        self.bookmarkButton, self.historyButton
-    ];
-    NSSet<NSButton *> *visibleButtons = nil;
-    if (width < 620) {
-        visibleButtons = [NSSet setWithArray:@[
-            self.detailsButton, self.askButton
-        ]];
-    } else {
-        visibleButtons = [NSSet setWithArray:@[
-            self.detailsButton, self.rerunButton,
-            self.askButton, self.historyButton
-        ]];
+    for (NSButton *b in @[self.detailsButton, self.runbookButton, self.rerunButton, self.askButton, self.commandCopyButton, self.pasteButton, self.bookmarkButton, self.historyButton, self.overflowButton, self.recoveryButton]) b.hidden = YES;
+    self.outputLabel.hidden = YES;
+    self.metadataLabel.hidden = self.presentationKind != 2;
+    self.stateLabel.hidden = self.presentationKind == 0;
+    self.commandLabel.hidden = self.presentationKind == 0;
+    if (self.presentationKind == 0) return;
+    if (self.recoveryVisible) {
+        BOOL narrow = width < 520;
+        CGFloat actionWidth = MIN(width - 28, MAX(96, self.recoveryButton.intrinsicContentSize.width + 18));
+        self.recoveryButton.hidden = NO;
+        self.recoveryButton.frame = NSMakeRect(narrow ? 14 : width - actionWidth - 14, narrow ? 72 : 26, actionWidth, 28);
+        self.stateLabel.frame = NSMakeRect(14, 9, MAX(1, width - 28), 17);
+        self.commandLabel.font = [NSFont systemFontOfSize:13];
+        self.commandLabel.usesSingleLineMode = NO;
+        self.commandLabel.maximumNumberOfLines = 2;
+        self.commandLabel.lineBreakMode = NSLineBreakByWordWrapping;
+        self.commandLabel.frame = NSMakeRect(14, 30, MAX(1, width - (narrow ? 28 : actionWidth + 48)), 38);
+        return;
     }
-    for (NSButton *button in buttons) {
-        button.hidden = ![visibleButtons containsObject:button];
-        if (button.hidden) continue;
-        CGFloat buttonWidth = [button.title isEqualToString:@"☆"] ||
-                              [button.title isEqualToString:@"★"]
-            ? 30
-            : MAX(46, button.intrinsicContentSize.width + 12);
-        right -= buttonWidth;
-        button.frame = NSMakeRect(right, NSHeight(self.bounds) - 38,
-                                  buttonWidth, 24);
-        right -= 8;
+    CGFloat right = width - 12;
+    NSArray *shown = width < 520 ? @[self.overflowButton, self.detailsButton]
+        : width < 850 ? @[self.overflowButton, self.detailsButton, self.historyButton]
+        : @[self.overflowButton, self.detailsButton, self.askButton, self.historyButton];
+    for (NSButton *b in shown) {
+        if (b == self.detailsButton && !b.enabled) continue;
+        if (b == self.askButton && !b.enabled) continue;
+        CGFloat w = b == self.overflowButton ? 28 : MAX(44, b.intrinsicContentSize.width + 8);
+        right -= w; b.hidden = NO; b.frame = NSMakeRect(right, 8, w, 26); right -= 8;
     }
-    self.stateLabel.frame = NSMakeRect(14, 13, 78, 14);
-    self.commandLabel.frame =
-        NSMakeRect(14, 31, MAX(80, width - 28), 19);
-    self.metadataLabel.frame =
-        NSMakeRect(98, 12, MAX(40, width - 112), 15);
-    self.outputLabel.frame =
-        NSMakeRect(14, 55, MAX(80, width - 28),
-                   MAX(18, NSHeight(self.bounds) - 101));
+    self.stateLabel.frame = NSMakeRect(12, 12, 74, 18);
+    self.commandLabel.font = [NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular];
+    self.commandLabel.usesSingleLineMode = YES; self.commandLabel.maximumNumberOfLines = 1;
+    self.commandLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    self.commandLabel.frame = NSMakeRect(90, 10, MAX(1, right - 98), 21);
+    self.metadataLabel.frame = NSMakeRect(90, 33, MAX(1, width - 104), 16);
+}
+
+- (void)clearActions {
+    self.actionFailureVisible = NO;
+    self.record = nil; self.command = @"";
+    for (NSButton *b in @[self.askButton, self.pasteButton, self.commandCopyButton, self.rerunButton, self.bookmarkButton, self.runbookButton, self.detailsButton]) b.enabled = NO;
+    self.askButton.title = @"Ask AI";
+    self.metadataLabel.stringValue = @""; self.outputLabel.stringValue = @"";
 }
 
 - (void)showReadyInDirectory:(NSString *)directory {
-    self.record = nil;
-    self.command = @"";
-    self.stateLabel.stringValue = @"READY";
-    self.stateLabel.textColor = self.theme.ansiColors[6];
-    self.commandLabel.stringValue = @"❯  shell ready";
-    self.metadataLabel.stringValue = [NSString stringWithFormat:
-        @"%@  ·  LOCAL", directory.length > 0 ? directory : @"~"];
-    self.outputLabel.stringValue =
-        @"Completed commands become selectable ledger blocks here.";
-    self.askButton.title = @"✦ Ask AI";
-    self.askButton.enabled = NO;
-    self.pasteButton.enabled = NO;
-    self.commandCopyButton.enabled = NO;
-    self.rerunButton.enabled = NO;
-    self.bookmarkButton.enabled = NO;
-    self.runbookButton.enabled = NO;
-    self.detailsButton.enabled = NO;
-    [self setNeedsLayout:YES];
-    [self setNeedsDisplay:YES];
+    [self clearActions];
+    self.stateLabel.stringValue = @""; self.commandLabel.stringValue = @"";
+    self.toolTip = [NSString stringWithFormat:@"%@ · %@", self.executionWorkstation ?: @"This Mac", directory.length ? directory : @"~"];
+    [self setPresentation:0];
+}
+
+- (void)showNotice:(NSString *)title message:(NSString *)message action:(NSString *)action {
+    [self clearActions];
+    self.stateLabel.stringValue = title; self.stateLabel.textColor = self.theme.ansiColors[3];
+    self.commandLabel.stringValue = message;
+    self.commandLabel.toolTip = message;
+    self.recoveryButton.title = action;
+    self.recoveryButton.enabled = self.recoveryHandler != nil;
+    [self setPresentation:3];
 }
 
 - (void)showConnectionMessage:(NSString *)message {
-    [self showReadyInDirectory:@""];
-    self.stateLabel.stringValue = @"CONNECTION";
-    self.stateLabel.textColor = self.theme.ansiColors[3];
-    self.commandLabel.stringValue = message ?: @"Workstation unavailable";
-    self.metadataLabel.stringValue = @"Work stays on its original workstation.";
-    self.outputLabel.stringValue = @"Check that the Mac is awake and logged in, then use Reconnect. When away, connect your VPN and check the Mac’s saved internal address.";
+    [self showNotice:@"Reconnecting" message:message.length ? message : @"Your session stays on its Mac. Check the LAN or VPN connection and that the Mac is awake." action:@"Try Now"];
 }
 
 - (void)showInputReviewMessage {
-    [self showReadyInDirectory:@""];
-    self.stateLabel.stringValue = @"INPUT PAUSED";
-    self.stateLabel.textColor = self.theme.ansiColors[3];
-    self.commandLabel.stringValue = @"Review the last input before continuing";
-    self.metadataLabel.stringValue = @"New typing is paused until you review the terminal.";
-    self.outputLabel.stringValue = @"The last input may have reached the shell. Check the terminal, then choose Review Input. TerminalDB won’t repeat it.";
+    [self showNotice:@"Input paused" message:@"The last input may have arrived. Check the terminal; it won’t be sent again." action:@"I Checked — Continue"];
+}
+
+- (void)showViewingMessageOn:(NSString *)workstation {
+    [self showNotice:@"Viewing" message:[NSString stringWithFormat:@"This session runs on %@. Another view controls typing and terminal size.", workstation] action:@"Take Control"];
+}
+
+- (void)showEndedMessageOn:(NSString *)workstation {
+    [self showNotice:@"Session ended" message:[NSString stringWithFormat:@"The shell on %@ has ended. Start a new terminal to continue there.", workstation] action:@"New Terminal"];
+}
+
+- (void)showActionError:(NSString *)message {
+    [self showNotice:@"Action unavailable" message:message action:@"Dismiss"];
+    self.actionFailureVisible = YES;
+}
+
+- (void)showMissingSessionMessage {
+    [self showNotice:@"Session unavailable" message:@"The request could not be confirmed. Check existing sessions or start a new terminal; the request will not be repeated." action:@"Macs & Sessions…"];
+}
+
+- (void)recover:(id)sender { (void)sender; if (self.recoveryHandler) self.recoveryHandler(); }
+
+- (void)showOverflow:(id)sender {
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Command actions"];
+    NSArray *buttons = @[self.historyButton, self.detailsButton, self.askButton, self.rerunButton, self.commandCopyButton, self.pasteButton, self.bookmarkButton, self.runbookButton];
+    NSArray *titles = @[@"History", @"Command Details", @"Ask AI", @"Rerun", @"Copy Command", @"Paste Command", @"Bookmark", @"Save as Playbook"];
+    for (NSUInteger i = 0; i < buttons.count; i++) {
+        NSButton *button = buttons[i];
+        NSMenuItem *item = [menu addItemWithTitle:titles[i] action:@selector(performOverflow:) keyEquivalent:@""];
+        item.target = self; item.representedObject = button; item.enabled = button.enabled;
+    }
+    menu.autoenablesItems = NO;
+    [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, NSHeight(self.overflowButton.bounds)) inView:self.overflowButton];
+}
+
+- (void)performOverflow:(NSMenuItem *)item { [(NSButton *)item.representedObject performClick:nil]; }
+
++ (BOOL)runInterfaceSelfTests {
+    TerminalLedgerBar *bar = [[self alloc] initWithFrame:NSMakeRect(0, 0, 640, 80) theme:TerminalTheme.preferredTheme];
+    bar.executionWorkstation = @"Office Mac";
+    [bar showReadyInDirectory:@"/tmp"];
+    BOOL ok = [bar preferredHeightForWidth:640] == 0 && !bar.recoveryVisible && ![bar.metadataLabel.stringValue containsString:@"LOCAL"];
+    [bar beginCommand:@"example" directory:@"/tmp"];
+    ok &= [bar preferredHeightForWidth:640] == 44;
+    __block NSUInteger actions = 0; bar.recoveryHandler = ^{ actions++; };
+    [bar showInputReviewMessage];
+    for (NSNumber *w in @[@320, @640]) {
+        CGFloat width = w.doubleValue;
+        bar.frame = NSMakeRect(0, 0, width, [bar preferredHeightForWidth:width]); [bar layoutSubtreeIfNeeded];
+        ok &= !bar.recoveryButton.hidden && NSMaxX(bar.recoveryButton.frame) <= width && NSMaxY(bar.recoveryButton.frame) <= NSHeight(bar.bounds);
+        ok &= !NSIntersectsRect(bar.commandLabel.frame, bar.recoveryButton.frame);
+    }
+    [bar.recoveryButton performClick:nil]; ok &= actions == 1;
+    [bar showReadyInDirectory:@"/tmp"]; ok &= !bar.recoveryVisible && [bar preferredHeightForWidth:320] == 0;
+    return ok;
 }
 
 - (void)beginCommand:(NSString *)command directory:(NSString *)directory {
@@ -1258,13 +1310,10 @@ static NSString *TerminalLedgerCSVCell(id value) {
     self.stateLabel.textColor = self.theme.ansiColors[3];
     self.commandLabel.stringValue = [NSString stringWithFormat:
         @"❯  %@", command.length > 0 ? command : @"command"];
-    self.metadataLabel.stringValue = [NSString stringWithFormat:
-        @"%@  ·  %@  ·  started now",
-        directory.length > 0 ? directory : @"~",
-        TerminalLedgerEnvironment(command)];
+    self.metadataLabel.stringValue = [NSString stringWithFormat:@"%@ · %@", self.executionWorkstation, directory.length ? directory : @"~"];
     self.outputLabel.stringValue =
         @"Live output continues in the terminal below. Stop with Control-C.";
-    self.askButton.title = @"✦ Ask AI";
+    self.askButton.title = @"Ask AI";
     self.askButton.enabled = command.length > 0;
     self.pasteButton.enabled = NO;
     self.commandCopyButton.enabled = command.length > 0;
@@ -1272,8 +1321,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
     self.bookmarkButton.enabled = NO;
     self.runbookButton.enabled = NO;
     self.detailsButton.enabled = NO;
-    [self setNeedsLayout:YES];
-    [self setNeedsDisplay:YES];
+    [self setPresentation:1];
 }
 
 - (void)displayRecord:(NSDictionary *)record {
@@ -1292,12 +1340,9 @@ static NSString *TerminalLedgerCSVCell(id value) {
         exitCode == 0 ? self.theme.ansiColors[2] : self.theme.ansiColors[1];
     self.commandLabel.stringValue =
         [NSString stringWithFormat:@"❯  %@", command];
-    self.metadataLabel.stringValue = [NSString stringWithFormat:
-        @"%@  ·  %@  ·  %@  ·  %.2fs",
-        record[@"directory"] ?: @"~",
-        record[@"host"] ?: @"Mac",
-        record[@"environment"] ?: @"LOCAL",
-        [record[@"duration"] doubleValue]];
+    NSString *environment = record[@"environment"] ?: @"LOCAL";
+    NSString *risk = [environment isEqualToString:@"LOCAL"] ? @"" : [NSString stringWithFormat:@" · Environment: %@", environment];
+    self.metadataLabel.stringValue = [NSString stringWithFormat:@"%@ · %@ · %.2fs%@", record[@"host"] ?: self.executionWorkstation, record[@"directory"] ?: @"~", [record[@"duration"] doubleValue], risk];
     NSString *output =
         [record[@"output"] isKindOfClass:NSString.class]
             ? record[@"output"]
@@ -1308,7 +1353,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
         ? output
         : @"(command produced no captured output)";
     self.askButton.title =
-        exitCode == 0 ? @"✦ Ask AI" : @"✦ Explain / Fix";
+        exitCode == 0 ? @"Ask AI" : @"Explain / Fix";
     self.askButton.enabled = command.length > 0;
     self.pasteButton.enabled = command.length > 0;
     self.commandCopyButton.enabled = command.length > 0;
@@ -1324,8 +1369,7 @@ static NSString *TerminalLedgerCSVCell(id value) {
         record[@"environment"] ?: @"local",
         (long)exitCode,
         [record[@"duration"] doubleValue]]];
-    [self setNeedsLayout:YES];
-    [self setNeedsDisplay:YES];
+    [self setPresentation:2];
 }
 
 - (void)finishCommand:(NSString *)command

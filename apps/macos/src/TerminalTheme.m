@@ -51,14 +51,15 @@ static NSColor *ThemeColor(NSString *hex) {
     theme.selectionBackground = ThemeColor(@"#52d0dd2e");
 
     theme.statusBarBackground = ThemeColor(@"#141417");
-    theme.statusBarForeground = ThemeColor(@"#6B6B66");
-    theme.statusBarActiveForeground = ThemeColor(@"#A0A09A");
+    theme.statusBarForeground = ThemeColor(@"#A4A49F");
+    theme.statusBarActiveForeground = ThemeColor(@"#D0D0CC");
     theme.statusBarBorder = ThemeColor(@"#2C2C33");
     theme.titleBarBackground = ThemeColor(@"#232327");
     theme.titleBarForeground = ThemeColor(@"#C9C9C3");
     if (NSWorkspace.sharedWorkspace.accessibilityDisplayShouldIncreaseContrast) {
         theme.statusBarBorder = ThemeColor(@"#4A4A52");
-        theme.statusBarActiveForeground = ThemeColor(@"#C9C9C3");
+        theme.statusBarForeground = ThemeColor(@"#D0D0CC");
+        theme.statusBarActiveForeground = ThemeColor(@"#E7E7E2");
     }
 
     theme.ansiColors = @[

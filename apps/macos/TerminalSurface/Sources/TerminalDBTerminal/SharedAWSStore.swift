@@ -425,9 +425,10 @@ final class SharedAWSStore {
             let profileData = try JSONEncoder().encode(selected.role.profile)
             let descriptor = try JSONSerialization.jsonObject(with: profileData) as! [String: Any]
             let sourceNames = Array(Set(matches.map { $0.snapshot.sourceName })).sorted()
+            let profileNames = Array(Set(matches.map { $0.role.profile.name })).sorted()
             let status = ambiguous ? "Choose Account Again" : usable != nil ? "Ready" : selected.role.expiration <= now() ? "Expired" : "Waiting for Sync"
             return ["id": id, "profileId": id, "roleId": selected.role.id, "descriptor": descriptor,
-                    "sourceName": selected.snapshot.sourceName, "sourceNames": sourceNames,
+                    "sourceName": selected.snapshot.sourceName, "sourceNames": sourceNames, "profileNames": profileNames,
                     "expires": selected.role.expiration, "local": matches.contains { $0.source == doc.writer },
                     "available": usable != nil, "status": status,
                     "accountID": selected.role.accountID, "principalARN": selected.role.principalARN]

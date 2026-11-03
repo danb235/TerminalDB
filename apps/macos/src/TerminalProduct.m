@@ -556,6 +556,18 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
 
 @end
 
+@interface TerminalProductWindowController (PanelLayout)
+- (void)layoutProductInterface;
+@end
+
+@interface TerminalProductPanelView : NSView
+@property(nonatomic, weak) TerminalProductWindowController *controller;
+@end
+@implementation TerminalProductPanelView
+- (void)layout { [super layout]; [self.controller layoutProductInterface]; }
+- (void)setFrameSize:(NSSize)size { [super setFrameSize:size]; [self.controller layoutProductInterface]; }
+@end
+
 @interface TerminalProductWindowController () <
     NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate>
 @property(nonatomic, strong, readwrite) NSView *panelView;
@@ -570,6 +582,8 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
 @property(nonatomic, strong) NSSearchField *searchField;
 @property(nonatomic, strong) NSTableView *tableView;
 @property(nonatomic, strong) NSTextView *detailView;
+@property(nonatomic, strong) NSScrollView *listScroll;
+@property(nonatomic, strong) NSScrollView *detailScroll;
 @property(nonatomic, strong) NSTextField *eyebrowLabel;
 @property(nonatomic, strong) NSTextField *titleLabel;
 @property(nonatomic, strong) NSTextField *subtitleLabel;
@@ -580,6 +594,11 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
 @property(nonatomic, strong) NSButton *tertiaryButton;
 @property(nonatomic, strong) NSButton *deleteButton;
 @property(nonatomic, copy) NSArray<NSDictionary *> *items;
+@property(nonatomic, copy) NSArray<NSDictionary *> *presentedItems;
+@property(nonatomic) TerminalProductSection presentedSection;
+@property(nonatomic) BOOL refreshingItems;
+@property(nonatomic, copy) NSDictionary *detailPresentation;
+@property(nonatomic) NSUInteger detailGeneration;
 @property(nonatomic, strong) NSTimer *refreshTimer;
 @end
 
@@ -662,7 +681,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     };
     [controller refresh];
     [controller.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
-    [controller tableViewSelectionDidChange:nil];
+    [controller tableViewSelectionDidChange:[NSNotification notificationWithName:@"TerminalDBSelfTestSelection" object:controller.tableView]];
     [controller primarySelected:nil];
     [controller tertiarySelected:nil];
     projectWorks = projectWorks &&
@@ -670,6 +689,50 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         [inspected[@"environment"] isEqual:@"WORKSTATION"] &&
         [revealed isEqual:remotePath] &&
         [controller.tertiaryButton.title isEqual:@"Reveal on workstation"];
+    NSDictionary *firstItem = @{@"id": @"stable-first", @"name": @"First File", @"kind": @"file", @"path": @"/__TerminalDBFixture__/first.txt"};
+    NSDictionary *selectedItem = @{@"id": @"stable-selected", @"name": @"Selected File", @"kind": @"file", @"path": @"/__TerminalDBFixture__/selected.txt"};
+    NSDictionary *newItem = @{@"id": @"stable-new", @"name": @"New File", @"kind": @"file", @"path": @"/__TerminalDBFixture__/new.txt"};
+    __block NSArray *stableItems = @[firstItem, selectedItem];
+    __block NSUInteger previewCalls = 0;
+    NSString *longPreview = [@"Synthetic readable line\n" stringByPaddingToLength:6000 withString:@"Synthetic readable line\n" startingAtIndex:0];
+    controller.peerProjectItems = ^NSArray *{ return stableItems; };
+    controller.peerFilePreview = ^(NSString *path, void (^completion)(NSString *)) {
+        (void)path; previewCalls++; completion(longPreview);
+    };
+    [controller refresh];
+    [controller.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:1] byExtendingSelection:NO];
+    [controller tableViewSelectionDidChange:[NSNotification notificationWithName:@"TerminalDBSelfTestSelection" object:controller.tableView]];
+    [controller.detailView setSelectedRange:NSMakeRange(8, 12)];
+    [controller.detailScroll.contentView scrollToPoint:NSMakePoint(0, 120)];
+    NSPoint detailOrigin = controller.detailScroll.contentView.bounds.origin;
+    NSUInteger callsBeforeRefresh = previewCalls;
+    __block NSUInteger detailEdits = 0;
+    id observer = [NSNotificationCenter.defaultCenter addObserverForName:NSTextStorageDidProcessEditingNotification object:controller.detailView.textStorage queue:nil usingBlock:^(NSNotification *notification) { (void)notification; detailEdits++; }];
+    [controller refresh];
+    BOOL stableRefresh = previewCalls == callsBeforeRefresh && detailEdits == 0 && NSEqualRanges(controller.detailView.selectedRange, NSMakeRange(8, 12)) && fabs(controller.detailScroll.contentView.bounds.origin.y - detailOrigin.y) < 1;
+    stableItems = @[newItem, firstItem, selectedItem];
+    [controller refresh];
+    stableRefresh &= [[controller selectedItem][@"id"] isEqual:selectedItem[@"id"]] && controller.tableView.selectedRow == 2 && previewCalls == callsBeforeRefresh && detailEdits == 0 && NSEqualRanges(controller.detailView.selectedRange, NSMakeRange(8, 12));
+    controller.searchField.stringValue = @"Selected"; [controller refresh];
+    stableRefresh &= controller.tableView.selectedRow == 0 && [[controller selectedItem][@"id"] isEqual:selectedItem[@"id"]] && previewCalls == callsBeforeRefresh;
+    controller.searchField.stringValue = @""; [controller refresh];
+    stableRefresh &= controller.tableView.selectedRow == 2 && [[controller selectedItem][@"id"] isEqual:selectedItem[@"id"]] && previewCalls == callsBeforeRefresh;
+    NSMutableDictionary *updatedSelection = [selectedItem mutableCopy]; updatedSelection[@"detail"] = @"Updated selected-file metadata";
+    stableItems = @[newItem, firstItem, updatedSelection]; [controller refresh];
+    stableRefresh &= previewCalls == callsBeforeRefresh + 1 && detailEdits > 0 && NSEqualRanges(controller.detailView.selectedRange, NSMakeRange(8, 12)) && fabs(controller.detailScroll.contentView.bounds.origin.y - detailOrigin.y) < 1;
+    [NSNotificationCenter.defaultCenter removeObserver:observer];
+    NSMutableArray *responses = [NSMutableArray array];
+    controller.peerFilePreview = ^(NSString *path, void (^completion)(NSString *)) { (void)path; [responses addObject:[completion copy]]; };
+    [controller refresh];
+    updatedSelection = [updatedSelection mutableCopy]; updatedSelection[@"detail"] = @"A newer selected-file revision";
+    stableItems = @[newItem, firstItem, updatedSelection]; [controller refresh];
+    BOOL previewFenced = responses.count == 2;
+    if (previewFenced) {
+        void (^newer)(NSString *) = responses[1]; void (^older)(NSString *) = responses[0];
+        newer(@"Current synthetic preview"); older(@"Obsolete synthetic preview");
+        previewFenced = [controller.detailView.string containsString:@"Current synthetic preview"] && ![controller.detailView.string containsString:@"Obsolete synthetic preview"];
+    }
+    if (!stableRefresh || !previewFenced) fprintf(stderr, "FAIL stable product refresh checks selection=%d preview=%d\n", stableRefresh, previewFenced);
     controller.peerProjectItems = nil;
     controller.peerFilePreview = nil;
     controller.peerRevealFile = nil;
@@ -679,10 +742,33 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     controller.section = TerminalProductSectionEnvironments;
     [controller refresh];
     BOOL environmentWorks = controller.items.count == 4;
+    controller.section = TerminalProductSectionWorkspaces;
+    [controller refresh];
+    controller.primaryButton.title = @"Open Selected Workspace";
+    controller.secondaryButton.title = @"Paste Saved Commands";
+    controller.tertiaryButton.title = @"Reveal on workstation";
+    controller.deleteButton.title = @"Remove Saved Workspace…";
+    for (NSButton *button in @[controller.primaryButton, controller.secondaryButton, controller.tertiaryButton, controller.deleteButton]) button.hidden = NO;
+    [controller showOperationMessage:@"This is a synthetic operation error. Its recovery instructions must stay below all actions." failed:YES];
+    BOOL responsive = YES;
+    for (NSNumber *width in @[@640, @900, @1280]) {
+        [controller.panelView setFrameSize:NSMakeSize(width.doubleValue, 640)];
+        [controller layoutProductInterface];
+        NSArray<NSView *> *views = @[controller.sectionControl, controller.titleLabel, controller.eyebrowLabel, controller.subtitleLabel, controller.searchField, controller.createButton, controller.listScroll, controller.detailScroll, controller.primaryButton, controller.secondaryButton, controller.tertiaryButton, controller.deleteButton, controller.operationLabel];
+        for (NSUInteger i = 0; i < views.count; i++) {
+            NSView *a = views[i]; if (a.hidden) continue;
+            responsive &= NSContainsRect(controller.panelView.bounds, a.frame);
+            for (NSUInteger j = i + 1; j < views.count; j++) if (!views[j].hidden) responsive &= !NSIntersectsRect(a.frame, views[j].frame);
+        }
+        responsive &= NSMaxY(controller.operationLabel.frame) < NSMinY(controller.primaryButton.frame);
+        if (width.doubleValue < 900) responsive &= NSMinY(controller.listScroll.frame) > NSMaxY(controller.detailScroll.frame);
+        else responsive &= NSMinX(controller.detailScroll.frame) > NSMaxX(controller.listScroll.frame);
+    }
+    if (!responsive) fprintf(stderr, "FAIL responsive product panel geometry\n");
     [controller.refreshTimer invalidate];
     [controller.window close];
     return onboardingWorks && settingsWork &&
-        projectWorks && environmentWorks;
+        projectWorks && environmentWorks && responsive && stableRefresh && previewFenced;
 }
 
 - (instancetype)initWithTheme:(TerminalTheme *)theme
@@ -696,7 +782,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
                     backing:NSBackingStoreBuffered
                       defer:NO];
     window.title = @"TerminalDB";
-    window.contentMinSize = NSMakeSize(1120, 690);
+    window.contentMinSize = NSMakeSize(640, 540);
     window.backgroundColor = theme.terminalBackground;
     self = [super initWithWindow:window];
     if (self == nil) return nil;
@@ -704,6 +790,9 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     _store = store;
     _directory = NSHomeDirectory();
     _accountLabel = @"No Claude Code account";
+    TerminalProductPanelView *content = [[TerminalProductPanelView alloc] initWithFrame:window.contentView.bounds];
+    content.controller = self;
+    window.contentView = content;
     [self buildInterface];
     _panelView = window.contentView;
     _refreshTimer = [NSTimer scheduledTimerWithTimeInterval:2.0
@@ -747,16 +836,17 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         [self.sectionControl setLabel:labels[i] forSegment:i];
         [self.sectionControl setWidth:140 forSegment:i];
     }
-    self.sectionControl.segmentStyle = NSSegmentStyleTexturedRounded;
+    self.sectionControl.segmentStyle = NSSegmentStyleRounded;
+    self.sectionControl.font = [NSFont systemFontOfSize:12];
     self.sectionControl.target = self;
     self.sectionControl.action = @selector(sectionChanged:);
     self.sectionControl.autoresizingMask =
         NSViewWidthSizable | NSViewMinYMargin;
     [content addSubview:self.sectionControl];
 
-    self.eyebrowLabel = [self labelWithSize:10
-                                    weight:NSFontWeightSemibold
-                                     color:self.theme.ansiColors[6]];
+    self.eyebrowLabel = [self labelWithSize:12
+                                    weight:NSFontWeightRegular
+                                     color:self.theme.statusBarActiveForeground];
     self.eyebrowLabel.frame = NSMakeRect(28, 594, 500, 16);
     self.eyebrowLabel.autoresizingMask = NSViewMinYMargin;
     [content addSubview:self.eyebrowLabel];
@@ -774,12 +864,14 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     self.subtitleLabel.frame = NSMakeRect(28, 538, 900, 19);
     self.subtitleLabel.autoresizingMask =
         NSViewWidthSizable | NSViewMinYMargin;
+    self.subtitleLabel.maximumNumberOfLines = 2;
+    self.subtitleLabel.lineBreakMode = NSLineBreakByWordWrapping;
     [content addSubview:self.subtitleLabel];
 
     self.searchField =
         [[NSSearchField alloc] initWithFrame:NSMakeRect(24, 500, 350, 28)];
-    self.searchField.placeholderString =
-        @"Search names, commands, paths, tags, and status";
+    self.searchField.placeholderString = @"Search";
+    self.searchField.toolTip = @"Search names, commands, paths, tags, and status";
     self.searchField.delegate = self;
     self.searchField.autoresizingMask = NSViewMaxXMargin | NSViewMinYMargin;
     [content addSubview:self.searchField];
@@ -800,7 +892,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     listScroll.autoresizingMask = NSViewHeightSizable;
     self.tableView = [[NSTableView alloc] initWithFrame:NSZeroRect];
     self.tableView.headerView = nil;
-    self.tableView.rowHeight = 50;
+    self.tableView.rowHeight = 56;
     self.tableView.backgroundColor = self.theme.statusBarBackground;
     self.tableView.selectionHighlightStyle =
         NSTableViewSelectionHighlightStyleRegular;
@@ -811,6 +903,8 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     self.tableView.delegate = self;
     self.tableView.dataSource = self;
     listScroll.documentView = self.tableView;
+    self.listScroll = listScroll;
+    self.tableView.columnAutoresizingStyle = NSTableViewLastColumnOnlyAutoresizingStyle;
     [content addSubview:listScroll];
 
     NSScrollView *detailScroll =
@@ -818,8 +912,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     detailScroll.hasVerticalScroller = YES;
     detailScroll.borderType = NSBezelBorder;
     detailScroll.drawsBackground = YES;
-    detailScroll.backgroundColor =
-        [NSColor colorWithSRGBRed:0.07 green:0.076 blue:0.087 alpha:1.0];
+    detailScroll.backgroundColor = self.theme.statusBarBackground;
     detailScroll.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     self.detailView = [[NSTextView alloc]
         initWithFrame:detailScroll.contentView.bounds];
@@ -839,6 +932,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
                                       weight:NSFontWeightRegular];
     self.detailView.textContainerInset = NSMakeSize(14, 14);
     detailScroll.documentView = self.detailView;
+    self.detailScroll = detailScroll;
     [content addSubview:detailScroll];
 
     self.primaryButton = [NSButton buttonWithTitle:@"Open"
@@ -872,18 +966,83 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     self.operationLabel.maximumNumberOfLines = 2;
     self.operationLabel.lineBreakMode = NSLineBreakByWordWrapping;
     [content addSubview:self.operationLabel];
+    for (NSView *view in content.subviews) view.autoresizingMask = NSViewNotSizable;
+    [self layoutProductInterface];
+}
+
+- (void)layoutProductInterface {
+    NSView *content = self.panelView ?: self.window.contentView;
+    if (!self.detailScroll || !content) return;
+    CGFloat inset = 24, gap = 12, controlHeight = 30;
+    CGFloat width = MAX(0, NSWidth(content.bounds) - inset * 2);
+    CGFloat top = NSHeight(content.bounds) - inset;
+    if (!self.sectionControl.hidden) {
+        self.sectionControl.frame = NSMakeRect(inset, top - controlHeight, width, controlHeight);
+        for (NSInteger i = 0; i < self.sectionControl.segmentCount; i++) [self.sectionControl setWidth:MAX(0, (width - 8) / self.sectionControl.segmentCount) forSegment:i];
+        top -= controlHeight + 16;
+    }
+    self.titleLabel.frame = NSMakeRect(inset, top - 28, width, 28); top -= 36;
+    self.eyebrowLabel.frame = NSMakeRect(inset, top - 18, width, 18); top -= 26;
+    BOOL compactHeight = NSHeight(content.bounds) < 520;
+    self.subtitleLabel.hidden = compactHeight;
+    if (!compactHeight) { self.subtitleLabel.frame = NSMakeRect(inset, top - 36, width, 36); top -= 48; }
+    if (!self.searchField.hidden) {
+        CGFloat createWidth = self.createButton.hidden ? 0 : MIN(160, MAX(88, self.createButton.intrinsicContentSize.width + 16));
+        self.searchField.frame = NSMakeRect(inset, top - controlHeight, MAX(0, width - createWidth - (createWidth > 0 ? gap : 0)), controlHeight);
+        self.createButton.frame = NSMakeRect(inset + width - createWidth, top - controlHeight, createWidth, controlHeight);
+        top -= controlHeight + 16;
+    }
+    NSArray<NSButton *> *buttons = @[self.primaryButton, self.secondaryButton, self.tertiaryButton, self.deleteButton];
+    NSUInteger rows = 1; CGFloat used = 0;
+    for (NSButton *button in buttons) if (!button.hidden) {
+        CGFloat natural = MIN(width, MAX(88, button.intrinsicContentSize.width + 16));
+        if (used > 0 && used + gap + natural > width) { rows++; used = 0; }
+        used += (used > 0 ? gap : 0) + natural;
+    }
+    BOOL operation = self.operationLabel.stringValue.length > 0;
+    self.operationLabel.hidden = !operation;
+    self.operationLabel.frame = NSMakeRect(inset, inset, width, operation ? 36 : 0);
+    CGFloat actionBottom = inset + (operation ? 48 : 0);
+    CGFloat y = actionBottom + (rows - 1) * (controlHeight + 8);
+    used = 0;
+    for (NSButton *button in buttons) if (!button.hidden) {
+        CGFloat natural = MIN(width, MAX(88, button.intrinsicContentSize.width + 16));
+        if (used > 0 && used + gap + natural > width) { y -= controlHeight + 8; used = 0; }
+        CGFloat x = used > 0 ? used + gap : 0;
+        if (button == self.deleteButton) x = MAX(x, width - natural);
+        button.frame = NSMakeRect(inset + x, y, natural, controlHeight);
+        used = x + natural;
+    }
+    CGFloat bottom = actionBottom + rows * controlHeight + (rows - 1) * 8 + 16;
+    CGFloat bodyHeight = MAX(0, top - bottom);
+    if (NSWidth(content.bounds) >= 900) {
+        CGFloat listWidth = MIN(360, width * .36);
+        self.listScroll.frame = NSMakeRect(inset, bottom, listWidth, bodyHeight);
+        self.detailScroll.frame = NSMakeRect(inset + listWidth + 16, bottom, MAX(0, width - listWidth - 16), bodyHeight);
+    } else {
+        CGFloat available = MAX(0, bodyHeight - 16);
+        CGFloat listHeight = floor(available * .42);
+        self.listScroll.frame = NSMakeRect(inset, bottom + available - listHeight + 16, width, listHeight);
+        self.detailScroll.frame = NSMakeRect(inset, bottom, width, MAX(0, available - listHeight));
+    }
+    self.tableView.tableColumns.firstObject.width = MAX(0, NSWidth(self.listScroll.contentView.bounds) - 4);
+    self.detailView.minSize = NSMakeSize(0, NSHeight(self.detailScroll.contentView.bounds));
+    self.detailView.textContainer.containerSize = NSMakeSize(MAX(0, NSWidth(self.detailScroll.contentView.bounds) - self.detailView.textContainerInset.width * 2), CGFLOAT_MAX);
 }
 
 - (void)showOperationMessage:(NSString *)message failed:(BOOL)failed {
     self.operationLabel.stringValue = message ?: @"";
     self.operationLabel.textColor = failed ? self.theme.ansiColors[1]
         : self.theme.statusBarActiveForeground;
+    [self layoutProductInterface];
 }
 
 - (void)showSection:(TerminalProductSection)section
           directory:(NSString *)directory
        accountLabel:(NSString *)accountLabel {
     self.panelPresented = NO;
+    self.detailPresentation = nil;
+    self.detailGeneration++;
     self.section = section;
     self.directory = directory.length > 0 ? directory : NSHomeDirectory();
     self.accountLabel =
@@ -902,6 +1061,8 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
           accountLabel:(NSString *)accountLabel
                inWindow:(NSWindow *)window {
     self.section = section;
+    self.detailPresentation = nil;
+    self.detailGeneration++;
     self.directory = directory.length > 0 ? directory : NSHomeDirectory();
     self.accountLabel = accountLabel.length > 0
         ? accountLabel : @"No Claude Code account";
@@ -1106,6 +1267,10 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
 }
 
 - (void)refresh {
+    BOOL sameSection = self.presentedItems != nil && self.presentedSection == self.section;
+    NSString *selectedID = sameSection ? [self selectedItem][@"id"] : nil;
+    NSInteger previousRow = sameSection ? self.tableView.selectedRow : 0;
+    NSPoint listOrigin = self.listScroll.contentView.bounds.origin;
     BOOL onboarding =
         self.section == TerminalProductSectionOnboarding;
     self.sectionControl.hidden = onboarding;
@@ -1234,23 +1399,35 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
         }];
         self.items = [self.items filteredArrayUsingPredicate:predicate];
     }
-    [self.tableView reloadData];
+    BOOL changed = !sameSection || ![self.presentedItems isEqualToArray:self.items];
+    if (changed) {
+        self.refreshingItems = YES;
+        [self.tableView reloadData];
+        if (self.items.count > 0) {
+            NSUInteger match = selectedID.length > 0 ? [self.items indexOfObjectPassingTest:^BOOL(NSDictionary *item, NSUInteger index, BOOL *stop) {
+                (void)index; (void)stop; return [item[@"id"] isEqual:selectedID];
+            }] : NSNotFound;
+            NSInteger row = match != NSNotFound ? (NSInteger)match : MIN(MAX(previousRow, 0), (NSInteger)self.items.count - 1);
+            [self.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
+        } else [self.tableView deselectAll:nil];
+        self.refreshingItems = NO;
+        if (sameSection) {
+            CGFloat limit = MAX(0, NSHeight(self.tableView.bounds) - NSHeight(self.listScroll.contentView.bounds));
+            [self.listScroll.contentView scrollToPoint:NSMakePoint(0, MIN(MAX(0, listOrigin.y), limit))];
+            [self.listScroll reflectScrolledClipView:self.listScroll.contentView];
+        }
+    }
+    self.presentedItems = self.items;
+    self.presentedSection = self.section;
     if (self.items.count > 0) {
-        NSInteger row = MIN(MAX(self.tableView.selectedRow, 0),
-                            (NSInteger)self.items.count - 1);
-        [self.tableView selectRowIndexes:
-            [NSIndexSet indexSetWithIndex:(NSUInteger)row]
-                            byExtendingSelection:NO];
-        [self updateDetail];
+        [self tableViewSelectionDidChange:[NSNotification notificationWithName:@"TerminalDBProductRefresh" object:self.tableView]];
     } else {
-        self.detailView.string =
-            @"Nothing here yet.\n\nCreate an item or clear the search field.";
+        self.detailPresentation = nil; self.detailGeneration++;
+        [self setDetailText:@"Nothing here yet.\n\nCreate an item or clear the search field." preservePosition:NO];
     }
     self.window.title = self.titleLabel.stringValue;
-    if (self.executionWorkstation.length > 0 && self.section <= TerminalProductSectionWorkspaces) {
-        self.eyebrowLabel.stringValue = [NSString stringWithFormat:@"%@ · %@",
-            self.executionWorkstation, self.eyebrowLabel.stringValue];
-    }
+    self.eyebrowLabel.stringValue = [NSString stringWithFormat:@"On %@", self.executionWorkstation.length > 0 && self.section <= TerminalProductSectionWorkspaces ? self.executionWorkstation : @"This Mac"];
+    [self layoutProductInterface];
 }
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {
@@ -1268,14 +1445,14 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     if (cell == nil) {
         cell = [[NSTableCellView alloc] initWithFrame:NSMakeRect(0, 0, 410, 50)];
         cell.identifier = identifier;
-        NSTextField *text = [self labelWithSize:12
+        NSTextField *text = [self labelWithSize:13
                                         weight:NSFontWeightMedium
                                          color:self.theme.terminalForeground];
         text.tag = 1;
         text.frame = NSMakeRect(10, 6, 380, 18);
         text.autoresizingMask = NSViewWidthSizable;
         [cell addSubview:text];
-        NSTextField *detail = [self labelWithSize:10
+        NSTextField *detail = [self labelWithSize:12
                                           weight:NSFontWeightRegular
                                            color:self.theme.statusBarActiveForeground];
         detail.tag = 2;
@@ -1294,6 +1471,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
 
 - (void)tableViewSelectionDidChange:(NSNotification *)notification {
     (void)notification;
+    if (self.refreshingItems) return;
     [self updateDetail];
     NSDictionary *item = [self selectedItem];
     if (self.section == TerminalProductSectionProject) {
@@ -1324,6 +1502,7 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
             self.tableView.selectedRow == last ? @"Finish" : @"Continue";
         self.tertiaryButton.enabled = self.tableView.selectedRow > 0;
     }
+    [self layoutProductInterface];
 }
 
 - (NSDictionary *)selectedItem {
@@ -1335,6 +1514,26 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
 - (void)updateDetail {
     NSDictionary *item = [self selectedItem];
     if (item == nil) return;
+    NSMutableDictionary *presentation = [@{@"item": [item copy], @"section": @(self.section),
+        @"directory": self.directory ?: @"", @"account": self.accountLabel ?: @"",
+        @"workstation": self.executionWorkstation ?: @"",
+        @"preview": self.peerFilePreview ? [self.peerFilePreview copy] : NSNull.null} mutableCopy];
+    if ([item[@"started_at"] doubleValue] > 0 && [item[@"finished_at"] doubleValue] <= 0) {
+        presentation[@"duration"] = [NSString stringWithFormat:@"%.1f", MAX(0, NSDate.date.timeIntervalSince1970 - [item[@"started_at"] doubleValue])];
+    }
+    if ([item[@"kind"] isEqual:@"file"] && !self.peerFilePreview) {
+        NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:item[@"path"] error:nil];
+        presentation[@"modified"] = attributes[NSFileModificationDate] ?: NSNull.null;
+        presentation[@"size"] = attributes[NSFileSize] ?: @0;
+    }
+    if ([self.detailPresentation isEqual:presentation]) return;
+    BOOL preserve = [self.detailPresentation[@"item"][@"id"] isEqual:item[@"id"]] &&
+        [self.detailPresentation[@"section"] isEqual:presentation[@"section"]] &&
+        [self.detailPresentation[@"directory"] isEqual:presentation[@"directory"]] &&
+        [self.detailPresentation[@"workstation"] isEqual:presentation[@"workstation"]] &&
+        [self.detailPresentation[@"preview"] isEqual:presentation[@"preview"]];
+    self.detailPresentation = presentation;
+    NSUInteger generation = ++self.detailGeneration;
     NSMutableString *detail = [NSMutableString string];
     NSString *name = item[@"name"] ?: item[@"command"] ?: @"Item";
     [detail appendFormat:@"%@\n%@\n\n", name,
@@ -1376,10 +1575,13 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
     }
     if ([item[@"kind"] isEqualToString:@"file"]) {
         if (self.peerFilePreview) {
-            self.detailView.string = [detail stringByAppendingString:@"Loading preview from the workstation…"];
+            if (!preserve) [self setDetailText:[detail stringByAppendingString:@"Loading preview from the workstation…"] preservePosition:NO];
             NSString *selectedID = item[@"id"];
+            __weak TerminalProductWindowController *weakSelf = self;
             self.peerFilePreview(item[@"path"], ^(NSString *preview) {
-                if ([[self selectedItem][@"id"] isEqual:selectedID]) self.detailView.string = [detail stringByAppendingFormat:@"PREVIEW\n%@", preview];
+                TerminalProductWindowController *strongSelf = weakSelf;
+                if (strongSelf && generation == strongSelf.detailGeneration && [[strongSelf selectedItem][@"id"] isEqual:selectedID])
+                    [strongSelf setDetailText:[detail stringByAppendingFormat:@"PREVIEW\n%@", preview ?: @""] preservePosition:preserve];
             });
             return;
         }
@@ -1424,7 +1626,26 @@ static NSArray<NSDictionary *> *TerminalProductRunbookSteps(
             @"\nEach execution still passes through the active permission "
              "policy.\n"];
     }
-    self.detailView.string = detail;
+    [self setDetailText:detail preservePosition:preserve];
+}
+
+- (void)setDetailText:(NSString *)text preservePosition:(BOOL)preserve {
+    if ([self.detailView.string isEqual:text]) return;
+    NSPoint origin = self.detailScroll.contentView.bounds.origin;
+    NSRange selection = self.detailView.selectedRange;
+    self.detailView.string = text ?: @"";
+    [self.detailView.layoutManager ensureLayoutForTextContainer:self.detailView.textContainer];
+    [self.detailView sizeToFit];
+    if (preserve) {
+        NSUInteger location = MIN(selection.location, self.detailView.string.length);
+        [self.detailView setSelectedRange:NSMakeRange(location, MIN(selection.length, self.detailView.string.length - location))];
+        CGFloat maxY = MAX(0, NSHeight(self.detailView.bounds) - NSHeight(self.detailScroll.contentView.bounds));
+        [self.detailScroll.contentView scrollToPoint:NSMakePoint(0, MIN(MAX(0, origin.y), maxY))];
+    } else {
+        [self.detailView setSelectedRange:NSMakeRange(0, 0)];
+        [self.detailScroll.contentView scrollToPoint:NSZeroPoint];
+    }
+    [self.detailScroll reflectScrolledClipView:self.detailScroll.contentView];
 }
 
 - (NSArray<NSString *> *)promptRunbookWithTitle:(NSString *)title

@@ -261,6 +261,7 @@ final class SharedAWSService {
                           let profile = try self.configuration.discover().first(where: { $0.id == id }) else {
                         throw PeerFailure("Choose an AWS SSO or browser-login profile configured on this Mac, or use Sign In first.")
                     }
+                    guard self.signInProfile != id else { throw PeerFailure("Complete or cancel this AWS sign-in before sharing its current access.") }
                     guard self.document.sources[id] != nil || self.document.sources.count < Self.maximumLocalSources else {
                         throw PeerFailure("Share up to 16 AWS profiles from this Mac. Stop sharing one before adding another.")
                     }
@@ -268,10 +269,8 @@ final class SharedAWSService {
                     // and configuration. Only selected temporary credentials
                     // are published; no credential_process mapping is needed.
                     _ = try self.configuration.prepareBackingConfig(profile)
-                    let previous = self.document.sources[id]
-                    self.document.sources[id] = previous ?? SharedAWSLocalSource(descriptor: profile)
-                    do { try self.save() }
-                    catch { self.document.sources[id] = previous; throw error }
+                    let changed = try self.saveSource(profile)
+                    if changed { self.cancelRefresh(id) }
                     self.refresh(id, manual: true)
                     self.notify(); reply(try self.catalog())
                 case "aws.share", "aws.use":
@@ -289,11 +288,11 @@ final class SharedAWSService {
                     let installation = try self.configuration.install(profile, targetName: target, launcherPath: TDBSharedAWS.launcherPath,
                                                                       allowReplacingSource: payload["replaceSource"] as? Bool == true)
                     if operation == "aws.share" {
-                        let previous = self.document.sources[profile.id]
-                        self.document.sources[profile.id] = previous ?? SharedAWSLocalSource(descriptor: profile)
-                        do { try self.save() }
+                        do {
+                            let changed = try self.saveSource(profile)
+                            if changed { self.cancelRefresh(profile.id) }
+                        }
                         catch {
-                            self.document.sources[profile.id] = previous
                             if previousInstallation == nil { try? self.configuration.restore(installation) }
                             throw error
                         }
@@ -312,9 +311,7 @@ final class SharedAWSService {
                     // Coalesce any older renewal before opening a browser.
                     // New source enrollment happens only after authentication
                     // succeeds; cancellation must not enable background export.
-                    self.jobs["refresh:" + profile.id]?.cancel()
-                    self.jobs.removeValue(forKey: "refresh:" + profile.id)
-                    self.renewing.remove(profile.id)
+                    self.cancelRefresh(profile.id)
                     let config = try self.configuration.prepareBackingConfig(profile)
                     let executable = try SharedAWSCLI.executable(root: self.root)
                     let environment = try SharedAWSCLI.environment(root: self.root, config: config)
@@ -337,14 +334,7 @@ final class SharedAWSService {
                         switch result {
                         case .success:
                             do {
-                                if self.document.sources[profile.id] == nil {
-                                    guard self.document.sources.count < Self.maximumLocalSources else {
-                                        throw PeerFailure("Share up to 16 AWS profiles from this Mac.")
-                                    }
-                                    self.document.sources[profile.id] = SharedAWSLocalSource(descriptor: profile)
-                                    do { try self.save() }
-                                    catch { self.document.sources.removeValue(forKey: profile.id); throw error }
-                                }
+                                _ = try self.saveSource(profile, forceRenewal: true)
                                 self.phase = "Signed in. Your approved Macs receive renewed credentials when connected."
                                 self.refresh(profile.id, manual: true)
                             } catch {
@@ -369,14 +359,22 @@ final class SharedAWSService {
                 case "aws.remove":
                     let profile = try self.profile(payload)
                     self.jobs["signin:" + profile.id]?.cancel()
-                    self.document.sources.removeValue(forKey: profile.id)
-                    try self.save()
+                    let previous = self.document.sources.removeValue(forKey: profile.id)
+                    do { try self.save() }
+                    catch { self.document.sources[profile.id] = previous; throw error }
                     try self.store.withdraw(profile.id)
-                    if let job = self.jobs["refresh:" + profile.id] { job.cancel() }
+                    self.sourceStatus.removeValue(forKey: profile.id)
+                    self.cancelRefresh(profile.id)
+                    var incomplete = false
                     for installation in try self.configuration.installations() where installation.descriptor.id == profile.id {
-                        try self.configuration.restore(installation)
+                        do { try self.configuration.restore(installation) }
+                        catch { incomplete = true }
                     }
                     if self.signInProfile == nil { self.phase = "" }
+                    if incomplete {
+                        self.notify()
+                        throw PeerFailure("Sharing from this Mac has stopped. Some edited or unavailable profile names could not be restored safely; other names were restored where possible. Your configuration changes were kept.")
+                    }
                     self.notify(); reply(try self.catalog())
                 case "aws.credentials":
                     guard let id = payload["profileId"] as? String, Self.validID(id) else { throw PeerFailure("Choose a configured AWS profile.") }
@@ -424,6 +422,25 @@ final class SharedAWSService {
         try JSONEncoder().encode(document).write(to: path, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
     }
+    @discardableResult private func saveSource(_ profile: AWSProfileDescriptor, forceRenewal: Bool = false) throws -> Bool {
+        let previous = document.sources[profile.id]
+        guard previous != nil || document.sources.count < Self.maximumLocalSources else { throw PeerFailure("Share up to 16 AWS profiles from this Mac.") }
+        let changed = previous?.descriptor != profile
+        var source = previous ?? SharedAWSLocalSource(descriptor: profile)
+        source.descriptor = profile
+        if changed || forceRenewal { source.lastAttempt = 0; source.lastExpiry = 0; source.failed = false }
+        document.sources[profile.id] = source
+        do { try save() }
+        catch { document.sources[profile.id] = previous; throw error }
+        return changed
+    }
+    private func cancelRefresh(_ id: String) {
+        // Detach before cancelling: cancelled process callbacks must not update
+        // a newer alias, renewal, or removal for this persistent profile ID.
+        let command = jobs.removeValue(forKey: "refresh:" + id)
+        renewing.remove(id)
+        command?.cancel()
+    }
     private func localProfiles() throws -> [AWSProfileDescriptor] {
         var profiles = try configuration.discover()
         for source in document.sources.values where !profiles.contains(where: { $0.id == source.descriptor.id }) { profiles.append(source.descriptor) }
@@ -443,6 +460,8 @@ final class SharedAWSService {
              "descriptor": try JSONSerialization.jsonObject(with: JSONEncoder().encode($0.descriptor))]
         }
         return ["profiles": profiles, "accounts": try store.catalog(), "installed": installed,
+                "configuredProfileIDs": Array(Set(try configuration.discover().map(\.id))).sorted(),
+                "localProfileNames": try configuration.configuredNames(),
                 "phase": phase, "sourceStatus": sourceStatus, "signInProfile": signInProfile ?? "",
                 "sources": document.sources.keys.sorted()]
     }
@@ -472,8 +491,9 @@ final class SharedAWSService {
             let command = SharedAWSCommand(queue: queue); jobs[key] = command
             try command.start(executable: executable,
                               arguments: ["configure", "export-credentials", "--profile", profile.name, "--format", "process", "--no-cli-pager", "--cli-connect-timeout", "5", "--cli-read-timeout", "10"],
-                              environment: environment, timeout: 25, capture: true) { [weak self] result in
+                                      environment: environment, timeout: 25, capture: true) { [weak self, weak command] result in
                 guard let self else { return }
+                guard let command, self.jobs[key] === command else { completion?(); return }
                 self.jobs.removeValue(forKey: key)
                 do {
                     let data = try result.get()
@@ -494,11 +514,12 @@ final class SharedAWSService {
             let command = SharedAWSCommand(queue: queue); jobs[key] = command
             try command.start(executable: executable,
                               arguments: ["sts", "get-caller-identity", "--output", "json", "--no-cli-pager", "--cli-connect-timeout", "5", "--cli-read-timeout", "10"],
-                              environment: environment, timeout: 20, capture: true) { [weak self] result in
+                              environment: environment, timeout: 20, capture: true) { [weak self, weak command] result in
                 guard let self else { return }
+                guard let command, self.jobs[key] === command else { completion?(); return }
                 self.jobs.removeValue(forKey: key)
                 do {
-                    guard self.document.sources[profile.id] != nil else { throw PeerFailure("The AWS source was removed.") }
+                    guard self.document.sources[profile.id]?.descriptor == profile else { throw PeerFailure("The AWS source selection changed.") }
                     let data = try result.get()
                     guard let identity = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw PeerFailure("AWS returned an invalid account identity.") }
                     let arn = try SharedAWSPrincipal.verify(identity, profile: profile)
@@ -731,6 +752,10 @@ enum SharedAWSServiceTests {
         import sys,json,datetime,os,time
         from pathlib import Path
         args=sys.argv[1:]
+        if (Path(os.environ['HOME'])/'capture-config').exists():
+            profile=args[args.index('--profile')+1] if '--profile' in args else ''
+            call={'operation':args[0], 'profile':profile, 'config':Path(os.environ['AWS_CONFIG_FILE']).read_text()}
+            with (Path(os.environ['HOME'])/'fixture-calls.jsonl').open('a') as output: output.write(json.dumps(call)+'\\n')
         if args[:2]==['configure','export-credentials']:
             if (Path(os.environ['HOME'])/'export-delay').exists():
                 (Path(os.environ['HOME'])/'export-started').write_text('ready')
@@ -883,6 +908,114 @@ enum SharedAWSServiceTests {
         try check((withdrawn["installed"] as? [[String: Any]])?.first?["descriptor"] is [String: Any])
         try check(try request("aws.remove", ["profileId": otherProfile.id])["error"] == nil)
         try check(try Data(contentsOf: config) == original)
+
+        // Same-identity aliases can use different local SSO token caches. A
+        // new explicit sign-in/share choice must drive the following export,
+        // even when this persistent profile ID was already a local source.
+        let aliasRoot = root.appendingPathComponent("alias-cache")
+        try FileManager.default.createDirectory(at: aliasRoot.appendingPathComponent("aws-fixture"), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let aliasCLI = aliasRoot.appendingPathComponent("aws")
+        try FileManager.default.copyItem(at: fake, to: aliasCLI)
+        setenv("TERMINALDB_AWS_QA_EXECUTABLE", aliasCLI.path, 1)
+        try Data().write(to: aliasRoot.appendingPathComponent("capture-config"))
+        let aliasConfig = aliasRoot.appendingPathComponent("aws-fixture/config")
+        func aliasSection(_ name: String, session: String) -> String {
+            "[profile \(name)]\nsso_session = \(session)\nsso_account_id = 123456789012\nsso_role_name = ReadOnly\n\n[sso-session \(session)]\nsso_start_url = https://example.awsapps.com/start\nsso_region = us-east-1\n\n"
+        }
+        var nativeAliases = aliasSection("z-original", session: "cache-original")
+        try Data(nativeAliases.utf8).write(to: aliasConfig)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: aliasConfig.path)
+        let aliasService = SharedAWSService(root: aliasRoot)
+        func aliasRequest(_ operation: String, _ payload: [String: Any] = [:]) throws -> [String: Any] {
+            var response: [String: Any]?
+            aliasService.handle(operation, payload: payload) { response = $0 }
+            let deadline = Date().addingTimeInterval(10)
+            while response == nil && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+            guard let response else { throw PeerFailure("The synthetic AWS alias operation did not finish.") }
+            return response
+        }
+        let aliasDescriptor = (try aliasRequest("aws.catalog")["profiles"] as! [[String: Any]])[0]
+        let aliasID = aliasDescriptor["id"] as! String
+        func lastCall(_ operation: String) throws -> [String: Any]? {
+            let path = aliasRoot.appendingPathComponent("fixture-calls.jsonl")
+            guard FileManager.default.fileExists(atPath: path.path) else { return nil }
+            return try String(contentsOf: path, encoding: .utf8).split(separator: "\n").compactMap { line in
+                let value = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any]
+                return value?["operation"] as? String == operation ? value : nil
+            }.last
+        }
+        func waitReady(_ name: String, session: String) throws -> Bool {
+            let deadline = Date().addingTimeInterval(8)
+            while Date() < deadline {
+                let state = try aliasRequest("aws.catalog")
+                if state["signInProfile"] as? String == "", (state["sourceStatus"] as? [String: String])?[aliasID] == "Ready to share",
+                   let call = try lastCall("configure"), call["profile"] as? String == name,
+                   (call["config"] as? String)?.contains("sso_session = " + session + "\n") == true { return true }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+            }
+            return false
+        }
+        try check(try aliasRequest("aws.source.enable", ["profileId": aliasID])["error"] == nil)
+        try check(try waitReady("z-original", session: "cache-original"))
+        nativeAliases += aliasSection("a-current", session: "cache-current")
+        try Data(nativeAliases.utf8).write(to: aliasConfig)
+        try check(try aliasRequest("aws.signIn.start", ["profileId": aliasID])["accepted"] as? Bool == true)
+        try check(try waitReady("a-current", session: "cache-current"))
+        let signedInCall = try lastCall("sso")
+        try check(signedInCall?["profile"] as? String == "a-current" && (signedInCall?["config"] as? String)?.contains("sso_session = cache-current\n") == true)
+        let sourcePath = aliasRoot.appendingPathComponent("aws-service.json")
+        func selectedAlias() throws -> String? { try JSONDecoder().decode(SharedAWSLocalDocument.self, from: Data(contentsOf: sourcePath)).sources[aliasID]?.descriptor.name }
+        try check(try selectedAlias() == "a-current")
+
+        // Switching a current source also fences an older in-flight export.
+        try Data().write(to: aliasRoot.appendingPathComponent("export-delay"))
+        try check(try aliasRequest("aws.refresh", ["profileId": aliasID])["accepted"] as? Bool == true)
+        let stalledDeadline = Date().addingTimeInterval(5)
+        while !FileManager.default.fileExists(atPath: aliasRoot.appendingPathComponent("export-started").path) && Date() < stalledDeadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+        try check(FileManager.default.fileExists(atPath: aliasRoot.appendingPathComponent("export-started").path))
+        nativeAliases += aliasSection("0-shared", session: "cache-shared")
+        try Data(nativeAliases.utf8).write(to: aliasConfig)
+        try FileManager.default.removeItem(at: aliasRoot.appendingPathComponent("export-delay"))
+        try check(try aliasRequest("aws.source.enable", ["profileId": aliasID])["error"] == nil)
+        try check(try waitReady("0-shared", session: "cache-shared"))
+        try check(try selectedAlias() == "0-shared")
+
+        // A failed metadata save must preserve the old source selection in
+        // memory as well as on disk, without running the new alias export.
+        nativeAliases += aliasSection("0-before", session: "cache-unsaved")
+        try Data(nativeAliases.utf8).write(to: aliasConfig)
+        try check((try aliasRequest("aws.catalog")["profiles"] as? [[String: Any]])?.first?["name"] as? String == "0-before")
+        let previousSource = try Data(contentsOf: sourcePath)
+        try FileManager.default.removeItem(at: sourcePath)
+        try FileManager.default.createDirectory(at: sourcePath, withIntermediateDirectories: false)
+        try check(try aliasRequest("aws.source.enable", ["profileId": aliasID])["error"] != nil)
+        try FileManager.default.removeItem(at: sourcePath)
+        try previousSource.write(to: sourcePath)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: sourcePath.path)
+        try check(try aliasRequest("aws.refresh", ["profileId": aliasID])["accepted"] as? Bool == true)
+        try check(try waitReady("0-shared", session: "cache-shared"))
+        try check(try selectedAlias() == "0-shared")
+        try check(try Data(contentsOf: aliasConfig) == Data(nativeAliases.utf8))
+
+        // Removal restores all safe aliases even if one was edited outside
+        // TerminalDB. The conflicted recovery record and user edits survive.
+        try check(try aliasRequest("aws.use", ["profileId": aliasID, "targetName": "mapped-one"])["error"] == nil)
+        try check(try aliasRequest("aws.use", ["profileId": aliasID, "targetName": "mapped-two"])["error"] == nil)
+        let beforeEdit = try String(contentsOf: aliasConfig, encoding: .utf8)
+        let edited = beforeEdit.replacingOccurrences(of: "[profile mapped-one]\n", with: "[profile mapped-one]\n# Edited outside TerminalDB\n")
+        try Data(edited.utf8).write(to: aliasConfig)
+        let partialRemoval = try aliasRequest("aws.remove", ["profileId": aliasID])
+        try check(partialRemoval["error"] != nil)
+        let afterPartial = try String(contentsOf: aliasConfig, encoding: .utf8)
+        try check(afterPartial.contains("# Edited outside TerminalDB") && afterPartial.contains("[profile mapped-one]"))
+        try check(!afterPartial.contains("[profile mapped-two]"))
+        let partialCatalog = try aliasRequest("aws.catalog")
+        try check((partialCatalog["sources"] as? [String])?.isEmpty == true)
+        try check((partialCatalog["sourceStatus"] as? [String: String])?[aliasID] == nil)
+        try check((partialCatalog["installed"] as? [[String: Any]])?.count == 1)
+        try Data(afterPartial.replacingOccurrences(of: "# Edited outside TerminalDB\n", with: "").utf8).write(to: aliasConfig)
+        try check(try aliasRequest("aws.remove", ["profileId": aliasID])["error"] == nil)
+        try check(try Data(contentsOf: aliasConfig) == Data(nativeAliases.utf8))
         return count
     }
 }
