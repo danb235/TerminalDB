@@ -22,6 +22,7 @@ public final class TDBPeerSelfTests: NSObject {
             try? FileManager.default.removeItem(at: directory)
         }
         do {
+            checks += try PairingPresentationTests.run()
             checks += try localBackpressureChecks()
             checks += try SharedAccountTests.run(root: directory.appendingPathComponent("accounts"))
             checks += try SharedAWSTests.run(root: directory.appendingPathComponent("aws-store"))

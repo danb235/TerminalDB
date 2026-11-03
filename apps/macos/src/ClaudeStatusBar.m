@@ -39,6 +39,7 @@ static double ClaudeUsageClampedPercent(double percent) {
 }
 
 static BOOL ClaudeUsageViewContainsText(NSView *view, NSString *text) {
+    if (view.hidden) return NO;
     NSString *value = nil;
     if ([view isKindOfClass:NSTextField.class]) {
         value = [(NSTextField *)view stringValue];
@@ -85,22 +86,120 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     [super layout];
     [self.statusBar usagePanelDidResize];
 }
-- (void)setFrameSize:(NSSize)newSize {
-    for (NSView *subview in self.subviews) {
-        if ([subview.identifier isEqualToString:@"TerminalDBUsageColumn"]) {
-            newSize.width = MAX(newSize.width, NSWidth(subview.frame) + 48);
-            break;
-        }
+@end
+
+static NSStackView *ClaudeStack(NSArray<NSView *> *views, BOOL vertical, CGFloat spacing) {
+    NSStackView *stack = [NSStackView stackViewWithViews:views];
+    stack.orientation = vertical ? NSUserInterfaceLayoutOrientationVertical : NSUserInterfaceLayoutOrientationHorizontal;
+    stack.alignment = vertical ? NSLayoutAttributeLeading : NSLayoutAttributeCenterY;
+    stack.spacing = spacing;
+    return stack;
+}
+
+static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColor *color) {
+    NSTextField *label = [NSTextField wrappingLabelWithString:@""];
+    label.font = [NSFont systemFontOfSize:size weight:weight];
+    label.textColor = color;
+    label.lineBreakMode = NSLineBreakByWordWrapping;
+    [label setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    return label;
+}
+
+// Row objects and their action buttons survive account/usage publications.
+// Only disclosure contents change when their rendered values actually change.
+@interface ClaudeAccountRow : NSView
+@property(nonatomic, strong) NSStackView *stack;
+@property(nonatomic, strong) NSTextField *name;
+@property(nonatomic, strong) NSTextField *identity;
+@property(nonatomic, strong) NSTextField *availability;
+@property(nonatomic, strong) NSTextField *summary;
+@property(nonatomic, strong) NSTextField *selected;
+@property(nonatomic, strong) NSButton *use;
+@property(nonatomic, strong) NSButton *details;
+@property(nonatomic, strong) NSView *primarySlot;
+@property(nonatomic, strong) NSStackView *disclosure;
+@property(nonatomic, strong) NSTextField *freshness;
+@property(nonatomic, strong) NSTextField *usageDetails;
+@property(nonatomic, strong) NSStackView *detailActions;
+@property(nonatomic, strong) NSButton *share;
+@property(nonatomic, strong) NSButton *remove;
+@property(nonatomic, copy) NSArray *presentation;
+@end
+
+@implementation ClaudeAccountRow
+- (instancetype)initWithTheme:(TerminalTheme *)theme target:(id)target identifier:(NSString *)identifier {
+    self = [super initWithFrame:NSZeroRect];
+    if (!self) return nil;
+    self.identifier = identifier;
+    _name = ClaudeAccountLabel(14, NSFontWeightSemibold, theme.terminalForeground);
+    _name.maximumNumberOfLines = 1; _name.lineBreakMode = NSLineBreakByTruncatingTail;
+    _identity = ClaudeAccountLabel(12, NSFontWeightRegular, theme.statusBarActiveForeground);
+    _identity.maximumNumberOfLines = 1; _identity.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    _availability = ClaudeAccountLabel(12, NSFontWeightRegular, theme.statusBarActiveForeground);
+    _summary = ClaudeAccountLabel(12, NSFontWeightRegular, theme.statusBarActiveForeground);
+    _selected = ClaudeAccountLabel(12, NSFontWeightMedium, theme.statusBarActiveForeground);
+    _selected.stringValue = @"Selected";
+    _selected.alignment = NSTextAlignmentCenter;
+    _use = [NSButton buttonWithTitle:@"Use" target:target action:@selector(selectProfileFromUsageCard:)];
+    _use.identifier = identifier;
+    _details = [NSButton buttonWithTitle:@"Details" target:target action:@selector(toggleUsageDetails:)];
+    _details.identifier = identifier;
+    NSStackView *identity = ClaudeStack(@[_name, _identity], YES, 4);
+    [identity setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    for (NSView *view in identity.arrangedSubviews) [view.widthAnchor constraintEqualToAnchor:identity.widthAnchor].active = YES;
+    NSView *heading = [[NSView alloc] initWithFrame:NSZeroRect];
+    _primarySlot = [[NSView alloc] initWithFrame:NSZeroRect];
+    [heading addSubview:identity]; [heading addSubview:_primarySlot]; [heading addSubview:_details];
+    [_primarySlot addSubview:_selected]; [_primarySlot addSubview:_use];
+    for (NSView *view in @[identity, _primarySlot, _details, _selected, _use]) view.translatesAutoresizingMaskIntoConstraints = NO;
+    [NSLayoutConstraint activateConstraints:@[
+        [heading.heightAnchor constraintGreaterThanOrEqualToConstant:36],
+        [identity.leadingAnchor constraintEqualToAnchor:heading.leadingAnchor],
+        [identity.trailingAnchor constraintEqualToAnchor:_primarySlot.leadingAnchor constant:-12],
+        [identity.topAnchor constraintEqualToAnchor:heading.topAnchor],
+        [identity.bottomAnchor constraintEqualToAnchor:heading.bottomAnchor],
+        [_primarySlot.widthAnchor constraintEqualToConstant:96],
+        [_primarySlot.heightAnchor constraintEqualToConstant:32],
+        [_primarySlot.centerYAnchor constraintEqualToAnchor:heading.centerYAnchor],
+        [_primarySlot.trailingAnchor constraintEqualToAnchor:_details.leadingAnchor constant:-12],
+        [_details.trailingAnchor constraintEqualToAnchor:heading.trailingAnchor],
+        [_details.widthAnchor constraintEqualToConstant:96],
+        [_details.heightAnchor constraintEqualToConstant:32],
+        [_details.centerYAnchor constraintEqualToAnchor:heading.centerYAnchor],
+        [_use.leadingAnchor constraintEqualToAnchor:_primarySlot.leadingAnchor],
+        [_use.trailingAnchor constraintEqualToAnchor:_primarySlot.trailingAnchor],
+        [_use.topAnchor constraintEqualToAnchor:_primarySlot.topAnchor],
+        [_use.bottomAnchor constraintEqualToAnchor:_primarySlot.bottomAnchor],
+        [_selected.leadingAnchor constraintEqualToAnchor:_primarySlot.leadingAnchor],
+        [_selected.trailingAnchor constraintEqualToAnchor:_primarySlot.trailingAnchor],
+        [_selected.centerYAnchor constraintEqualToAnchor:_primarySlot.centerYAnchor],
+    ]];
+    _disclosure = ClaudeStack(@[], YES, 8);
+    _freshness = ClaudeAccountLabel(12, NSFontWeightRegular, theme.statusBarActiveForeground);
+    _usageDetails = ClaudeAccountLabel(12, NSFontWeightRegular, theme.terminalForeground);
+    _share = [NSButton buttonWithTitle:@"Share Sign-In…" target:target action:@selector(shareSignInFromUsageCard:)];
+    _share.identifier = identifier;
+    _remove = [NSButton buttonWithTitle:@"Remove…" target:target action:@selector(removeProfileFromUsageCard:)];
+    _remove.identifier = identifier;
+    _detailActions = ClaudeStack(@[_share, _remove], NO, 12);
+    for (NSView *view in @[_freshness, _usageDetails, _detailActions]) {
+        [_disclosure addArrangedSubview:view];
+        [view.widthAnchor constraintEqualToAnchor:_disclosure.widthAnchor].active = YES;
     }
-    [super setFrameSize:newSize];
-    for (NSView *subview in self.subviews) {
-        if (![subview.identifier isEqualToString:@"TerminalDBUsageColumn"]) {
-            continue;
-        }
-        NSRect frame = subview.frame;
-        frame.origin.x = floor((newSize.width - NSWidth(frame)) / 2.0);
-        subview.frame = frame;
-    }
+    NSBox *separator = [[NSBox alloc] initWithFrame:NSZeroRect]; separator.boxType = NSBoxSeparator;
+    _stack = ClaudeStack(@[heading, _availability, _summary, _disclosure, separator], YES, 8);
+    _stack.edgeInsets = NSEdgeInsetsMake(16, 0, 16, 0);
+    _stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [self addSubview:_stack];
+    [NSLayoutConstraint activateConstraints:@[
+        [_stack.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+        [_stack.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+        [_stack.topAnchor constraintEqualToAnchor:self.topAnchor],
+        [_stack.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+    ]];
+    for (NSView *view in _stack.arrangedSubviews) [view.widthAnchor constraintEqualToAnchor:_stack.widthAnchor].active = YES;
+    [separator.heightAnchor constraintEqualToConstant:1].active = YES;
+    return self;
 }
 @end
 
@@ -115,6 +214,11 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 @property(nonatomic, strong) NSTextField *environmentLabel;
 @property(nonatomic, strong) NSTextField *usageLabel;
 @property(nonatomic, strong) NSTextField *pasteReceiptLabel;
+@property(nonatomic, strong) NSButton *profileButton;
+@property(nonatomic, strong) NSButton *usageButton;
+@property(nonatomic) BOOL accountSelectionPending;
+@property(nonatomic, copy) NSString *pendingProfileIdentifier;
+@property(nonatomic, copy) void (^pendingUsagePanelDismissHandler)(void);
 @property(nonatomic) NSUInteger pasteReceiptGeneration;
 @property(nonatomic, strong) NSTimer *timer;
 @property(nonatomic, strong, nullable) NSDate *lastAccountRefresh;
@@ -140,6 +244,21 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 @property(nonatomic) CGFloat usageDashboardViewportWidth;
 @property(nonatomic) BOOL usageDashboardResizeScheduled;
 @property(nonatomic, strong) NSMutableSet<NSString *> *expandedUsageAccounts;
+@property(nonatomic, strong) NSStackView *usageColumn;
+@property(nonatomic, strong) NSStackView *usageRows;
+@property(nonatomic, strong) NSStackView *usageFooter;
+@property(nonatomic, strong) NSStackView *usageFooterLeading;
+@property(nonatomic, strong) NSStackView *usageFooterTrailing;
+@property(nonatomic, strong) NSTextField *usageHeading;
+@property(nonatomic, strong) NSTextField *usageScope;
+@property(nonatomic, strong) NSTextField *usageCount;
+@property(nonatomic, strong) NSTextField *usageProgress;
+@property(nonatomic, strong) NSTextField *usageWarning;
+@property(nonatomic, strong) NSTextField *usageEmpty;
+@property(nonatomic, strong) NSButton *usageRefreshButton;
+@property(nonatomic, strong) NSLayoutConstraint *usageColumnWidth;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, ClaudeAccountRow *> *usageAccountRows;
+@property(nonatomic, copy) NSArray *usagePresentation;
 + (nullable NSNumber *)nextResetTimestamp:(nullable NSNumber *)timestamp
                                    period:(NSTimeInterval)period
                                    rolled:(BOOL *)rolled;
@@ -166,6 +285,12 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 @end
 
 @implementation ClaudeStatusBar
+@synthesize usagePanelDismissHandler = _usagePanelDismissHandler;
+
+- (void)setUsagePanelDismissHandler:(void (^)(void))handler {
+    _usagePanelDismissHandler = [handler copy];
+    [self refreshUsageWindowContents];
+}
 
 - (instancetype)initWithFrame:(NSRect)frame
              claudeExecutable:(NSString *)claudeExecutable
@@ -186,17 +311,14 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 
     _profileLabel = [NSTextField labelWithString:@""];
     _profileLabel.textColor = theme.statusBarActiveForeground;
-    _profileLabel.font =
-        [NSFont fontWithName:theme.fontName size:10.5]
-            ?: [NSFont monospacedSystemFontOfSize:10.5
-                                           weight:NSFontWeightRegular];
+    _profileLabel.font = [NSFont systemFontOfSize:12 weight:NSFontWeightMedium];
     _profileLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     _profileLabel.maximumNumberOfLines = 1;
     _profileLabel.selectable = NO;
     [self addSubview:_profileLabel];
 
     _directoryLabel = [NSTextField labelWithString:@"~"];
-    _directoryLabel.font = _profileLabel.font;
+    _directoryLabel.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
     _directoryLabel.textColor = theme.ansiColors[6];
     _directoryLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
     _directoryLabel.maximumNumberOfLines = 1;
@@ -216,12 +338,11 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     [self addSubview:_modelLabel];
 
     _environmentLabel = [NSTextField labelWithString:@"LOCAL"];
-    _environmentLabel.font =
-        [NSFont fontWithName:theme.fontName size:9.5]
-            ?: [NSFont monospacedSystemFontOfSize:9.5
-                                           weight:NSFontWeightSemibold];
+    _environmentLabel.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
     _environmentLabel.textColor = theme.ansiColors[6];
-    _environmentLabel.alignment = NSTextAlignmentCenter;
+    _environmentLabel.alignment = NSTextAlignmentRight;
+    _environmentLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    _environmentLabel.maximumNumberOfLines = 1;
     _environmentLabel.toolTip =
         @"Environment context. Remote and production sessions receive "
          "stronger safety prompts.";
@@ -246,10 +367,17 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     _pasteReceiptLabel.hidden = YES;
     [_pasteReceiptLabel setAccessibilityLabel:@"Paste receipt"];
     [self addSubview:_pasteReceiptLabel];
-    self.toolTip = @"Open Claude accounts and usage";
-    [self setAccessibilityElement:YES];
-    [self setAccessibilityRole:NSAccessibilityButtonRole];
-    [self setAccessibilityLabel:@"Open Claude accounts and usage"];
+    _profileButton = [NSButton buttonWithTitle:@"" target:self action:@selector(showAccountPicker:)];
+    _profileButton.bordered = NO;
+    [_profileButton setAccessibilityLabel:@"Choose Claude account"];
+    [self addSubview:_profileButton];
+    _usageButton = [NSButton buttonWithTitle:@"" target:self action:@selector(showUsageWindow:)];
+    _usageButton.bordered = NO;
+    [_usageButton setAccessibilityLabel:@"Open Claude usage and account settings"];
+    [self addSubview:_usageButton];
+    [_profileLabel setAccessibilityElement:NO];
+    [_usageLabel setAccessibilityElement:NO];
+    [self setAccessibilityElement:NO];
 
     [self updateProfileLabel];
     [NSNotificationCenter.defaultCenter
@@ -271,23 +399,79 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     NSRectFill(NSMakeRect(0, NSHeight(self.bounds) - 1, NSWidth(self.bounds), 1));
 }
 
-- (void)mouseDown:(NSEvent *)event {
-    (void)event;
-    [self showUsageWindow:nil];
-}
-
-- (nullable NSView *)hitTest:(NSPoint)point {
-    return NSPointInRect(point, self.bounds) ? self : nil;
-}
-
-- (BOOL)accessibilityPerformPress {
-    [self showUsageWindow:nil];
-    return YES;
-}
-
 - (void)resetCursorRects {
     [super resetCursorRects];
-    [self addCursorRect:self.bounds cursor:NSCursor.pointingHandCursor];
+    [self addCursorRect:self.profileButton.frame cursor:NSCursor.pointingHandCursor];
+    if (!self.usageButton.hidden) [self addCursorRect:self.usageButton.frame cursor:NSCursor.pointingHandCursor];
+}
+
+- (void)showAccountPicker:(id)sender { (void)sender; [self presentAccountPicker]; }
+
+- (NSMenu *)accountPickerMenu {
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Claude accounts"];
+    menu.autoenablesItems = NO;
+    NSMenuItem *scope = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"For this tab on %@", self.accountWorkstationName ?: @"This Mac"] action:NULL keyEquivalent:@""];
+    scope.enabled = NO; [menu addItem:scope];
+    for (ClaudeProfile *profile in self.profileManager.profiles) {
+        BOOL shared = profile.sharedAccountIdentifier.length > 0;
+        BOOL pending = shared && profile.catalogOnly;
+        BOOL expired = shared && profile.sharedExpiresAt <= NSDate.date.timeIntervalSince1970;
+        BOOL signIn = profile.email.length == 0;
+        NSString *title = profile.label;
+        NSUInteger matchingNames = 0;
+        for (ClaudeProfile *other in self.profileManager.profiles) if ([other.label localizedCaseInsensitiveCompare:profile.label] == NSOrderedSame) matchingNames++;
+        if (matchingNames > 1 && profile.email.length > 0) title = [title stringByAppendingFormat:@" · %@", profile.email];
+        if (pending) title = [title stringByAppendingString:@" — Waiting for Sync"];
+        else if (expired) title = [title stringByAppendingString:@" — Renew"];
+        else if (profile.catalogOnly || signIn) title = [title stringByAppendingString:@" — Sign In"];
+        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title action:@selector(selectProfileFromMenu:) keyEquivalent:@""];
+        item.target = self; item.representedObject = profile.identifier;
+        item.state = [profile.identifier isEqual:self.selectedProfile.identifier] ? NSControlStateValueOn : NSControlStateValueOff;
+        item.enabled = !pending && !self.accountSelectionPending;
+        item.toolTip = [NSString stringWithFormat:@"For this tab on %@", self.accountWorkstationName ?: @"This Mac"];
+        [menu addItem:item];
+    }
+    if (self.profileManager.profiles.count > 0) [menu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *manage = [[NSMenuItem alloc] initWithTitle:@"Manage Accounts…" action:@selector(showUsageWindow:) keyEquivalent:@""];
+    manage.target = self; [menu addItem:manage];
+    NSMenuItem *add = [[NSMenuItem alloc] initWithTitle:@"Add Claude Account…" action:@selector(addProfileFromStatusMenu:) keyEquivalent:@""];
+    add.target = self; [menu addItem:add];
+    return menu;
+}
+
+- (void)presentAccountPicker {
+    [[self accountPickerMenu] popUpMenuPositioningItem:nil atLocation:NSMakePoint(NSMinX(self.profileButton.frame), NSMaxY(self.profileButton.frame)) inView:self];
+}
+
+- (void)selectProfileFromMenu:(NSMenuItem *)sender {
+    ClaudeProfile *profile = [self.profileManager profileWithIdentifier:sender.representedObject];
+    if (!profile || self.accountSelectionPending) return;
+    BOOL shared = profile.sharedAccountIdentifier.length > 0;
+    if (profile.catalogOnly || (shared && profile.sharedExpiresAt <= NSDate.date.timeIntervalSince1970)) {
+        [self.delegate claudeStatusBar:self didRequestSharedSignIn:profile];
+    } else if (profile.email.length == 0) {
+        [self.delegate claudeStatusBar:self didRequestLoginProfile:profile];
+    } else {
+        self.accountSelectionPending = YES;
+        self.pendingProfileIdentifier = profile.identifier;
+        self.pendingUsagePanelDismissHandler = self.usagePanelDismissHandler;
+        [self updateProfileLabel];
+        [self refreshUsageWindowContents];
+        [self.delegate claudeStatusBar:self didSelectProfile:profile];
+    }
+}
+
+- (void)accountSelectionDidComplete:(BOOL)accepted {
+    void (^pendingDismiss)(void) = self.pendingUsagePanelDismissHandler;
+    self.accountSelectionPending = NO;
+    self.pendingProfileIdentifier = nil;
+    self.pendingUsagePanelDismissHandler = nil;
+    [self updateProfileLabel];
+    [self refreshUsageWindowContents];
+    // A reply belongs to the presentation that initiated selection. Closing
+    // and reopening Accounts (or selecting from a menu with no panel) must not
+    // let an old reply dismiss a newer surface or steal its focus.
+    if (accepted && pendingDismiss && pendingDismiss == self.usagePanelDismissHandler) [self dismissUsagePanel:nil];
 }
 
 - (NSTextField *)usageWindowLabel:(NSString *)text
@@ -312,7 +496,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 - (NSView *)prepareUsagePanel {
     if (self.usagePanelView == nil) {
         ClaudeUsageDocumentView *content = [[ClaudeUsageDocumentView alloc]
-            initWithFrame:NSMakeRect(0, 0, 920, 620)];
+            initWithFrame:NSMakeRect(0, 0, MAX(320, NSWidth(self.bounds)), 620)];
         content.statusBar = self;
         content.wantsLayer = YES;
         content.layer.backgroundColor =
@@ -487,560 +671,180 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     });
 }
 
+- (void)prepareUsageColumn {
+    if (self.usageColumn) return;
+    self.usageHeading = ClaudeAccountLabel(20, NSFontWeightSemibold, self.theme.terminalForeground);
+    self.usageHeading.stringValue = @"Claude Accounts";
+    self.usageScope = ClaudeAccountLabel(12, NSFontWeightRegular, self.theme.statusBarActiveForeground);
+    self.usageCount = ClaudeAccountLabel(12, NSFontWeightRegular, self.theme.statusBarActiveForeground);
+    self.usageProgress = ClaudeAccountLabel(12, NSFontWeightMedium, self.theme.ansiColors[6]);
+    [self.usageProgress setAccessibilityLabel:@"Account refresh progress"];
+    self.usageWarning = ClaudeAccountLabel(12, NSFontWeightMedium, self.theme.ansiColors[3]);
+    self.usageEmpty = ClaudeAccountLabel(13, NSFontWeightRegular, self.theme.statusBarActiveForeground);
+    self.usageEmpty.stringValue = @"No Claude accounts yet. Add an account when you want to use Claude Code.\nClaude is optional; your terminal is ready to use.";
+    self.usageRows = ClaudeStack(@[], YES, 0);
+    self.usageAccountRows = [NSMutableDictionary dictionary];
+    self.usageRefreshButton = [NSButton buttonWithTitle:@"Refresh Usage" target:self action:@selector(refreshUsageWindow:)];
+    NSButton *add = [NSButton buttonWithTitle:@"Add Claude Account…" target:self action:@selector(addProfileFromStatusMenu:)];
+    NSButton *sync = [NSButton buttonWithTitle:@"Sharing…" target:self action:@selector(showAccountSync:)];
+    NSButton *done = [NSButton buttonWithTitle:@"Done" target:self action:@selector(dismissUsagePanel:)];
+    done.keyEquivalent = @"\e"; done.keyEquivalentModifierMask = 0;
+    self.usageFooterLeading = ClaudeStack(@[self.usageRefreshButton, add], NO, 12);
+    self.usageFooterTrailing = ClaudeStack(@[sync, done], NO, 12);
+    self.usageFooter = ClaudeStack(@[self.usageFooterLeading, self.usageFooterTrailing], NO, 24);
+    self.usageColumn = ClaudeStack(@[self.usageHeading, self.usageScope, self.usageCount,
+        self.usageProgress, self.usageWarning, self.usageEmpty, self.usageRows, self.usageFooter], YES, 12);
+    self.usageColumn.identifier = @"TerminalDBUsageColumn";
+    self.usageColumn.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.usageWindowDocumentView addSubview:self.usageColumn];
+    self.usageColumnWidth = [self.usageColumn.widthAnchor constraintEqualToConstant:592];
+    [NSLayoutConstraint activateConstraints:@[
+        self.usageColumnWidth,
+        [self.usageColumn.centerXAnchor constraintEqualToAnchor:self.usageWindowDocumentView.centerXAnchor],
+        [self.usageColumn.topAnchor constraintEqualToAnchor:self.usageWindowDocumentView.topAnchor constant:24],
+    ]];
+    for (NSView *view in self.usageColumn.arrangedSubviews) [view.widthAnchor constraintEqualToAnchor:self.usageColumn.widthAnchor].active = YES;
+}
+
+- (NSString *)freshnessForUsageEntry:(NSDictionary *)entry {
+    NSString *state = entry[@"account_state"];
+    NSString *refresh = entry[@"refresh_state"];
+    if (self.usageDashboardRefreshInFlight && [refresh isEqual:@"refreshing"]) return @"Refreshing account status and usage…";
+    if (self.usageDashboardRefreshInFlight && [refresh isEqual:@"waiting"]) return @"Waiting to refresh…";
+    if ([state isEqual:@"signed_out"]) return @"Signed out · cached usage hidden";
+    if ([entry[@"source_stale"] boolValue]) return @"Usage is too old to trust · stale snapshot hidden. Refresh to update.";
+    NSString *error = entry[@"refresh_error"] ?: entry[@"status_error"];
+    if (error.length > 0) return error;
+    NSDate *modified = [entry[@"modified_at"] isKindOfClass:NSDate.class] ? entry[@"modified_at"] : nil;
+    if (modified) {
+        NSTimeInterval age = MAX(0, -modified.timeIntervalSinceNow);
+        if (age < 60) return @"Updated just now";
+        if (age < 3600) return [NSString stringWithFormat:@"Updated %lum ago", (unsigned long)floor(age / 60)];
+        return [NSString stringWithFormat:@"Updated %luh ago", (unsigned long)floor(age / 3600)];
+    }
+    return @"Usage appears after Claude Code reports its allowances.";
+}
+
+- (NSString *)detailsForUsageForecasts:(NSArray<NSDictionary *> *)forecasts {
+    NSMutableArray *lines = [NSMutableArray array];
+    for (NSDictionary *forecast in forecasts) {
+        NSString *reset = [ClaudeStatusBar compactResetDateTimeFromTimestamp:forecast[@"reset_at"]] ?: @"Unknown";
+        NSString *burn = @"Collecting";
+        NSString *available = @"—";
+        if ([forecast[@"stale"] boolValue]) burn = @"Stale";
+        else if ([forecast[@"ready"] boolValue]) {
+            burn = [NSString stringWithFormat:@"+%.1f%%/hr", [forecast[@"rate_per_hour"] doubleValue]];
+            if ([forecast[@"sustainable_rate_per_hour"] isKindOfClass:NSNumber.class]) available = [NSString stringWithFormat:@"+%.1f%%/hr", [forecast[@"sustainable_rate_per_hour"] doubleValue]];
+        }
+        NSString *risk = @"";
+        if ([forecast[@"warning"] boolValue] && ![forecast[@"stale"] boolValue]) {
+            NSTimeInterval eta = [forecast[@"eta_seconds"] doubleValue];
+            risk = eta <= 1 ? @" · Allowance reached" : [NSString stringWithFormat:@" · May reach limit in %@", [ClaudeStatusBar compactDurationFromSeconds:eta]];
+        }
+        [lines addObject:[NSString stringWithFormat:@"%@ · %.0f%% used · Reset %@%@\nBurn %@ · Available pace %@", forecast[@"detail_label"] ?: @"Allowance", [forecast[@"percent"] doubleValue], reset, risk, burn, available]];
+    }
+    return [lines componentsJoinedByString:@"\n\n"];
+}
+
 - (void)refreshUsageWindowContents {
     ClaudeUsageDocumentView *document = self.usageWindowDocumentView;
-    if (document == nil) return;
-    for (NSView *subview in [document.subviews copy]) {
-        [subview removeFromSuperview];
-    }
-
+    if (!document) return;
+    [self prepareUsageColumn];
+    CGFloat viewportWidth = MAX(320, NSWidth(document.bounds));
+    CGFloat columnWidth = MIN(1040, MAX(0, viewportWidth - 48));
+    self.usageDashboardViewportWidth = NSWidth(document.bounds);
+    self.usageColumnWidth.constant = columnWidth;
+    self.usageFooter.orientation = columnWidth < 520 ? NSUserInterfaceLayoutOrientationVertical : NSUserInterfaceLayoutOrientationHorizontal;
+    self.usageFooter.alignment = columnWidth < 520 ? NSLayoutAttributeLeading : NSLayoutAttributeCenterY;
     NSArray<ClaudeProfile *> *profiles = self.profileManager.profiles;
-    NSMutableArray<NSDictionary *> *entries = [NSMutableArray array];
+    NSString *count = [NSString stringWithFormat:@"%lu %@ available", (unsigned long)profiles.count, profiles.count == 1 ? @"account" : @"accounts"];
+    self.usageHeading.hidden = self.usagePanelDismissHandler != nil;
+    self.usageScope.stringValue = [NSString stringWithFormat:@"For this tab on %@ · %@", self.accountWorkstationName ?: @"This Mac", count];
+    self.usageCount.hidden = YES;
+    self.usageEmpty.hidden = profiles.count > 0;
+    self.usageProgress.hidden = !self.usageDashboardRefreshInFlight;
+    self.usageProgress.stringValue = self.usageDashboardRefreshCompletedCount == 0
+        ? [NSString stringWithFormat:@"Checking %lu profiles…", (unsigned long)self.usageDashboardRefreshTotalCount]
+        : [NSString stringWithFormat:@"Refreshing accounts… %lu of %lu complete", (unsigned long)self.usageDashboardRefreshCompletedCount, (unsigned long)self.usageDashboardRefreshTotalCount];
+    self.usageRefreshButton.title = self.usageDashboardRefreshInFlight ? @"Refreshing…" : @"Refresh Usage";
+    self.usageRefreshButton.enabled = !self.usageDashboardRefreshInFlight && profiles.count > 0 && (self.peerMode || self.claudeExecutable.length > 0);
+    NSMutableSet *wanted = [NSMutableSet set];
     NSDictionary *mostUrgent = nil;
     ClaudeProfile *urgentProfile = nil;
-    for (ClaudeProfile *profile in profiles) {
+    for (NSUInteger index = 0; index < profiles.count; index++) {
+        ClaudeProfile *profile = profiles[index];
+        [wanted addObject:profile.identifier];
         NSDictionary *entry = [self usageDashboardEntryForProfile:profile];
-        [entries addObject:entry];
-        for (NSDictionary *forecast in entry[@"forecasts"]) {
-            if (![forecast[@"warning"] boolValue] ||
-                [forecast[@"stale"] boolValue]) {
-                continue;
-            }
-            if (mostUrgent == nil ||
-                [forecast[@"eta_seconds"] doubleValue] <
-                    [mostUrgent[@"eta_seconds"] doubleValue]) {
-                mostUrgent = forecast;
-                urgentProfile = profile;
-            }
+        NSArray *forecasts = entry[@"forecasts"] ?: @[];
+        for (NSDictionary *forecast in forecasts) if ([forecast[@"warning"] boolValue] && ![forecast[@"stale"] boolValue] && (!mostUrgent || [forecast[@"eta_seconds"] doubleValue] < [mostUrgent[@"eta_seconds"] doubleValue])) { mostUrgent = forecast; urgentProfile = profile; }
+        ClaudeAccountRow *row = self.usageAccountRows[profile.identifier];
+        BOOL newRow = row == nil;
+        if (!row) {
+            row = [[ClaudeAccountRow alloc] initWithTheme:self.theme target:self identifier:profile.identifier];
+            self.usageAccountRows[profile.identifier] = row;
         }
-    }
-
-    CGFloat viewportWidth = MAX(800, NSWidth(document.bounds));
-    self.usageDashboardViewportWidth = NSWidth(document.bounds);
-    CGFloat columnWidth = MIN(1040, viewportWidth - 48);
-    CGFloat columnX = floor((viewportWidth - columnWidth) / 2.0);
-    CGFloat y = 34;
-    NSTextField *eyebrow = [self
-        usageWindowLabel:@"YOUR CLAUDE ACCOUNTS"
-                    size:10
-                   weight:NSFontWeightSemibold
-                    color:self.theme.ansiColors[6]
-                    frame:NSMakeRect(columnX, y, columnWidth, 18)];
-    eyebrow.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
-    [document addSubview:eyebrow];
-    y += 26;
-    NSTextField *title = [self
-        usageWindowLabel:@"Accounts & usage"
-                    size:26
-                   weight:NSFontWeightSemibold
-                    color:self.theme.terminalForeground
-                    frame:NSMakeRect(columnX, y, columnWidth, 34)];
-    title.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
-    [document addSubview:title];
-    y += 40;
-    NSTextField *subtitle = [self
-        usageWindowLabel:
-            [NSString stringWithFormat:@"Choose an account for this tab on %@. Shared sign-ins are available across your synced Macs.", self.accountWorkstationName ?: @"This Mac"]
-                     size:12
-                   weight:NSFontWeightRegular
-                    color:self.theme.statusBarActiveForeground
-                    frame:NSMakeRect(columnX, y, columnWidth, 38)];
-    subtitle.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
-    [document addSubview:subtitle];
-    y += 48;
-
-    NSString *configured = profiles.count == 1
-        ? @"1 account available"
-        : [NSString stringWithFormat:@"%lu accounts available",
-            (unsigned long)profiles.count];
-    NSTextField *summary = [self
-        usageWindowLabel:[NSString stringWithFormat:
-            @"%@ · one account per tab · account changes apply to new Claude sessions",
-            configured]
-                    size:10.5
-                   weight:NSFontWeightMedium
-                    color:self.theme.statusBarActiveForeground
-                    frame:NSMakeRect(columnX, y, columnWidth, 18)];
-    summary.font = [NSFont fontWithName:self.theme.fontName size:10.5]
-        ?: [NSFont monospacedSystemFontOfSize:10.5
-                                       weight:NSFontWeightMedium];
-    summary.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
-    [document addSubview:summary];
-    y += 30;
-
-    if (self.usageDashboardRefreshInFlight) {
-        NSUInteger total = MAX((NSUInteger)1,
-                               self.usageDashboardRefreshTotalCount);
-        NSUInteger completed = MIN(self.usageDashboardRefreshCompletedCount,
-                                   total);
-        NSView *progress = [[NSView alloc]
-            initWithFrame:NSMakeRect(columnX, y, columnWidth, 54)];
-        progress.wantsLayer = YES;
-        progress.layer.cornerRadius = 7;
-        progress.layer.borderWidth = 1;
-        progress.layer.borderColor = self.theme.statusBarBorder.CGColor;
-        progress.layer.backgroundColor =
-            self.theme.statusBarBackground.CGColor;
-        progress.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
-        NSString *progressText = completed == 0
-            ? [NSString stringWithFormat:
-                @"Checking %lu profiles…", (unsigned long)total]
-            : [NSString stringWithFormat:
-                @"Refreshing profiles… %lu of %lu complete",
-                (unsigned long)completed, (unsigned long)total];
-        NSTextField *progressLabel = [self
-            usageWindowLabel:progressText
-                         size:11.5
-                       weight:NSFontWeightSemibold
-                        color:self.theme.ansiColors[6]
-                        frame:NSMakeRect(16, 28, columnWidth - 32, 18)];
-        progressLabel.selectable = NO;
-        [progress addSubview:progressLabel];
-        NSProgressIndicator *indicator = [[NSProgressIndicator alloc]
-            initWithFrame:NSMakeRect(16, 12, columnWidth - 32, 6)];
-        indicator.style = NSProgressIndicatorStyleBar;
-        indicator.indeterminate = NO;
-        indicator.minValue = 0;
-        indicator.maxValue = total;
-        indicator.doubleValue = completed;
-        [indicator setAccessibilityLabel:@"Subscription refresh progress"];
-        [indicator setAccessibilityValue:[NSString stringWithFormat:
-            @"%lu of %lu complete", (unsigned long)completed,
-            (unsigned long)total]];
-        [progress addSubview:indicator];
-        [document addSubview:progress];
-        y += 68;
-    }
-
-    // Do not present a stale forecast as current while the subscriptions are
-    // being checked. The warning returns as soon as fresh results arrive.
-    if (mostUrgent != nil && !self.usageDashboardRefreshInFlight) {
-        BOOL critical =
-            [mostUrgent[@"severity"] isEqualToString:@"critical"];
-        NSView *warning = [[NSView alloc]
-            initWithFrame:NSMakeRect(columnX, y, columnWidth, 58)];
-        warning.wantsLayer = YES;
-        warning.layer.cornerRadius = 7;
-        warning.layer.borderWidth = 1;
-        warning.layer.borderColor = (critical
-            ? self.theme.ansiColors[1] : self.theme.ansiColors[3]).CGColor;
-        warning.layer.backgroundColor =
-            self.theme.statusBarBackground.CGColor;
-        warning.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
-        NSTimeInterval eta = [mostUrgent[@"eta_seconds"] doubleValue];
-        NSString *detail = eta <= 1.0
-            ? [NSString stringWithFormat:@"%@ has reached its %@ allowance.",
-                urgentProfile.label, mostUrgent[@"label"]]
-            : [NSString stringWithFormat:
-                @"%@ may reach its %@ allowance in %@ at the current burn rate.",
-                urgentProfile.label, mostUrgent[@"label"],
-                [ClaudeStatusBar compactDurationFromSeconds:eta]];
-        NSTextField *warningLabel = [self
-            usageWindowLabel:[@"⚠  " stringByAppendingString:detail]
-                         size:12.5
-                       weight:NSFontWeightSemibold
-                        color:critical
-                            ? self.theme.ansiColors[1]
-                            : self.theme.ansiColors[3]
-                        frame:NSMakeRect(18, 18, columnWidth - 36, 24)];
-        warningLabel.selectable = NO;
-        [warning addSubview:warningLabel];
-        [document addSubview:warning];
-        y += 72;
-    }
-
-    if (entries.count == 0) {
-        NSView *empty = [[NSView alloc]
-            initWithFrame:NSMakeRect(columnX, y, columnWidth, 150)];
-        empty.wantsLayer = YES;
-        empty.layer.cornerRadius = 8;
-        empty.layer.borderWidth = 1;
-        empty.layer.borderColor = self.theme.statusBarBorder.CGColor;
-        empty.layer.backgroundColor = self.theme.statusBarBackground.CGColor;
-        empty.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
-        NSTextField *emptyTitle = [self
-            usageWindowLabel:@"No Claude profiles yet"
-                         size:17
-                       weight:NSFontWeightSemibold
-                        color:self.theme.terminalForeground
-                        frame:NSMakeRect(22, 88, columnWidth - 44, 26)];
-        NSTextField *emptyDetail = [self
-            usageWindowLabel:
-                @"Claude is optional. Add a profile when you want to use Claude Code in a terminal tab."
-                         size:12
-                       weight:NSFontWeightRegular
-                        color:self.theme.statusBarActiveForeground
-                        frame:NSMakeRect(22, 43, columnWidth - 44, 38)];
-        [empty addSubview:emptyTitle];
-        [empty addSubview:emptyDetail];
-        [document addSubview:empty];
-        y += 164;
-    }
-
-    for (NSDictionary *entry in entries) {
-        ClaudeProfile *profile = entry[@"profile"];
-        NSArray<NSDictionary *> *forecasts = entry[@"forecasts"];
-        BOOL signedIn = [entry[@"account_state"]
-            isEqualToString:@"signed_in"];
-        BOOL signedOut = [entry[@"account_state"]
-            isEqualToString:@"signed_out"];
-        BOOL sourceStale = [entry[@"source_stale"] boolValue];
-        NSString *refreshError = [entry[@"refresh_error"]
-            isKindOfClass:NSString.class] ? entry[@"refresh_error"] : nil;
-        NSString *statusError = [entry[@"status_error"]
-            isKindOfClass:NSString.class] ? entry[@"status_error"] : nil;
-        NSString *refreshState = [entry[@"refresh_state"]
-            isKindOfClass:NSString.class] ? entry[@"refresh_state"] : nil;
-        BOOL waitingForRefresh = self.usageDashboardRefreshInFlight &&
-            [refreshState isEqualToString:@"waiting"];
-        BOOL refreshing = self.usageDashboardRefreshInFlight &&
-            [refreshState isEqualToString:@"refreshing"];
-        BOOL statusUnavailable = [entry[@"account_state"]
-            isEqualToString:@"unknown"] && statusError.length > 0;
-        BOOL active = [profile.identifier
-            isEqualToString:self.selectedProfile.identifier];
-        if (![self.expandedUsageAccounts containsObject:profile.identifier]) {
-            NSView *compact = [[NSView alloc] initWithFrame:NSMakeRect(columnX, y, columnWidth, 116)];
-            compact.wantsLayer = YES; compact.layer.cornerRadius = 8;
-            compact.layer.borderWidth = active ? 1.5 : 1;
-            compact.layer.borderColor = (active ? self.theme.ansiColors[6] : self.theme.statusBarBorder).CGColor;
-            compact.layer.backgroundColor = self.theme.statusBarBackground.CGColor;
-            compact.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
-            BOOL shared = profile.sharedAccountIdentifier.length > 0;
-            BOOL expired = shared && profile.sharedExpiresAt <= NSDate.date.timeIntervalSince1970;
-            BOOL pending = shared && profile.catalogOnly;
-            NSString *identity = profile.email ?: @"Sign in to connect this account";
-            if (profile.subscriptionType.length > 0) identity = [identity stringByAppendingFormat:@" · %@", profile.subscriptionType.capitalizedString];
-            NSString *availability = shared ? (expired ? @"Renew this sign-in once to update your synced Macs" : pending ? @"Waiting for account sync on this workstation" : @"Shared sign-in · ready on this workstation")
-                : [NSString stringWithFormat:@"On %@ · share this sign-in to use it across your Macs", profile.catalogLocations.count > 0 ? [profile.catalogLocations componentsJoinedByString:@", "] : self.accountWorkstationName ?: @"This Mac"];
-            NSMutableArray *usage = [NSMutableArray array];
-            for (NSDictionary *forecast in forecasts) if (![forecast[@"stale"] boolValue]) {
-                [usage addObject:[NSString stringWithFormat:@"%@ %.0f%%", forecast[@"detail_label"] ?: @"Usage", [forecast[@"percent"] doubleValue]]];
-            }
-            NSString *summary = usage.count > 0 ? [usage componentsJoinedByString:@"   ·   "] : @"Usage appears when Claude Code reports it";
-            NSArray *lines = @[@{@"text": profile.label, @"y": @82, @"size": @16, @"width": @(columnWidth-370)},
-                              @{@"text": identity, @"y": @60, @"size": @12, @"width": @(columnWidth-202)},
-                              @{@"text": availability, @"y": @38, @"size": @11, @"width": @(columnWidth-202)},
-                              @{@"text": summary, @"y": @15, @"size": @11, @"width": @(columnWidth-40)}];
-            for (NSDictionary *line in lines) {
-                NSTextField *text = [self usageWindowLabel:line[@"text"] size:[line[@"size"] doubleValue] weight:NSFontWeightMedium color:self.theme.terminalForeground frame:NSMakeRect(20,[line[@"y"] doubleValue],[line[@"width"] doubleValue],22)];
-                text.lineBreakMode = NSLineBreakByTruncatingTail; text.maximumNumberOfLines = 1; [compact addSubview:text];
-            }
-            BOOL signIn = !signedIn && (signedOut || profile.email.length == 0);
-            NSString *action = pending ? @"Waiting for Sync" : profile.catalogOnly ? @"Make Available…" : expired ? @"Renew Sign-In…" : signIn ? @"Sign In…" : active ? @"Active on This Tab" : @"Use on This Tab";
-            SEL selector = profile.catalogOnly || expired ? @selector(shareSignInFromUsageCard:) : signIn ? @selector(signInProfileFromUsageCard:) : @selector(selectProfileFromUsageCard:);
-            NSButton *use = [NSButton buttonWithTitle:action target:self action:selector];
-            use.frame = NSMakeRect(columnWidth-166,72,146,30); use.identifier = profile.identifier;
-            use.enabled = !pending && (profile.catalogOnly || expired || signIn || !active); [compact addSubview:use];
-            NSButton *details = [NSButton buttonWithTitle:@"Usage & Settings…" target:self action:@selector(toggleUsageDetails:)];
-            details.identifier = profile.identifier; details.frame = NSMakeRect(columnWidth-166,38,146,26); [compact addSubview:details];
-            if (!shared && !profile.catalogOnly) {
-                NSButton *share = [NSButton buttonWithTitle:@"Share Sign-In…" target:self action:@selector(shareSignInFromUsageCard:)];
-                share.identifier = profile.identifier; share.frame = NSMakeRect(columnWidth-326,72,146,30); [compact addSubview:share];
-            } else if (pending) {
-                NSButton *sync = [NSButton buttonWithTitle:@"Sync Macs…" target:self action:@selector(showAccountSync:)];
-                sync.frame = NSMakeRect(columnWidth-326,72,146,30); [compact addSubview:sync];
-            }
-            [document addSubview:compact]; y += 130; continue;
+        if (index >= self.usageRows.arrangedSubviews.count || self.usageRows.arrangedSubviews[index] != row) {
+            if ([self.usageRows.arrangedSubviews containsObject:row]) [self.usageRows removeArrangedSubview:row];
+            [self.usageRows insertArrangedSubview:row atIndex:MIN(index, self.usageRows.arrangedSubviews.count)];
         }
-        NSView *card = [[NSView alloc]
-            initWithFrame:NSMakeRect(columnX, y, columnWidth, 204)];
-        card.wantsLayer = YES;
-        card.layer.cornerRadius = 8;
-        card.layer.borderWidth = active ? 1.5 : 1;
-        card.layer.borderColor = (active
-            ? self.theme.ansiColors[6] : self.theme.statusBarBorder).CGColor;
-        card.layer.backgroundColor = self.theme.statusBarBackground.CGColor;
-        card.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
-
-        NSString *plan = profile.subscriptionType.length > 0
-            ? profile.subscriptionType.capitalizedString : @"Plan unknown";
-        NSTextField *accountTitle = [self
-            usageWindowLabel:profile.label
-                         size:16
-                       weight:NSFontWeightSemibold
-                        color:self.theme.terminalForeground
-                        frame:NSMakeRect(20, 164, columnWidth - 370, 24)];
-        accountTitle.selectable = NO;
-        [card addSubview:accountTitle];
-        NSButton *hideDetails = [NSButton buttonWithTitle:@"Hide Details" target:self action:@selector(toggleUsageDetails:)];
-        hideDetails.identifier = profile.identifier; hideDetails.frame = NSMakeRect(columnWidth-326,158,146,30); [card addSubview:hideDetails];
-        NSString *identity = signedIn
-            ? (profile.email.length > 0
-                ? [NSString stringWithFormat:@"Signed in · %@ · %@",
-                    profile.email, plan]
-                : @"Signed in")
-            : (signedOut ? @"Sign-in required"
-                : ((waitingForRefresh || refreshing)
-                    ? @"Checking sign-in…"
-                    : @"Sign-in status unavailable"));
-        NSTextField *accountDetail = [self
-            usageWindowLabel:identity
-                         size:11.5
-                       weight:NSFontWeightRegular
-                        color:signedIn
-                            ? self.theme.statusBarActiveForeground
-                            : self.theme.ansiColors[3]
-                        frame:NSMakeRect(20, 142, columnWidth - 206, 20)];
-        accountDetail.selectable = NO;
-        [card addSubview:accountDetail];
-
-        NSDate *modifiedAt = [entry[@"modified_at"]
-            isKindOfClass:NSDate.class] ? entry[@"modified_at"] : nil;
-        NSString *freshness = refreshing
-            ? @"Refreshing account status and usage…"
-            : (waitingForRefresh
-            ? @"Waiting to refresh…"
-            : (statusUnavailable
-            ? @"Account status unavailable · cached usage hidden"
-            : (signedOut
-            ? @"Signed out · cached usage hidden"
-            : @"No usage snapshot yet")));
-        if (modifiedAt != nil && !statusUnavailable &&
-            !waitingForRefresh && !refreshing) {
-            NSTimeInterval age = MAX(0, -modifiedAt.timeIntervalSinceNow);
-            NSString *ageText = age < 60
-                ? @"just now"
-                : (age < 3600
-                    ? [NSString stringWithFormat:@"%lum ago",
-                        (unsigned long)floor(age / 60.0)]
-                    : [NSString stringWithFormat:@"%luh ago",
-                        (unsigned long)floor(age / 3600.0)]);
-            if (signedOut) {
-                freshness = [NSString stringWithFormat:
-                    @"Signed out · %@ snapshot hidden", ageText];
-            } else if (sourceStale) {
-                freshness = [NSString stringWithFormat:
-                    @"Last updated %@ · stale snapshot hidden", ageText];
-            } else {
-                freshness = refreshError.length > 0
-                    ? [NSString stringWithFormat:
-                        @"Updated %@ · refresh failed — %@", ageText,
-                        refreshError]
-                    : [NSString stringWithFormat:@"Updated %@", ageText];
-            }
-        }
-        NSTextField *freshnessLabel = [self
-            usageWindowLabel:freshness
-                         size:10
-                       weight:NSFontWeightMedium
-                        color:(waitingForRefresh || refreshing)
-                            ? self.theme.ansiColors[6]
-                            : self.theme.statusBarActiveForeground
-                        frame:NSMakeRect(20, 118, columnWidth - 206, 18)];
-        freshnessLabel.font = [NSFont fontWithName:self.theme.fontName size:10]
-            ?: [NSFont monospacedSystemFontOfSize:10
-                                           weight:NSFontWeightMedium];
-        freshnessLabel.selectable = NO;
-        [card addSubview:freshnessLabel];
-
+        if (newRow) [row.widthAnchor constraintEqualToAnchor:self.usageRows.widthAnchor].active = YES;
         BOOL shared = profile.sharedAccountIdentifier.length > 0;
-        BOOL pending = shared && profile.catalogOnly;
         BOOL expired = shared && profile.sharedExpiresAt <= NSDate.date.timeIntervalSince1970;
-        BOOL requiresSignIn = expired || (!signedIn && (signedOut || profile.email.length == 0));
-        NSButton *use = [NSButton
-            buttonWithTitle:pending ? @"Waiting for Sync" : profile.catalogOnly ? @"Make Available…" : requiresSignIn ? (shared ? @"Renew Sign-In…" : @"Sign In…")
-                : (active ? @"Active on This Tab" : @"Use on This Tab")
-                     target:self
-                     action:profile.catalogOnly ? @selector(shareSignInFromUsageCard:) : requiresSignIn
-                        ? (profile.sharedAccountIdentifier.length > 0 ? @selector(shareSignInFromUsageCard:) : @selector(signInProfileFromUsageCard:))
-                        : @selector(selectProfileFromUsageCard:)];
-        use.frame = NSMakeRect(columnWidth - 166, 158, 146, 30);
-        use.identifier = profile.identifier;
-        use.enabled = !pending && (profile.catalogOnly || requiresSignIn || !active);
-        if (requiresSignIn) {
-            use.toolTip = @"Opens your browser for this profile when Claude Code supports direct sign-in. A busy tab opens sign-in in a new tab.";
+        BOOL pending = shared && profile.catalogOnly;
+        BOOL signedIn = [entry[@"account_state"] isEqual:@"signed_in"];
+        BOOL signIn = !signedIn && ([entry[@"account_state"] isEqual:@"signed_out"] || profile.email.length == 0);
+        BOOL active = [profile.identifier isEqual:self.selectedProfile.identifier];
+        BOOL expanded = [self.expandedUsageAccounts containsObject:profile.identifier];
+        NSString *identity = profile.email ?: @"";
+        if (profile.subscriptionType.length > 0) identity = [identity stringByAppendingFormat:@"%@%@", identity.length > 0 ? @" · " : @"", profile.subscriptionType.capitalizedString];
+        NSString *availability = pending ? @"Waiting for account sync" : expired ? @"Sign-in expired · Renew to update your approved Macs" : profile.catalogOnly ? @"Available on another Mac · Sign in here to share access" : signIn ? @"Sign-in needed" : signedIn ? [NSString stringWithFormat:@"Ready on %@", self.accountWorkstationName ?: @"This Mac"] : self.usageDashboardRefreshInFlight ? @"Checking sign-in…" : @"Sign-in status unavailable";
+        NSMutableArray *usage = [NSMutableArray array];
+        for (NSDictionary *forecast in forecasts) if (![forecast[@"stale"] boolValue]) [usage addObject:[NSString stringWithFormat:@"%@ %.0f%%", forecast[@"detail_label"] ?: @"Usage", [forecast[@"percent"] doubleValue]]];
+        NSString *summary = [usage componentsJoinedByString:@" · "];
+        NSString *freshness = [self freshnessForUsageEntry:entry];
+        NSString *details = [self detailsForUsageForecasts:forecasts];
+        NSString *action = pending ? @"Sharing…" : expired ? @"Renew…" : profile.catalogOnly || signIn ? @"Sign In…" : @"Use";
+        if ([self.pendingProfileIdentifier isEqual:profile.identifier]) action = @"Switching…";
+        NSArray *presentation = @[profile.label ?: @"", identity, availability, summary, freshness, details, action, @(active), @(expanded), @(shared), @(pending), @(profile.catalogOnly), @(self.accountSelectionPending)];
+        if (![presentation isEqual:row.presentation]) {
+            row.presentation = presentation;
+            row.name.stringValue = profile.label;
+            row.name.toolTip = profile.label;
+            row.identity.stringValue = identity; row.identity.hidden = identity.length == 0;
+            row.identity.toolTip = identity;
+            row.availability.stringValue = availability;
+            row.summary.stringValue = summary; row.summary.hidden = summary.length == 0 || expanded;
+            row.selected.hidden = !active || pending || expired || signIn;
+            row.use.hidden = active && !pending && !expired && !signIn;
+            row.use.title = action;
+            row.use.action = pending ? @selector(showAccountSync:) : profile.catalogOnly || expired ? @selector(shareSignInFromUsageCard:) : signIn ? @selector(signInProfileFromUsageCard:) : @selector(selectProfileFromUsageCard:);
+            row.use.enabled = !self.accountSelectionPending;
+            row.details.title = expanded ? @"Hide Details" : @"Details";
+            [row.details setAccessibilityLabel:[NSString stringWithFormat:@"%@ details for %@", expanded ? @"Hide" : @"Show", profile.label]];
+            row.disclosure.hidden = !expanded;
+            row.freshness.stringValue = freshness;
+            row.usageDetails.stringValue = details;
+            row.usageDetails.hidden = details.length == 0;
+            row.share.title = shared ? @"Sharing…" : @"Share Sign-In…";
+            row.share.action = shared ? @selector(showAccountSync:) : @selector(shareSignInFromUsageCard:);
+            row.remove.title = shared ? @"Remove Shared Sign-In…" : @"Remove from This Mac…";
+            row.remove.enabled = !profile.catalogOnly;
         }
-        [card addSubview:use];
-        NSButton *remove = [NSButton buttonWithTitle:@"Remove…"
-                                              target:self
-                                              action:@selector(removeProfileFromUsageCard:)];
-        remove.frame = NSMakeRect(columnWidth - 166, 120, 146, 28);
-        remove.identifier = profile.identifier;
-        remove.enabled = !profile.catalogOnly;
-        remove.contentTintColor = self.theme.ansiColors[1];
-        [card addSubview:remove];
-        NSButton *share = [NSButton buttonWithTitle:pending ? @"Sync Macs…" : shared ? @"Renew Sign-In…" : @"Share Sign-In…"
-                                            target:self action:pending ? @selector(showAccountSync:) : @selector(shareSignInFromUsageCard:)];
-        share.frame = NSMakeRect(columnWidth - 166, 84, 146, 28);
-        share.identifier = profile.identifier;
-        share.toolTip = @"Sign in once with Claude Code’s reusable token, then use this account on your approved Macs.";
-        [card addSubview:share];
-
-        if (forecasts.count == 0) {
-            NSString *unavailableText = nil;
-            if (refreshing) {
-                unavailableText =
-                    @"Retrieving current allowances from Claude Code…";
-            } else if (waitingForRefresh) {
-                unavailableText =
-                    @"This subscription will refresh after the account above it completes.";
-            } else if (signedOut) {
-                unavailableText =
-                    @"Usage unavailable while this account is signed out. Sign in to refresh its allowances.";
-            } else if (sourceStale) {
-                unavailableText = refreshError.length > 0
-                    ? [NSString stringWithFormat:
-                        @"Usage snapshot is too old to trust. %@", refreshError]
-                    : @"Usage snapshot is too old to trust. Refresh this account to update its allowances.";
-            } else if (refreshError.length > 0) {
-                unavailableText = refreshError;
-            } else if (statusError.length > 0) {
-                unavailableText = statusError;
-            } else {
-                unavailableText =
-                    @"Usage unavailable. Sign in or refresh after Claude Code reports the account’s allowances.";
-            }
-            NSTextField *unavailable = [self
-                usageWindowLabel:unavailableText
-                             size:11.5
-                           weight:NSFontWeightRegular
-                            color:(signedOut || sourceStale || refreshError.length > 0)
-                                ? self.theme.ansiColors[3]
-                                : self.theme.statusBarActiveForeground
-                            frame:NSMakeRect(20, 35, columnWidth - 40, 58)];
-            [card addSubview:unavailable];
-        } else {
-            NSBox *divider = [[NSBox alloc]
-                initWithFrame:NSMakeRect(20, 107, columnWidth - 40, 1)];
-            divider.boxType = NSBoxSeparator;
-            [card addSubview:divider];
-            NSArray<NSDictionary *> *columns = @[
-                @{@"title" : @"ALLOWANCE", @"x" : @20, @"width" : @84},
-                @{@"title" : @"USED", @"x" : @112, @"width" : @72},
-                @{@"title" : @"BURN", @"x" : @198, @"width" : @102},
-                @{@"title" : @"AVAILABLE PACE", @"x" : @310, @"width" : @124},
-                @{@"title" : @"RESET", @"x" : @444, @"width" : @176},
-                @{@"title" : @"FORECAST", @"x" : @632,
-                  @"width" : @(MAX(100, columnWidth - 652))},
-            ];
-            for (NSDictionary *column in columns) {
-                NSTextField *label = [self
-                    usageWindowLabel:column[@"title"]
-                                 size:9
-                               weight:NSFontWeightSemibold
-                                color:self.theme.statusBarActiveForeground
-                                frame:NSMakeRect([column[@"x"] doubleValue], 87,
-                                    [column[@"width"] doubleValue], 16)];
-                label.font = [NSFont fontWithName:self.theme.fontName size:9]
-                    ?: [NSFont monospacedSystemFontOfSize:9
-                                                   weight:NSFontWeightSemibold];
-                label.selectable = NO;
-                [card addSubview:label];
-            }
-            for (NSUInteger index = 0; index < forecasts.count; index++) {
-                NSDictionary *forecast = forecasts[index];
-                CGFloat rowY = 62 - index * 25;
-                double percent = [forecast[@"percent"] doubleValue];
-                NSColor *percentColor = percent >= 80
-                    ? self.theme.ansiColors[1]
-                    : (percent >= 50
-                        ? self.theme.ansiColors[3]
-                        : self.theme.ansiColors[2]);
-                NSString *burn = @"Collecting";
-                NSString *available = @"—";
-                if ([forecast[@"stale"] boolValue]) {
-                    burn = @"Stale";
-                } else if ([forecast[@"ready"] boolValue]) {
-                    burn = [NSString stringWithFormat:@"+%.1f%%/hr",
-                        [forecast[@"rate_per_hour"] doubleValue]];
-                    if ([forecast[@"sustainable_rate_per_hour"]
-                            isKindOfClass:NSNumber.class]) {
-                        available = [NSString stringWithFormat:@"+%.1f%%/hr",
-                            [forecast[@"sustainable_rate_per_hour"] doubleValue]];
-                    }
-                }
-                NSString *reset = [ClaudeStatusBar
-                    compactResetDateTimeFromTimestamp:forecast[@"reset_at"]]
-                        ?: @"Unknown";
-                NSString *risk = @"—";
-                NSColor *riskColor = self.theme.statusBarActiveForeground;
-                if ([forecast[@"warning"] boolValue] &&
-                    ![forecast[@"stale"] boolValue]) {
-                    NSTimeInterval eta = [forecast[@"eta_seconds"] doubleValue];
-                    risk = eta <= 1.0 ? @"⚠ Reached"
-                        : [NSString stringWithFormat:@"⚠ ~%@ left",
-                            [ClaudeStatusBar compactDurationFromSeconds:eta]];
-                    riskColor = [forecast[@"severity"] isEqualToString:@"critical"]
-                        ? self.theme.ansiColors[1] : self.theme.ansiColors[3];
-                }
-                NSArray<NSDictionary *> *cells = @[
-                    @{@"text" : forecast[@"detail_label"],
-                      @"x" : @20, @"width" : @84,
-                      @"color" : self.theme.terminalForeground},
-                    @{@"text" : [NSString stringWithFormat:@"%.0f%%", percent],
-                      @"x" : @112, @"width" : @72, @"color" : percentColor},
-                    @{@"text" : burn, @"x" : @198, @"width" : @102,
-                      @"color" : self.theme.terminalForeground},
-                    @{@"text" : available, @"x" : @310, @"width" : @124,
-                      @"color" : self.theme.terminalForeground},
-                    @{@"text" : reset, @"x" : @444, @"width" : @176,
-                      @"color" : self.theme.terminalForeground},
-                    @{@"text" : risk, @"x" : @632,
-                      @"width" : @(MAX(100, columnWidth - 652)),
-                      @"color" : riskColor},
-                ];
-                for (NSDictionary *cell in cells) {
-                    NSTextField *label = [self
-                        usageWindowLabel:cell[@"text"]
-                                     size:10.5
-                                   weight:NSFontWeightMedium
-                                    color:cell[@"color"]
-                                    frame:NSMakeRect([cell[@"x"] doubleValue],
-                                        rowY, [cell[@"width"] doubleValue], 18)];
-                    label.font = [NSFont fontWithName:self.theme.fontName size:10.5]
-                        ?: [NSFont monospacedSystemFontOfSize:10.5
-                                                       weight:NSFontWeightMedium];
-                    label.lineBreakMode = NSLineBreakByTruncatingTail;
-                    label.maximumNumberOfLines = 1;
-                    [card addSubview:label];
-                }
-            }
-        }
-        [document addSubview:card];
-        y += 218;
+        row.detailActions.orientation = columnWidth < 420 ? NSUserInterfaceLayoutOrientationVertical : NSUserInterfaceLayoutOrientationHorizontal;
+        row.detailActions.alignment = columnWidth < 420 ? NSLayoutAttributeLeading : NSLayoutAttributeCenterY;
     }
-
-    NSButton *refresh = [NSButton
-        buttonWithTitle:self.usageDashboardRefreshInFlight
-            ? @"Refreshing All…" : @"Refresh All Usage"
-                 target:self
-                 action:@selector(refreshUsageWindow:)];
-    refresh.frame = NSMakeRect(columnX, y, 150, 32);
-    refresh.enabled = !self.usageDashboardRefreshInFlight &&
-        profiles.count > 0 && self.claudeExecutable.length > 0;
-    refresh.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
-    [document addSubview:refresh];
-    NSButton *add = [NSButton buttonWithTitle:@"Add Subscription…"
-                                       target:self
-                                       action:@selector(addProfileFromStatusMenu:)];
-    add.frame = NSMakeRect(columnX + 160, y, 160, 32);
-    add.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
-    [document addSubview:add];
-    NSButton *sync = [NSButton buttonWithTitle:@"Sync Macs…" target:self action:@selector(showAccountSync:)];
-    sync.frame = NSMakeRect(columnX + 330, y, 130, 32);
-    [document addSubview:sync];
-    NSButton *done = [NSButton buttonWithTitle:@"Done"
-                                        target:self
-                                        action:@selector(dismissUsagePanel:)];
-    done.frame = NSMakeRect(columnX + columnWidth - 92, y, 92, 32);
-    done.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin;
-    [document addSubview:done];
-    y += 58;
-    NSArray<NSView *> *columnSubviews = [document.subviews copy];
-    ClaudeUsageDocumentView *column = [[ClaudeUsageDocumentView alloc]
-        initWithFrame:NSMakeRect(columnX, 0, columnWidth, y)];
-    column.identifier = @"TerminalDBUsageColumn";
-    column.autoresizingMask = NSViewNotSizable;
-    for (NSView *subview in columnSubviews) {
-        NSRect frame = subview.frame;
-        frame.origin.x -= columnX;
-        subview.frame = frame;
-        [subview removeFromSuperview];
-        [column addSubview:subview];
+    for (NSString *identifier in [self.usageAccountRows.allKeys copy]) if (![wanted containsObject:identifier]) {
+        ClaudeAccountRow *row = self.usageAccountRows[identifier];
+        [self.usageRows removeArrangedSubview:row]; [row removeFromSuperview]; [self.usageAccountRows removeObjectForKey:identifier];
     }
-    [document addSubview:column];
-    document.frame = NSMakeRect(0, 0, viewportWidth, y);
+    self.usageWarning.hidden = !mostUrgent || self.usageDashboardRefreshInFlight;
+    if (mostUrgent) {
+        NSTimeInterval eta = [mostUrgent[@"eta_seconds"] doubleValue];
+        self.usageWarning.stringValue = eta <= 1 ? [NSString stringWithFormat:@"%@ has reached its %@ allowance.", urgentProfile.label, mostUrgent[@"label"]] : [NSString stringWithFormat:@"%@ may reach its %@ allowance in %@ at the current pace.", urgentProfile.label, mostUrgent[@"label"], [ClaudeStatusBar compactDurationFromSeconds:eta]];
+    }
+    [document layoutSubtreeIfNeeded];
+    CGFloat height = ceil(self.usageColumn.fittingSize.height) + 48;
+    if (fabs(NSHeight(document.frame) - height) > 1) [document setFrameSize:NSMakeSize(viewportWidth, height)];
 }
 
 - (void)selectProfileFromUsageCard:(NSButton *)sender {
@@ -1048,7 +852,12 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     ClaudeProfile *profile =
         [self.profileManager profileWithIdentifier:identifier];
     if (profile != nil) {
-        [self selectProfile:profile];
+        if (self.accountSelectionPending) return;
+        self.accountSelectionPending = YES;
+        self.pendingProfileIdentifier = profile.identifier;
+        self.pendingUsagePanelDismissHandler = self.usagePanelDismissHandler;
+        [self updateProfileLabel];
+        [self refreshUsageWindowContents];
         [self.delegate claudeStatusBar:self didSelectProfile:profile];
     }
 }
@@ -1093,74 +902,40 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 
 - (void)layout {
     [super layout];
-    CGFloat inset = 10;
-    CGFloat gap = 8;
-    CGFloat availableWidth = MAX(0, NSWidth(self.bounds) - inset * 2);
-    CGFloat environmentWidth = 52;
-    CGFloat usageWidth = MIN(availableWidth * 0.42,
-                             MAX(200,
-                                 self.usageLabel.intrinsicContentSize.width +
-                                     20));
-    CGFloat profileWidth = MIN(availableWidth * 0.24,
-                               MAX(116,
-                                   self.profileLabel.intrinsicContentSize.width +
-                                       14));
-    CGFloat modelWidth = self.modelLabel.hidden
-        ? 0
-        : MIN(availableWidth * 0.20,
-              MAX(86, self.modelLabel.intrinsicContentSize.width + 12));
-    NSUInteger visibleGaps = self.modelLabel.hidden ? 3 : 4;
-    CGFloat directoryWidth = MAX(
-        0,
-        availableWidth - profileWidth - modelWidth - environmentWidth -
-            usageWidth - gap * visibleGaps);
-
-    // The working directory is the primary piece of session identity. On a
-    // narrow window, reclaim space from model/profile/usage before allowing it
-    // to disappear completely.
-    CGFloat directoryTarget = MIN(120, availableWidth * 0.25);
-    CGFloat shortage = MAX(0, directoryTarget - directoryWidth);
-    if (shortage > 0 && modelWidth > 70) {
-        CGFloat recovered = MIN(shortage, modelWidth - 70);
-        modelWidth -= recovered;
-        directoryWidth += recovered;
-        shortage -= recovered;
-    }
-    if (shortage > 0 && usageWidth > 150) {
-        CGFloat recovered = MIN(shortage, usageWidth - 150);
-        usageWidth -= recovered;
-        directoryWidth += recovered;
-        shortage -= recovered;
-    }
-    if (shortage > 0 && profileWidth > 92) {
-        CGFloat recovered = MIN(shortage, profileWidth - 92);
-        profileWidth -= recovered;
-        directoryWidth += recovered;
-    }
-
-    CGFloat x = inset;
-    self.profileLabel.frame =
-        NSMakeRect(x, 4, profileWidth, NSHeight(self.bounds) - 8);
-    x += profileWidth + gap;
-    self.directoryLabel.frame =
-        NSMakeRect(x, 4, directoryWidth, NSHeight(self.bounds) - 8);
-    x += directoryWidth + gap;
-    if (!self.modelLabel.hidden) {
-        self.modelLabel.frame =
-            NSMakeRect(x, 4, modelWidth, NSHeight(self.bounds) - 8);
-        x += modelWidth + gap;
-    } else {
-        self.modelLabel.frame = NSZeroRect;
-    }
-    self.environmentLabel.frame =
-        NSMakeRect(x, 4, environmentWidth, NSHeight(self.bounds) - 8);
-    self.usageLabel.frame =
-        NSMakeRect(NSWidth(self.bounds) - inset - usageWidth, 4,
-                   usageWidth, NSHeight(self.bounds) - 8);
-    CGFloat receiptWidth = MIN(340, MAX(0, availableWidth - 280));
-    self.pasteReceiptLabel.frame =
-        NSMakeRect(floor((NSWidth(self.bounds) - receiptWidth) / 2.0),
-                   4, receiptWidth, NSHeight(self.bounds) - 8);
+    CGFloat inset = 12, gap = 12;
+    CGFloat width = MAX(0, NSWidth(self.bounds) - inset * 2);
+    CGFloat height = MAX(0, NSHeight(self.bounds) - 8);
+    CGFloat profileWidth = MIN(MAX(96, self.profileLabel.intrinsicContentSize.width + 8), MIN(260, width * 0.36));
+    self.profileLabel.frame = NSMakeRect(inset, 4, profileWidth, height);
+    self.profileButton.frame = self.profileLabel.frame;
+    CGFloat left = inset + profileWidth + gap;
+    CGFloat right = NSWidth(self.bounds) - inset;
+    CGFloat connectionWidth = self.environmentLabel.stringValue.length > 0
+        ? MIN(self.environmentLabel.intrinsicContentSize.width + 6, MAX(0, right - left - 64)) : 0;
+    self.environmentLabel.hidden = connectionWidth <= 0;
+    self.environmentLabel.frame = NSMakeRect(right - connectionWidth, 4, connectionWidth, height);
+    if (connectionWidth > 0) right -= connectionWidth + gap;
+    BOOL receipt = !self.pasteReceiptLabel.hidden;
+    BOOL showUsage = !receipt && width >= 430;
+    CGFloat usageWidth = showUsage ? (width < 880 ? 64 : MIN(300, self.usageLabel.intrinsicContentSize.width + 8)) : 0;
+    usageWidth = MIN(usageWidth, MAX(0, right - left - 80));
+    self.usageLabel.hidden = usageWidth == 0 || width < 880;
+    self.usageButton.hidden = usageWidth == 0;
+    self.usageButton.title = width < 880 ? @"Usage" : @"";
+    self.usageButton.font = [NSFont systemFontOfSize:12];
+    self.usageButton.toolTip = self.usageLabel.toolTip ?: @"Open Claude usage and account settings";
+    self.usageLabel.frame = NSMakeRect(right - usageWidth, 4, usageWidth, height);
+    self.usageButton.frame = self.usageLabel.frame;
+    if (usageWidth > 0) right -= usageWidth + gap;
+    BOOL showModel = !receipt && width >= 1100 && self.modelLabel.stringValue.length > 0;
+    CGFloat modelWidth = showModel ? MIN(180, self.modelLabel.intrinsicContentSize.width + 8) : 0;
+    self.modelLabel.hidden = !showModel;
+    self.modelLabel.frame = NSMakeRect(right - modelWidth, 4, modelWidth, height);
+    if (modelWidth > 0) right -= modelWidth + gap;
+    CGFloat detailWidth = MAX(0, right - left);
+    self.directoryLabel.hidden = receipt || detailWidth < 48;
+    self.directoryLabel.frame = NSMakeRect(left, 4, detailWidth, height);
+    self.pasteReceiptLabel.frame = NSMakeRect(left, 4, detailWidth, height);
 }
 
 - (void)showPasteReceiptWithByteCount:(NSUInteger)byteCount
@@ -1202,6 +977,7 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
                 return;
             }
             strongSelf.pasteReceiptLabel.hidden = YES;
+            [strongSelf setNeedsLayout:YES];
         });
 }
 
@@ -1233,14 +1009,18 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 }
 - (void)applyPeerState:(NSDictionary *)state {
     if (!self.peerMode) return;
-    self.selectedProfile = [self.profileManager profileWithIdentifier:state[@"accountId"] ?: @""];
+    ClaudeProfile *selected = [self.profileManager profileWithIdentifier:state[@"accountId"] ?: @""];
     NSDictionary *usage = state[@"usageState"] ?: @{};
-    self.peerUsageEntries = usage[@"entries"] ?: @{};
+    NSDictionary *entries = usage[@"entries"] ?: @{};
+    BOOL changed = ![self.peerUsageEntries isEqual:entries] || ![(self.selectedProfile.identifier ?: @"") isEqual:(selected.identifier ?: @"")];
+    self.selectedProfile = selected;
+    self.peerUsageEntries = entries;
     self.accountIsLoggedIn = [usage[@"loggedIn"] boolValue];
     self.accountStatusKnown = [usage[@"known"] boolValue];
     self.usageLabel.stringValue = usage[@"label"] ?: @"Usage  Waiting for workstation";
     [self updateProfileLabel];
-    [self refreshUsageWindowContents];
+    [self setNeedsLayout:YES];
+    if (changed) [self refreshUsageWindowContents];
 }
 
 - (void)startMonitoring {
@@ -1288,24 +1068,17 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 - (void)showEnvironment:(NSString *)environment
                    host:(NSString *)host
                  detail:(NSString *)detail {
-    NSString *value = environment.uppercaseString.length > 0
-        ? environment.uppercaseString : @"LOCAL";
+    NSString *source = [environment stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] ?: @"";
+    NSString *key = source.uppercaseString;
+    NSString *value = [key isEqual:@"LOCAL"] || [key isEqual:@"THIS MAC"] ? @"" : source;
     self.environmentLabel.stringValue = value;
-    if ([value isEqualToString:@"PRODUCTION"]) {
-        self.environmentLabel.textColor = self.theme.ansiColors[1];
-    } else if ([value isEqualToString:@"STAGING"] ||
-               [value isEqualToString:@"REMOTE"]) {
-        self.environmentLabel.textColor = self.theme.ansiColors[3];
-    } else {
-        self.environmentLabel.textColor = self.theme.ansiColors[6];
-    }
-    self.environmentLabel.toolTip = [NSString stringWithFormat:
-        @"%@%@%@",
-        value,
-        host.length > 0 ? [@" · " stringByAppendingString:host] : @"",
-        detail.length > 0 ? [@" · " stringByAppendingString:detail] : @""];
-    [self.environmentLabel setAccessibilityLabel:
-        [NSString stringWithFormat:@"%@ environment", value.capitalizedString]];
+    if ([key isEqual:@"PRODUCTION"]) self.environmentLabel.textColor = self.theme.ansiColors[1];
+    else if ([key isEqual:@"STAGING"] || [key isEqual:@"REMOTE"] || [key isEqual:@"RECONNECTING"] || [key isEqual:@"UNREACHABLE"]) self.environmentLabel.textColor = self.theme.ansiColors[3];
+    else self.environmentLabel.textColor = self.theme.statusBarActiveForeground;
+    self.environmentLabel.toolTip = [NSString stringWithFormat:@"%@%@%@", source ?: @"", host.length > 0 ? [@" · " stringByAppendingString:host] : @"", detail.length > 0 ? [@" · " stringByAppendingString:detail] : @""];
+    [self.environmentLabel setAccessibilityLabel:@"Session connection or environment"];
+    [self.environmentLabel setAccessibilityValue:value];
+    [self setNeedsLayout:YES];
 }
 
 - (void)showDirectory:(NSString *)directory model:(NSString *)model {
@@ -1354,30 +1127,17 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
 }
 
 - (NSString *)displayTitleForProfile:(ClaudeProfile *)profile {
-    NSString *identity = profile.email.length > 0
-        ? profile.email
-        : @"Not signed in";
-    NSString *plan = profile.subscriptionType.length > 0
-        ? profile.subscriptionType.capitalizedString
-        : @"";
-    return plan.length > 0
-        ? [NSString stringWithFormat:@"●  %@ · %@ · %@",
-            profile.label, identity, plan]
-        : [NSString stringWithFormat:@"●  %@ · %@",
-            profile.label, identity];
+    return [NSString stringWithFormat:@"Claude · %@ ▾", profile.label];
 }
 
 - (void)updateProfileLabel {
-    if (self.selectedProfile == nil) {
-        self.profileLabel.stringValue = @"Claude optional";
-        self.profileLabel.toolTip =
-            @"Add a Claude profile from the AI menu whenever you want one.";
-        return;
-    }
-    self.profileLabel.stringValue =
-        [self displayTitleForProfile:self.selectedProfile];
-    self.profileLabel.toolTip = [NSString stringWithFormat:
-        @"Active in this tab\nChange accounts from the Claude menu"];
+    self.profileLabel.stringValue = self.accountSelectionPending ? @"Claude · Switching…" : self.selectedProfile ? [self displayTitleForProfile:self.selectedProfile] : @"Claude · Choose Account ▾";
+    self.profileLabel.toolTip = [NSString stringWithFormat:@"Choose a Claude account for this tab on %@", self.accountWorkstationName ?: @"This Mac"];
+    self.profileButton.toolTip = self.profileLabel.toolTip;
+    [self.profileButton setAccessibilityLabel:self.selectedProfile
+        ? [NSString stringWithFormat:@"Choose Claude account. Current account: %@. For this tab on %@", self.selectedProfile.label, self.accountWorkstationName ?: @"This Mac"]
+        : @"Choose Claude account"];
+    [self setNeedsLayout:YES];
 }
 
 - (NSDictionary<NSString *, NSString *> *)environmentForProfile:
@@ -2508,6 +2268,110 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     };
 }
 
++ (BOOL)runInterfaceSelfTests {
+    ClaudeProfile *first = [[ClaudeProfile alloc] init];
+    [first setValue:@"interface-first" forKey:@"identifier"];
+    [first setValue:@"A very long account label that must not crowd out the connection" forKey:@"label"];
+    [first setValue:@"first@example.invalid" forKey:@"email"];
+    ClaudeProfile *second = [[ClaudeProfile alloc] init];
+    [second setValue:@"interface-second" forKey:@"identifier"];
+    [second setValue:@"Work" forKey:@"label"];
+    [second setValue:@"work.with.a.long.alias@department.example.invalid" forKey:@"email"];
+    ClaudeProfileManager *manager = [ClaudeProfileManager managerForPeerDisplay];
+    [manager setValue:@[first, second] forKey:@"profiles"];
+    ClaudeStatusBar *bar = [[ClaudeStatusBar alloc] initWithFrame:NSMakeRect(0, 0, 640, 30) claudeExecutable:nil profileManager:manager selectedProfile:first theme:TerminalTheme.preferredTheme];
+    bar.peerMode = YES; bar.accountWorkstationName = @"Office Mac";
+    NSDictionary *entries = @{first.identifier: @{@"account_state": @"signed_in", @"forecasts": @[]}, second.identifier: @{@"account_state": @"signed_in", @"forecasts": @[]}};
+    NSDictionary *state = @{@"accountId": first.identifier, @"usageState": @{@"entries": entries, @"loggedIn": @YES, @"known": @YES, @"label": @"Usage  7d 34%"}};
+    [bar applyPeerState:state];
+    [bar showDirectory:@"/Projects/a/very/long/project/path" model:@"A long model name"];
+    [bar showEnvironment:@"Reconnecting" host:@"Office Mac" detail:@"Check LAN or VPN"];
+    BOOL geometry = YES;
+    for (NSNumber *width in @[@640, @900, @1280]) {
+        [bar setFrameSize:NSMakeSize(width.doubleValue, 30)]; [bar layoutSubtreeIfNeeded];
+        NSArray *labels = @[bar.profileLabel, bar.directoryLabel, bar.modelLabel, bar.environmentLabel, bar.usageLabel];
+        for (NSUInteger i = 0; i < labels.count; i++) {
+            NSView *a = labels[i]; if (a.hidden) continue;
+            geometry &= NSMinX(a.frame) >= 0 && NSMaxX(a.frame) <= width.doubleValue && NSWidth(a.frame) >= 0;
+            for (NSUInteger j = i + 1; j < labels.count; j++) {
+                NSView *b = labels[j]; if (!b.hidden) geometry &= !NSIntersectsRect(a.frame, b.frame);
+            }
+        }
+        geometry &= NSWidth(bar.environmentLabel.frame) >= bar.environmentLabel.intrinsicContentSize.width;
+    }
+    [bar showPasteReceiptWithByteCount:8192 lineCount:12]; [bar layoutSubtreeIfNeeded];
+    BOOL receipt = bar.directoryLabel.hidden && bar.modelLabel.hidden && bar.usageButton.hidden && !NSIntersectsRect(bar.pasteReceiptLabel.frame, bar.environmentLabel.frame);
+    [bar showEnvironment:@"LOCAL" host:nil detail:nil]; [bar layoutSubtreeIfNeeded];
+    BOOL noAmbiguousLocal = bar.environmentLabel.hidden;
+    NSMenu *menu = [bar accountPickerMenu];
+    BOOL scope = [menu.itemArray.firstObject.title containsString:@"Office Mac"] && menu.itemArray.count == 6;
+    NSMenuItem *secondItem = menu.itemArray[2];
+    [bar selectProfileFromMenu:secondItem];
+    BOOL noOptimisticSelection = [bar.selectedProfile.identifier isEqual:first.identifier] && bar.accountSelectionPending;
+    [bar accountSelectionDidComplete:NO];
+    BOOL rejectedSelection = !bar.accountSelectionPending && [bar.selectedProfile.identifier isEqual:first.identifier];
+    __block NSUInteger dismissed = 0;
+    bar.usagePanelDismissHandler = ^{ dismissed++; };
+    [bar selectProfileFromMenu:secondItem];
+    [bar accountSelectionDidComplete:NO];
+    [bar selectProfileFromMenu:secondItem];
+    [bar accountSelectionDidComplete:YES];
+    BOOL acceptedDismissalOnly = dismissed == 1;
+    [bar selectProfileFromMenu:secondItem];
+    [bar didDismissUsagePanel];
+    __block NSUInteger reopenedDismissed = 0;
+    bar.usagePanelDismissHandler = ^{ reopenedDismissed++; };
+    [bar accountSelectionDidComplete:YES];
+    BOOL preservesReopenedPanel = dismissed == 1 && reopenedDismissed == 0;
+    [bar didDismissUsagePanel];
+    [bar selectProfileFromMenu:secondItem];
+    bar.usagePanelDismissHandler = ^{ reopenedDismissed++; };
+    [bar accountSelectionDidComplete:YES];
+    [bar accountSelectionDidComplete:YES];
+    BOOL menuDoesNotDismissLaterPanel = reopenedDismissed == 0;
+    [bar prepareUsagePanel];
+    ClaudeAccountRow *row = bar.usageAccountRows[first.identifier];
+    NSButton *button = row.use;
+    [bar toggleUsageDetails:row.details];
+    [bar applyPeerState:state];
+    BOOL stableRows = bar.usageAccountRows[first.identifier] == row && row.use == button && !row.disclosure.hidden;
+    BOOL accountColumns = YES;
+    for (NSNumber *width in @[@640, @900, @1280]) {
+        [bar.usagePanelView setFrameSize:NSMakeSize(width.doubleValue, 620)];
+        [bar refreshUsageWindowContents];
+        [bar.usagePanelView layoutSubtreeIfNeeded];
+        CGFloat primaryX = NAN, detailsX = NAN;
+        for (ClaudeProfile *profile in @[first, second]) {
+            ClaudeAccountRow *accountRow = bar.usageAccountRows[profile.identifier];
+            NSRect primary = [accountRow.primarySlot.superview convertRect:[accountRow.primarySlot alignmentRectForFrame:accountRow.primarySlot.frame] toView:bar.usagePanelView];
+            NSRect details = [accountRow.details.superview convertRect:[accountRow.details alignmentRectForFrame:accountRow.details.frame] toView:bar.usagePanelView];
+            NSRect name = [accountRow.name.superview convertRect:[accountRow.name alignmentRectForFrame:accountRow.name.frame] toView:bar.usagePanelView];
+            NSRect identity = [accountRow.identity.superview convertRect:[accountRow.identity alignmentRectForFrame:accountRow.identity.frame] toView:bar.usagePanelView];
+            accountColumns &= fabs(NSWidth(primary) - 96) < 1 && fabs(NSWidth(details) - 96) < 1;
+            accountColumns &= NSWidth(name) >= 200 && NSWidth(identity) >= 200 && NSMaxX(name) <= NSMinX(primary) - 11 && NSMaxX(identity) <= NSMinX(primary) - 11;
+            accountColumns &= NSMaxX(primary) <= NSMinX(details) - 11 && NSMaxX(details) <= width.doubleValue - 23;
+            accountColumns &= [accountRow.use.identifier isEqual:profile.identifier] && [accountRow.details.identifier isEqual:profile.identifier];
+            if (isfinite(primaryX)) accountColumns &= fabs(primary.origin.x - primaryX) < 1 && fabs(details.origin.x - detailsX) < 1;
+            primaryX = primary.origin.x; detailsX = details.origin.x;
+        }
+        accountColumns &= row.use.hidden && !row.selected.hidden && !bar.usageAccountRows[second.identifier].use.hidden;
+    }
+    BOOL embeddedHeader = bar.usageHeading.hidden && bar.usageCount.hidden && [bar.usageScope.stringValue containsString:@"2 accounts available"];
+    bar.usagePanelDismissHandler = nil;
+    BOOL standaloneHeader = !bar.usageHeading.hidden;
+    bar.usagePanelDismissHandler = ^{ reopenedDismissed++; };
+    embeddedHeader &= bar.usageHeading.hidden;
+    NSMutableDictionary *updatedEntries = [entries mutableCopy];
+    updatedEntries[first.identifier] = @{@"account_state": @"signed_out", @"forecasts": @[]};
+    [bar applyPeerState:@{@"accountId":first.identifier, @"usageState":@{@"entries":updatedEntries}}];
+    BOOL stableChangedRows = bar.usageAccountRows[first.identifier] == row && row.use == button && [row.use.title isEqual:@"Sign In…"];
+    BOOL separateHitAreas = [bar.profileButton isDescendantOf:bar] && [bar.usageButton isDescendantOf:bar] && !bar.accessibilityElement;
+    BOOL compactHeader = !ClaudeUsageViewContainsText(bar.usagePanelView, @"YOUR CLAUDE ACCOUNTS") && !ClaudeUsageViewContainsText(bar.usagePanelView, @"Active on This Tab");
+    BOOL result = geometry && receipt && noAmbiguousLocal && scope && noOptimisticSelection && rejectedSelection && acceptedDismissalOnly && preservesReopenedPanel && menuDoesNotDismissLaterPanel && stableRows && accountColumns && embeddedHeader && standaloneHeader && stableChangedRows && separateHitAreas && compactHeader;
+    if (!result) fprintf(stderr, "FAIL account interface checks geometry=%d receipt=%d local=%d scope=%d pending=%d rejected=%d dismiss=%d reopened=%d menu=%d rows=%d columns=%d embedded=%d standalone=%d updates=%d hit=%d compact=%d\n", geometry, receipt, noAmbiguousLocal, scope, noOptimisticSelection, rejectedSelection, acceptedDismissalOnly, preservesReopenedPanel, menuDoesNotDismissLaterPanel, stableRows, accountColumns, embeddedHeader, standaloneHeader, stableChangedRows, separateHitAreas, compactHeader);
+    return result;
+}
+
 + (BOOL)runUsageNormalizationSelfTests {
     NSISO8601DateFormatter *resetFormatter =
         [[NSISO8601DateFormatter alloc] init];
@@ -2786,23 +2650,23 @@ static BOOL ClaudeUsageViewContainsNestedScrollView(NSView *view) {
     BOOL showsRiskOnlyWhenForecasted =
         [fixtureBar.usageLabel.stringValue containsString:@"⚠ Fable"];
     NSView *dashboard = [fixtureBar prepareUsagePanel];
-    BOOL compactAccountPicker = !ClaudeUsageViewContainsText(dashboard, @"BURN") && ClaudeUsageViewContainsText(dashboard, @"Usage & Settings…");
+    BOOL compactAccountPicker = !ClaudeUsageViewContainsText(dashboard, @"Burn") && ClaudeUsageViewContainsText(dashboard, @"Details");
     for (ClaudeProfile *profile in fixtureManager.profiles) {
-        [ClaudeUsageFindButton(dashboard, @"Usage & Settings…", profile.identifier) performClick:nil];
+        [ClaudeUsageFindButton(dashboard, @"Details", profile.identifier) performClick:nil];
     }
     dashboard = [fixtureBar prepareUsagePanel];
     BOOL dashboardShowsAllAccounts =
         ClaudeUsageViewContainsText(dashboard, @"2 accounts available") &&
-        ClaudeUsageViewContainsText(dashboard, @"Accounts & usage") &&
+        ClaudeUsageViewContainsText(dashboard, @"Claude Accounts") &&
         ClaudeUsageViewContainsText(dashboard, @"Second Subscription") &&
-        ClaudeUsageViewContainsText(dashboard, @"Signed in · first@example.com") &&
-        ClaudeUsageViewContainsText(dashboard, @"Add Subscription…") &&
-        ClaudeUsageViewContainsText(dashboard, @"BURN") &&
-        ClaudeUsageViewContainsText(dashboard, @"AVAILABLE PACE") &&
-        ClaudeUsageViewContainsText(dashboard, @"RESET") &&
-        ClaudeUsageViewContainsText(dashboard, @"Use on This Tab");
+        ClaudeUsageViewContainsText(dashboard, @"first@example.com") &&
+        ClaudeUsageViewContainsText(dashboard, @"Add Claude Account…") &&
+        ClaudeUsageViewContainsText(dashboard, @"Burn") &&
+        ClaudeUsageViewContainsText(dashboard, @"Available pace") &&
+        ClaudeUsageViewContainsText(dashboard, @"Reset") &&
+        ClaudeUsageViewContainsText(dashboard, @"Use");
     BOOL dashboardUsesHostScroller =
-        NSHeight(dashboard.frame) > 620 &&
+        NSHeight(dashboard.frame) > 0 && NSWidth(dashboard.frame) <= 720 &&
         !ClaudeUsageViewContainsNestedScrollView(dashboard);
     (void)[fixtureBar peerUsagePresentation];
     [fixtureBar setValue:@YES forKey:@"usageDashboardRefreshInFlight"];

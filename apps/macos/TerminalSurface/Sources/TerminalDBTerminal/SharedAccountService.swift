@@ -11,6 +11,7 @@ final class SharedAccountService {
 
     func handle(_ operation: String, payload: [String: Any], audit: Data? = nil, authenticate: Bool = false, completion: @escaping ([String: Any]) -> Void) {
         queue.async {
+            var startingJob: SharedAccountSignIn?
             do {
                 if authenticate && operation != "accounts.catalog" {
                     guard let audit, SharedAccountCodeIdentity.allowsLocalManagement(audit: audit) else {
@@ -23,7 +24,7 @@ final class SharedAccountService {
                 switch operation {
                 case "accounts.check": reply = ["accepted": true]
                 case "accounts.catalog":
-                    reply = ["accounts": TDBSharedAccounts.catalog(), "signInPhase": self.phase]
+                    reply = ["accounts": TDBSharedAccounts.catalog(), "signInPhase": self.phase, "signInActive": self.signIn != nil]
                 case "accounts.sync.export": reply = ["bundle": try store.exportBundle()]
                 case "accounts.sync.digest":
                     let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
@@ -42,6 +43,7 @@ final class SharedAccountService {
                 case "accounts.signIn.start":
                     guard self.signIn == nil else { throw PeerFailure("Complete or cancel the sign-in already open in your browser.") }
                     let job = try SharedAccountSignIn(payload: payload, queue: self.queue)
+                    startingJob = job
                     self.signIn = job; self.phase = "Complete sign-in in your browser. Choose the account shown here."
                     job.finished = { [weak self, weak job] token in
                         guard let self, let job, self.signIn === job else { return }
@@ -60,7 +62,9 @@ final class SharedAccountService {
                 }
                 DispatchQueue.main.async { completion(reply) }
             } catch {
-                if operation == "accounts.signIn.start" { self.signIn?.cancel(); self.signIn = nil }
+                if let startingJob, self.signIn === startingJob {
+                    startingJob.cancel(); self.signIn = nil; self.phase = ""
+                }
                 // Never interpolate process output or credential-bearing data.
                 let detail = (error as? PeerFailure)?.message ?? "The shared account operation could not finish. Try again."
                 DispatchQueue.main.async { completion(["error": detail]) }

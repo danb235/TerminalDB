@@ -94,8 +94,11 @@ enum SharedAWSTests {
 
         // A receiver keeps an independent copy and can also independently
         // supply this role. Withdrawing A must not erase B's supplied session.
-        let sameRole = try b.publish(profile: profile, principalARN: principal, credentials: secondKeys, sourceName: "Fixture B")
+        var otherAlias = profile; otherAlias.name = "Another Local Name"
+        let sameRole = try b.publish(profile: otherAlias, principalARN: principal, credentials: secondKeys, sourceName: "Fixture B")
         try check(sameRole == role && (try b.catalog()).count == 1)
+        try check(Set((try b.catalog()).first?["profileNames"] as? [String] ?? []) == [profile.name, otherAlias.name])
+        try check(Set((try b.catalog()).first?["sourceNames"] as? [String] ?? []) == ["Fixture A", "Fixture B"])
         try c.importBundle(b.exportBundle())
         try a.withdraw(profile.id)
         let withdrawn = try a.exportBundle()

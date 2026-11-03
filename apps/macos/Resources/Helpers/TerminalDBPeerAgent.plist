@@ -7,6 +7,6 @@
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSLocalNetworkUsageDescription</key><string>Connect directly to the Macs you have explicitly paired with TerminalDB over your LAN or VPN.</string>
-  <key>NSBonjourServices</key><array><string>_terminaldb._tcp</string></array>
+  <key>NSBonjourServices</key><array><string>_terminaldb._tcp</string><string>_terminaldb-qa._tcp</string></array>
   <key>LSBackgroundOnly</key><true/>
 </dict></plist>

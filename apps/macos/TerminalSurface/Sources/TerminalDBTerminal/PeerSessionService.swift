@@ -418,13 +418,13 @@ public final class TDBSessionClient: NSObject {
         do { _ = try PeerProtocol.encode(message) }
         catch {
             let detail = "This action exceeds the supported message size or contains unsupported data. Reduce its size and try again."
-            eventHandler?(["type": "operation-error", "detail": detail]); completion(["error": detail]); return
+            eventHandler?(["type": "operation-error", "operation": operation, "detail": detail]); completion(["error": detail]); return
         }
         if operation == "session.snapshot" { synchronizing = true; snapshotFailed = false }
         callbacks[id] = { [weak self] result in
             if operation == "session.snapshot", result["error"] != nil { self?.synchronizing = false; self?.snapshotFailed = true }
             if let error = result["error"] as? String, operation != "health.ping" {
-                self?.eventHandler?(["type": "operation-error", "detail": error])
+                self?.eventHandler?(["type": "operation-error", "operation": operation, "detail": error])
             }
             completion(result)
         }

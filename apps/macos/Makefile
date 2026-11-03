@@ -31,7 +31,7 @@ $(BIN): $(SOURCES) $(HEADERS) $(HELPER_RESOURCES) Info.plist Makefile $(FONT_RES
 
 test-surface:
 	./Scripts/prepare-terminal-package.sh TerminalSurface/.build
-	xcrun swift run --package-path TerminalSurface -c release TerminalSurfaceTests
+	xcrun swift run --build-system native --package-path TerminalSurface -c release TerminalSurfaceTests
 
 run: all
 	open $(APP)

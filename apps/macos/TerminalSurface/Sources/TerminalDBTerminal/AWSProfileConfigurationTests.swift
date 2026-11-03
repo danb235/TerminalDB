@@ -65,6 +65,45 @@ enum AWSProfileConfigurationTests {
         let login = discovered.first { $0.name == "web-login" }!
         try check(source.id == legacy.id)
         try check(source.id != login.id)
+        try check(try managed.configuredNames() == ["chained", "default", "legacy", "static", "web-login", "workspace"])
+        func object(_ profile: AWSProfileDescriptor) throws -> [String: Any] {
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(profile)) as! [String: Any]
+        }
+        var remoteAlias = source; remoteAlias.name = "office-access"; remoteAlias.region = "eu-west-1"
+        let received: [String: Any] = ["profileId": source.id, "descriptor": try object(remoteAlias), "profileNames": ["office-access", "team-access"], "sourceNames": ["Office Mac", "Travel Mac"], "available": true, "status": "Ready", "expires": 2000000000.0]
+        let genericCatalog: [String: Any] = ["profiles": try [object(source), object(legacy)], "accounts": [received]]
+        let grouped = AWSProfilePresentation.rows(catalog: genericCatalog)
+        try check(grouped.count == 1 && grouped[0].localNames == ["legacy", "workspace"])
+        try check(grouped[0].name == "legacy" && grouped[0].hasLocalProfile)
+        try check(grouped[0].sourceNames == ["Office Mac", "Travel Mac"] && grouped[0].available)
+        try check(grouped[0].sharedNames.contains("team-access") && grouped[0].sharedNames.contains("office-access"))
+        let beforeReconnect = AWSProfilePresentation.rows(catalog: ["profiles": try [object(source), object(legacy)]])
+        try check(beforeReconnect.count == 1 && beforeReconnect[0].name == grouped[0].name && !beforeReconnect[0].available)
+        let different = AWSProfileDescriptor(name: "workspace", kind: "sso", ssoStartURL: "https://another.awsapps.com/start", ssoRegion: "us-east-1", accountID: "999999999999", roleName: "Reader")
+        let conflictCatalog: [String: Any] = ["profiles": try [object(source)], "accounts": [["profileId": different.id, "descriptor": try object(different), "available": true]]]
+        let conflicting = AWSProfilePresentation.rows(catalog: conflictCatalog)
+        try check(conflicting.count == 2 && AWSProfilePresentation.namesConflict("workspace", rows: conflicting))
+        let remoteRow = conflicting.first { $0.id == different.id }!
+        try check(remoteRow.suggestedName(rows: conflicting) == "workspace-9999")
+        try check(remoteRow.suggestedName(rows: conflicting, occupiedNames: ["workspace", "workspace-9999", "workspace-9999-2"]) == "workspace-9999-3")
+        let mapped = AWSProfilePresentation.rows(catalog: ["profiles": try [object(source)], "accounts": [received], "installed": [["profileId": source.id, "descriptor": try object(source), "targetName": "my-local-name"]]])
+        try check(mapped.count == 1 && mapped[0].name == "my-local-name" && mapped[0].isInstalled)
+        let twoAliases = AWSProfilePresentation.rows(catalog: ["profiles": try [object(source), object(legacy)], "installed": [["profileId": source.id, "descriptor": try object(legacy), "targetName": "legacy"]]])
+        try check(twoAliases[0].suggestedAdditionalName(rows: twoAliases, occupiedNames: ["legacy", "workspace"]) == "workspace")
+        let installedOnly = AWSProfilePresentation.rows(catalog: ["profiles": [], "installed": [["profileId": source.id, "descriptor": try object(source), "targetName": "workspace"], ["profileId": source.id, "descriptor": try object(source), "targetName": "workspace-2"]]])
+        try check(installedOnly.count == 1 && installedOnly[0].installedNames == ["workspace", "workspace-2"])
+        try check(installedOnly[0].suggestedAdditionalName(rows: installedOnly) == "workspace-3")
+        try check(installedOnly[0].suggestedAdditionalName(rows: installedOnly, occupiedNames: ["workspace-3", "workspace-4"]) == "workspace-5")
+        try check(!Set(installedOnly[0].installedNames).contains(installedOnly[0].suggestedAdditionalName(rows: installedOnly)))
+        let privateSource = AWSProfilePresentation.rows(catalog: ["profiles": try [object(remoteAlias)], "configuredProfileIDs": [], "accounts": [received]])
+        try check(privateSource.count == 1 && !privateSource[0].hasLocalProfile && privateSource[0].localNames.isEmpty)
+        var unicode = different; unicode.name = String(repeating: "🖥", count: 32)
+        let unicodeRows = AWSProfilePresentation.rows(catalog: ["profiles": [], "accounts": [["profileId": unicode.id, "descriptor": try object(unicode)]]])
+        try check(unicodeRows.count == 1 && AWSProfileDescriptor.validName(unicodeRows[0].suggestedName(rows: unicodeRows, occupiedNames: [unicode.name])))
+        var unicodeInstalled = unicodeRows[0]; unicodeInstalled.installedNames = [unicode.name]
+        try check(AWSProfileDescriptor.validName(unicodeInstalled.suggestedAdditionalName(rows: [unicodeInstalled], occupiedNames: [unicode.name])))
+        var malformed = try object(source); malformed["id"] = String(repeating: "0", count: 64)
+        try check(AWSProfilePresentation.rows(catalog: ["profiles": [malformed]]).isEmpty)
         try check(try Data(contentsOf: config) == Data(original.utf8))
         let backing = try managed.prepareBackingConfig(source)
         let backingText = try String(contentsOf: backing, encoding: .utf8)
@@ -76,7 +115,10 @@ enum AWSProfileConfigurationTests {
         try check(managed.loginArguments(for: source) == ["sso", "login", "--profile", "workspace"])
         try check(managed.loginArguments(for: login) == ["login", "--profile", "web-login"])
         try check(rejected { _ = try managed.install(source, targetName: "workspace", launcherPath: "/Applications/TerminalDB.app/helper") })
-        try check(rejected { _ = try managed.install(source, targetName: "legacy", launcherPath: "/Applications/TerminalDB.app/helper", allowReplacingSource: true) })
+        let aliasReplacement = try managed.install(source, targetName: "legacy", launcherPath: "/Applications/TerminalDB.app/helper", allowReplacingSource: true)
+        try check(aliasReplacement.targetName == "legacy" && aliasReplacement.descriptor.id == source.id)
+        try managed.restore(aliasReplacement)
+        try check(try Data(contentsOf: config) == Data(original.utf8))
         let helper = "/Applications/TerminalDB 'test' \\\".app/helper"
         let installation = try managed.install(source, targetName: "workspace", launcherPath: helper, allowReplacingSource: true)
         let changed = try String(contentsOf: config, encoding: .utf8)

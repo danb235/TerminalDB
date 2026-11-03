@@ -129,9 +129,15 @@ public final class TDBPeerPanel: NSObject, NSTableViewDataSource, NSTableViewDel
     private let pairBody = NSView()
     private let nearbyTable = NSTableView()
     private let pairButton = NSButton()
+    private let pairCancel = NSButton()
+    private let pairDetails = NSButton()
+    private var pairBodyHeight: NSLayoutConstraint!
+    private var nearbySignature = ""
+    private var mainSignature = ""
     private var nearbyRows: [[String: Any]] = []
-    private enum Stage: Equatable { case browsing, connecting, verifying, waiting, expired }
-    private var stage = Stage.browsing
+    private typealias Stage = PairingPresentation.Stage
+    private var pairing = PairingPresentation()
+    private var stage: Stage { get { pairing.stage } set { pairing.stage = newValue } }
     private var requestedService: String?
     private var candidateID: String?
     private var candidateFingerprint = ""
@@ -141,8 +147,10 @@ public final class TDBPeerPanel: NSObject, NSTableViewDataSource, NSTableViewDel
     public override init() {
         super.init()
         client.agentManagement = true
-        pairHelp.heightAnchor.constraint(greaterThanOrEqualToConstant: 42).isActive = true
-        pairBody.heightAnchor.constraint(equalToConstant: 250).isActive = true
+        pairHelp.font = .systemFont(ofSize: 13); pairHelp.textColor = .secondaryLabelColor
+        pairHelp.preferredMaxLayoutWidth = 512
+        pairBodyHeight = pairBody.heightAnchor.constraint(equalToConstant: 180)
+        pairBodyHeight.isActive = true
         let heading = NSTextField(labelWithString: "Your Macs")
         heading.font = .systemFont(ofSize: 22, weight: .semibold)
         let add = button("Add Mac…", #selector(addMac))
@@ -159,7 +167,7 @@ public final class TDBPeerPanel: NSObject, NSTableViewDataSource, NSTableViewDel
         let remove = button("Remove…", #selector(remove))
         actions = [terminal, sessions, connection, remove]
         let controls = horizontal([terminal, sessions, NSView(), connection, remove])
-        status.font = .systemFont(ofSize: 11); status.textColor = .secondaryLabelColor
+        status.font = .systemFont(ofSize: 12); status.textColor = .secondaryLabelColor
         status.heightAnchor.constraint(greaterThanOrEqualToConstant: 34).isActive = true
         let retry = button("Retry Pending Removals", #selector(retryRemovals))
         retry.identifier = .init("pending-removals")
@@ -169,7 +177,13 @@ public final class TDBPeerPanel: NSObject, NSTableViewDataSource, NSTableViewDel
         attach(stack, to: view, inset: 20)
         view.autoresizingMask = [.width]
         client.eventHandler = { [weak self] event in
-            if event["type"] as? String == "peers.state" { self?.apply(event) }
+            guard let self else { return }
+            if event["type"] as? String == "peers.state" { self.apply(event) }
+            else if ["disconnected", "connection-error"].contains(event["type"] as? String ?? ""),
+                    self.pairPanel != nil, self.stage != .expired, self.stage != .connected {
+                self.expirePairingUI()
+                self.pairHelp.stringValue = "Nearby connections are unavailable. Check this Mac’s TerminalDB background service, then search again."
+            }
         }
         client.connect { [weak self] _ in self?.refresh() }
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
@@ -208,10 +222,17 @@ public final class TDBPeerPanel: NSObject, NSTableViewDataSource, NSTableViewDel
     }
     private func message(_ value: String) { feedback = value; feedbackUntil = PeerClock.now + 8; renderMain() }
     private func request(_ operation: String, _ payload: [String: Any] = [:], completion: ((NSDictionary) -> Void)? = nil) {
+        let generation = pairing.generation
+        let approvalCandidate = payload["candidate"] as? String
         client.request(operation, payload: payload as NSDictionary) { [weak self] result in
             guard let self else { return }
+            if operation == "peers.pairing.close", generation != self.pairing.generation { return }
+            if operation == "peers.approve" {
+                guard self.pairPanel != nil, generation == self.pairing.generation,
+                      self.candidateID == approvalCandidate, self.stage == .verifying || self.stage == .waiting else { return }
+            }
             if let error = result["error"] as? String {
-                if self.pairPanel != nil { self.pairHelp.stringValue = error; self.stage = .browsing; self.renderNearby() }
+                if self.pairPanel != nil { self.expirePairingUI(); self.pairHelp.stringValue = error }
                 else { self.message(error) }
             } else {
                 if result["peers"] != nil { self.apply(result) }
@@ -223,21 +244,32 @@ public final class TDBPeerPanel: NSObject, NSTableViewDataSource, NSTableViewDel
     private var selectedNearby: [String: Any]? { nearbyRows.indices.contains(nearbyTable.selectedRow) ? nearbyRows[nearbyTable.selectedRow] : nil }
     private func apply(_ result: NSDictionary) {
         guard result["peers"] != nil else { return }
+        if pairPanel != nil {
+            if stage != .opening, stage != .expired, stage != .connected,
+               let expected = pairing.remoteGeneration, let actual = result["pairingGeneration"] as? Int, actual > expected {
+                expirePairingUI(); return
+            }
+            guard pairing.accepts(remote: result["pairingGeneration"] as? Int) else { return }
+        }
         peerInventory = result; renderMain(); changed?()
         guard pairPanel != nil else { return }
+        if stage == .connected || stage == .expired { return }
         let candidates = result["candidates"] as? [[String: Any]] ?? []
         if !candidateFingerprint.isEmpty,
            (result["peers"] as? [[String: Any]] ?? []).contains(where: { $0["id"] as? String == candidateFingerprint }) {
             preferredSelection = candidateFingerprint
-            let name = candidateName
-            finishPairingUI(); message("\(name) was added. Select New Terminal to work there."); return
+            stage = .connected
+            showPairStatus(title: "\(candidateName) is connected", detail: "Open a terminal to start working on that Mac.", symbol: "checkmark.circle")
+            updatePairButton(); return
         }
         if result["pairingOpen"] as? Bool != true {
-            stage = .expired; pairHelp.stringValue = "Pairing has timed out. Start again on both Macs."; updatePairButton(); return
+            expirePairingUI(); return
         }
         if let id = candidateID, let candidate = candidates.first(where: { $0["id"] as? String == id }) {
             if candidate["approvedHere"] as? Bool == true {
-                stage = .waiting; pairHelp.stringValue = "Approve on \(candidateName) to finish pairing. Both Macs must agree."; updatePairButton()
+                stage = .waiting; pairHeading.stringValue = "Approve on \(candidateName)"
+                pairHelp.stringValue = "Approved here. Compare these fingerprints on the other Mac, then approve there to finish."
+                updatePairButton()
             } else if stage == .connecting && candidate["ready"] as? Bool != false {
                 showVerification(candidate)
             }
@@ -246,7 +278,7 @@ public final class TDBPeerPanel: NSObject, NSTableViewDataSource, NSTableViewDel
                 candidateID = replacement["id"] as? String; stage = .connecting
                 if replacement["ready"] as? Bool != false { showVerification(replacement) }
             } else {
-                stage = .expired; pairHelp.stringValue = "The pairing request ended. Start again on both Macs."; updatePairButton(); return
+                expirePairingUI(); return
             }
         }
         if stage == .browsing || (stage == .connecting && requestedService == nil) {
@@ -261,7 +293,8 @@ public final class TDBPeerPanel: NSObject, NSTableViewDataSource, NSTableViewDel
         preferredSelection = nil
         rows = [["id": "", "name": "This Mac", "kind": "local"]]
         rows += (peerInventory["peers"] as? [[String: Any]] ?? []).map { var r = $0; r["kind"] = "peer"; return r }
-        table.reloadData()
+        let signature = String(data: (try? JSONSerialization.data(withJSONObject: rows, options: [.sortedKeys])) ?? Data(), encoding: .utf8) ?? ""
+        if signature != mainSignature { mainSignature = signature; table.reloadData() }
         table.selectRowIndexes(IndexSet(integer: rows.firstIndex(where: { $0["id"] as? String == previous }) ?? 0), byExtendingSelection: false)
         let pending = peerInventory["pendingRemovals"] as? [String] ?? []
         status.stringValue = !pending.isEmpty ? "Access was removed here. Waiting to update: " + pending.joined(separator: ", ")
@@ -285,85 +318,181 @@ public final class TDBPeerPanel: NSObject, NSTableViewDataSource, NSTableViewDel
         let detail: String
         if item["kind"] as? String == "local" { detail = Host.current().localizedName ?? "This computer" }
         else if tableView === table { detail = "Paired Mac" }
-        else { detail = item["pairingReady"] as? Bool == false ? "Open Add Mac on the other Mac" : "Ready to pair · " + (item["address"] as? String ?? "Local network") }
-        let label = NSTextField(wrappingLabelWithString: name + "\n" + detail)
-        label.font = .systemFont(ofSize: 12); label.maximumNumberOfLines = 2; label.lineBreakMode = .byTruncatingMiddle
-        return label
+        else {
+            let sameNames = source.filter { TDBWorkstationPresentation.displayName($0["name"] as? String ?? "Mac") == name }
+            let ordinal = sameNames.firstIndex(where: { $0["service"] as? String == item["service"] as? String }).map { $0 + 1 } ?? 1
+            detail = sameNames.count > 1 ? "Ready to pair · Connection \(ordinal)" : "Ready to pair"
+        }
+        let title = NSTextField(labelWithString: name)
+        title.font = .systemFont(ofSize: 13, weight: .medium); title.lineBreakMode = .byTruncatingMiddle
+        let subtitle = NSTextField(labelWithString: detail)
+        subtitle.font = .systemFont(ofSize: 12); subtitle.textColor = .secondaryLabelColor
+        let labels = NSStackView(views: [title, subtitle]); labels.orientation = .vertical; labels.alignment = .leading; labels.spacing = 2
+        for label in [title, subtitle] {
+            label.widthAnchor.constraint(lessThanOrEqualTo: labels.widthAnchor).isActive = true
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        }
+        let icon = NSImageView(image: NSImage(systemSymbolName: item["kind"] as? String == "local" ? "laptopcomputer" : "desktopcomputer", accessibilityDescription: nil) ?? NSImage())
+        icon.contentTintColor = .secondaryLabelColor
+        icon.widthAnchor.constraint(equalToConstant: 24).isActive = true
+        let cell = NSTableCellView()
+        let content = horizontal([icon, labels]); attach(content, to: cell, inset: 8)
+        title.setAccessibilityLabel(name + ", " + detail)
+        return cell
     }
     @objc private func openTerminal() {
         guard let selected, let id = selected["id"] as? String else { return }
         openTerminalHandler?(id, selected["name"] as? String ?? "Mac")
     }
     @objc private func openSessions() { if let id = selected?["id"] as? String { openSessionsHandler?(id) } }
-    @objc private func addMac() {
+    @objc public func addMac() {
         if let pairPanel { pairPanel.makeKeyAndOrderFront(nil); return }
         guard client.connected, let parent = view.window else { refresh(); return }
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 620, height: 450), styleMask: [.titled], backing: .buffered, defer: false)
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 560, height: 450), styleMask: [.titled], backing: .buffered, defer: false)
         panel.title = "Add Mac"; pairPanel = panel
         pairHeading.font = .systemFont(ofSize: 20, weight: .semibold)
-        pairHeading.stringValue = "Add a Mac"
-        pairHelp.stringValue = "On the other Mac, open Workstations → Manage Macs → Add Mac. Choose it below, then compare the fingerprints on both screens."
-        pairHelp.font = .systemFont(ofSize: 12)
+        pairHeading.maximumNumberOfLines = 2; pairHeading.lineBreakMode = .byTruncatingMiddle
         if nearbyTable.tableColumns.isEmpty {
-            configure(nearbyTable, identifier: "nearby", width: 540)
+            configure(nearbyTable, identifier: "nearby", width: 500)
             nearbyTable.target = self; nearbyTable.doubleAction = #selector(pairAction)
             nearbyTable.setAccessibilityLabel("Macs available for pairing")
         }
-        let cancel = button("Cancel", #selector(cancelPairing)); cancel.keyEquivalent = "\u{1b}"
+        pairCancel.title = "Cancel"; pairCancel.target = self; pairCancel.action = #selector(cancelPairing)
+        pairCancel.bezelStyle = .rounded; pairCancel.keyEquivalent = "\u{1b}"
+        pairDetails.title = "Connection Details…"; pairDetails.target = self; pairDetails.action = #selector(pairConnectionDetails)
+        pairDetails.bezelStyle = .rounded
         pairButton.title = "Pair"; pairButton.target = self; pairButton.action = #selector(pairAction); pairButton.bezelStyle = .rounded
         pairButton.keyEquivalent = ""
-        let root = vertical([pairHeading, pairHelp, pairBody, horizontal([cancel, NSView(), pairButton])])
-        attach(root, to: panel.contentView!, inset: 20)
-        stage = .browsing; requestedService = nil; candidateID = nil; candidateFingerprint = ""
+        let root = vertical([pairHeading, pairHelp, pairBody, horizontal([pairCancel, pairDetails, NSView(), pairButton])])
+        attach(root, to: panel.contentView!, inset: 24)
         parent.beginSheet(panel) { [weak self] _ in self?.pairPanel = nil }
-        renderNearby(); request("peers.pairing.open")
+        startPairingSearch()
+    }
+    private func startPairingSearch() {
+        candidateID = nil; candidateFingerprint = ""; requestedService = nil; nearbyRows = []; nearbySignature = ""
+        let generation = pairing.begin()
+        showPairStatus(title: "Find a Mac", detail: "Preparing nearby discovery…", symbol: nil)
+        updatePairButton()
+        client.request("peers.pairing.open", payload: [:]) { [weak self] result in
+            guard let self, self.pairPanel != nil, generation == self.pairing.generation else { return }
+            if let error = result["error"] as? String {
+                self.stage = .expired
+                self.showPairStatus(title: "Couldn’t start pairing", detail: error, symbol: "exclamationmark.circle")
+                self.updatePairButton(); return
+            }
+            guard result["pairingOpen"] as? Bool == true else { self.expirePairingUI(); return }
+            guard self.pairing.opened(generation: generation, remote: result["pairingGeneration"] as? Int) else { return }
+            self.apply(result); self.renderNearby()
+        }
+    }
+    private func clearPairBody() {
+        for view in pairBody.subviews { view.removeFromSuperview() }
+        nearbySignature = ""
+    }
+    private func showPairStatus(title: String, detail: String, symbol: String?) {
+        pairHeading.stringValue = title; pairHelp.stringValue = detail
+        clearPairBody(); pairBodyHeight.constant = 48
+        if let symbol {
+            let image = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage())
+            image.contentTintColor = .secondaryLabelColor
+            image.translatesAutoresizingMaskIntoConstraints = false; pairBody.addSubview(image)
+            NSLayoutConstraint.activate([image.centerXAnchor.constraint(equalTo: pairBody.centerXAnchor), image.centerYAnchor.constraint(equalTo: pairBody.centerYAnchor), image.widthAnchor.constraint(equalToConstant: 32), image.heightAnchor.constraint(equalToConstant: 32)])
+        } else {
+            let progress = NSProgressIndicator(); progress.style = .spinning; progress.controlSize = .regular
+            progress.translatesAutoresizingMaskIntoConstraints = false; pairBody.addSubview(progress)
+            NSLayoutConstraint.activate([progress.centerXAnchor.constraint(equalTo: pairBody.centerXAnchor), progress.centerYAnchor.constraint(equalTo: pairBody.centerYAnchor)])
+            progress.startAnimation(nil)
+        }
+        resizePairPanel()
+    }
+    private func resizePairPanel() {
+        guard let panel = pairPanel, let content = panel.contentView else { return }
+        content.layoutSubtreeIfNeeded()
+        guard let stack = content.subviews.first as? NSStackView else { return }
+        let height = max(240, stack.fittingSize.height + 48)
+        panel.setContentSize(NSSize(width: 560, height: min(560, height)))
+    }
+    private func expirePairingUI() {
+        candidateID = nil; candidateFingerprint = ""; requestedService = nil; nearbyRows = []
+        stage = .expired
+        showPairStatus(title: "Pairing expired", detail: "Search again to continue. If the other Mac isn’t listed, open Add Mac there.", symbol: "clock")
+        updatePairButton()
+    }
+    @objc private func pairConnectionDetails() {
+        guard stage == .browsing, let selected = selectedNearby, let panel = pairPanel else { return }
+        let alert = NSAlert(); alert.messageText = TDBWorkstationPresentation.displayName(selected["name"] as? String ?? "Mac")
+        alert.informativeText = "Local network connection\n\(selected["address"] as? String ?? "Address unavailable")\n\nThe device is verified by comparing fingerprints on both Macs, not by its name or address."
+        alert.addButton(withTitle: "Done"); alert.beginSheetModal(for: panel)
     }
     private func renderNearby() {
+        guard pairPanel != nil, stage == .browsing else { return }
         let selection = selectedNearby?["service"] as? String
-        let known = Set((peerInventory["peers"] as? [[String: Any]] ?? []).compactMap { ($0["id"] as? String).map { "tdb-" + $0.prefix(12) } })
-        nearbyRows = (peerInventory["nearby"] as? [[String: Any]] ?? []).filter { item in
-            let service = item["service"] as? String ?? ""
-            return !known.contains(where: { service.hasPrefix($0) })
-        }
-        for v in pairBody.subviews { v.removeFromSuperview() }
+        let qa = ProcessInfo.processInfo.environment["TERMINALDB_PEER_EPHEMERAL_IDENTITY"] == "1"
+        let next = pairing.visibleChoices(peerInventory as? [String: Any] ?? [:], allowTestInstances: qa)
+        let signature = String(data: (try? JSONSerialization.data(withJSONObject: next, options: [.sortedKeys])) ?? Data(), encoding: .utf8) ?? ""
+        pairHeading.stringValue = "Choose a Mac"
+        pairHelp.stringValue = "On your other Mac, choose TerminalDB → Workstations → Add Mac. Keep both Macs on the same local network."
+        if signature == nearbySignature { updatePairButton(); return }
+        clearPairBody(); nearbySignature = signature; nearbyRows = next
         if nearbyRows.isEmpty {
-            let empty = NSTextField(wrappingLabelWithString: "No new Macs are ready yet.\nOpen Add Mac on the other Mac and keep both on the same local network.")
-            empty.textColor = .secondaryLabelColor; attach(empty, to: pairBody, inset: 16)
+            pairBodyHeight.constant = 162
+            let empty = NSTextField(wrappingLabelWithString: "Looking for Macs…")
+            empty.font = .systemFont(ofSize: 13); empty.textColor = .secondaryLabelColor
+            empty.alignment = .center; attach(empty, to: pairBody, inset: 32)
         } else {
+            // Discovery updates must not move Continue under the pointer.
+            pairBodyHeight.constant = 162
             let list = scroll(nearbyTable); attach(list, to: pairBody, inset: 0)
             list.bottomAnchor.constraint(equalTo: pairBody.bottomAnchor).isActive = true
             nearbyTable.reloadData()
-            if let selection, let row = nearbyRows.firstIndex(where: { $0["service"] as? String == selection }) { nearbyTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
-            else if selection == nil && nearbyRows.count == 1 { nearbyTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
+            let nextSelection = PairingPresentation.selection(in: nearbyRows, previous: selection)
+            if let nextSelection, let row = nearbyRows.firstIndex(where: { $0["service"] as? String == nextSelection }) { nearbyTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
             else { nearbyTable.deselectAll(nil) }
         }
-        updatePairButton()
+        updatePairButton(); resizePairPanel()
     }
     private func updatePairButton() {
         guard pairPanel != nil else { return }
+        pairCancel.title = stage == .connected ? "Done" : "Cancel"
+        pairDetails.isHidden = stage != .browsing || selectedNearby == nil
+        pairButton.keyEquivalent = ""
         switch stage {
-        case .browsing: pairButton.title = "Pair"; pairButton.isEnabled = selectedNearby != nil && selectedNearby?["pairingReady"] as? Bool != false
+        case .opening: pairButton.title = "Searching…"; pairButton.isEnabled = false
+        case .browsing:
+            pairButton.title = "Continue"; pairButton.isEnabled = selectedNearby != nil
+            pairButton.keyEquivalent = "\r"
         case .connecting: pairButton.title = "Connecting…"; pairButton.isEnabled = false
         case .verifying: pairButton.title = "Fingerprints Match — Pair"; pairButton.isEnabled = PeerClock.now >= confirmAfter
-        case .waiting: pairButton.title = "Waiting for Other Mac…"; pairButton.isEnabled = false
-        case .expired: pairButton.title = "Start Again"; pairButton.isEnabled = true
+        case .waiting: pairButton.title = "Waiting for Approval…"; pairButton.isEnabled = false
+        case .expired: pairButton.title = "Search Again"; pairButton.isEnabled = true; pairButton.keyEquivalent = "\r"
+        case .connected: pairButton.title = "Open Terminal"; pairButton.isEnabled = true; pairButton.keyEquivalent = "\r"
         }
     }
+    private var pairingPayload: [String: Any] { pairing.remoteGeneration.map { ["pairingGeneration": $0] } ?? [:] }
     @objc private func pairAction() {
         if stage == .expired {
-            candidateID = nil; candidateFingerprint = ""; requestedService = nil; stage = .browsing
-            pairHeading.stringValue = "Add a Mac"; pairHelp.stringValue = "Open Add Mac on the other Mac too, then choose it below."
-            renderNearby(); request("peers.pairing.open"); return
+            startPairingSearch(); return
+        }
+        if stage == .connected {
+            let id = candidateFingerprint, name = candidateName
+            finishPairingUI(); openTerminalHandler?(id, name); return
         }
         if stage == .verifying {
             guard PeerClock.now >= confirmAfter, let id = candidateID else { return }
-            request("peers.approve", ["candidate": id, "fingerprint": candidateFingerprint]); return
+            var payload = pairingPayload; payload["candidate"] = id; payload["fingerprint"] = candidateFingerprint
+            request("peers.approve", payload); return
         }
-        guard stage == .browsing, let service = selectedNearby?["service"] as? String else { return }
-        requestedService = service; stage = .connecting; updatePairButton()
-        client.request("peers.pair", payload: ["service": service]) { [weak self] result in
-            guard let self, self.pairPanel != nil else { return }
-            if let error = result["error"] as? String { self.stage = .browsing; self.pairHelp.stringValue = error; self.renderNearby(); return }
+        guard stage == .browsing, let selected = selectedNearby, let service = selected["service"] as? String else { return }
+        candidateName = TDBWorkstationPresentation.displayName(selected["name"] as? String ?? "Mac")
+        requestedService = service; stage = .connecting
+        let generation = pairing.generation
+        showPairStatus(title: "Connecting to \(candidateName)", detail: "Keep Add Mac open on both Macs while the secure connection starts.", symbol: nil)
+        updatePairButton()
+        var payload = pairingPayload; payload["service"] = service
+        client.request("peers.pair", payload: payload as NSDictionary) { [weak self] result in
+            guard let self, self.pairPanel != nil, generation == self.pairing.generation, self.stage == .connecting else { return }
+            if let error = result["error"] as? String { self.stage = .browsing; self.renderNearby(); self.pairHelp.stringValue = error; return }
+            guard self.pairing.accepts(remote: result["pairingGeneration"] as? Int) else { return }
             let candidates = result["candidates"] as? [[String: Any]] ?? []
             if let id = result["requestedCandidate"] as? String,
                let candidate = candidates.first(where: { $0["id"] as? String == id }) { self.candidateID = id; self.candidateFingerprint = candidate["fingerprint"] as? String ?? "" }
@@ -379,8 +508,8 @@ public final class TDBPeerPanel: NSObject, NSTableViewDataSource, NSTableViewDel
         candidateName = TDBWorkstationPresentation.displayName(candidate["name"] as? String ?? "Other Mac")
         stage = .verifying; confirmAfter = PeerClock.now + max(0.5, NSEvent.doubleClickInterval)
         pairHeading.stringValue = "Check both screens"
-        pairHelp.stringValue = "Both Macs must show these same two fingerprints. If either differs, cancel. Select Pair on both Macs only after comparing them."
-        for v in pairBody.subviews { v.removeFromSuperview() }
+        pairHelp.stringValue = "Both Macs must show these same two fingerprints. Compare every group, then approve on both Macs. Cancel if either differs."
+        clearPairBody(); pairBodyHeight.constant = 210
         let ownName = TDBWorkstationPresentation.displayName(Host.current().localizedName ?? "This Mac")
         let entries = [(own, ownName + " · This Mac", "pair-fingerprint-local"), (fingerprint, candidateName, "pair-fingerprint-remote")].sorted { $0.0 < $1.0 }
         var cards: [NSView] = []
@@ -388,18 +517,23 @@ public final class TDBPeerPanel: NSObject, NSTableViewDataSource, NSTableViewDel
             let title = NSTextField(labelWithString: name); title.font = .systemFont(ofSize: 13, weight: .semibold)
             let groups = stride(from: 0, to: value.count, by: 8).map { offset -> String in let start = value.index(value.startIndex, offsetBy: offset); return String(value[start..<value.index(start, offsetBy: 8)]) }
             let key = NSTextField(wrappingLabelWithString: groups.joined(separator: " "))
-            key.font = .monospacedSystemFont(ofSize: 11, weight: .regular); key.isSelectable = true
+            key.font = .monospacedSystemFont(ofSize: 12, weight: .regular); key.isSelectable = true; key.preferredMaxLayoutWidth = 488
             key.setAccessibilityIdentifier(identifier); key.setAccessibilityLabel(identifier == "pair-fingerprint-local" ? "This Mac fingerprint" : "Other Mac fingerprint")
             cards += [title, key]
         }
-        attach(vertical(cards), to: pairBody, inset: 12); updatePairButton()
-        DispatchQueue.main.asyncAfter(deadline: .now() + max(0.5, NSEvent.doubleClickInterval)) { [weak self] in self?.updatePairButton() }
+        attach(vertical(cards), to: pairBody, inset: 12); updatePairButton(); resizePairPanel()
+        let generation = pairing.generation
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0.5, NSEvent.doubleClickInterval)) { [weak self] in
+            guard let self, generation == self.pairing.generation else { return }; self.updatePairButton()
+        }
     }
     @objc private func cancelPairing() { finishPairingUI() }
     private func finishPairingUI() {
+        let payload = pairingPayload
         if let panel = pairPanel { panel.sheetParent?.endSheet(panel); panel.orderOut(nil) }
-        pairPanel = nil; candidateID = nil; candidateFingerprint = ""; requestedService = nil; stage = .browsing
-        request("peers.pairing.close"); renderMain()
+        pairPanel = nil; pairing.cancel(); clearPairBody(); nearbyRows = []
+        candidateID = nil; candidateFingerprint = ""; requestedService = nil
+        request("peers.pairing.close", payload); renderMain()
     }
     @objc private func remove() {
         guard let selected, let id = selected["id"] as? String, !id.isEmpty else { return }

@@ -49,11 +49,22 @@ extern NSNotificationName const TerminalLedgerDidChangeNotification;
 @property(nonatomic, copy, nullable) void (^runbookHandler)(
     NSDictionary *record);
 @property(nonatomic, copy, readonly, nullable) NSDictionary *currentRecord;
+@property(nonatomic, copy) NSString *executionWorkstation;
+@property(nonatomic, copy, nullable) void (^presentationChanged)(void);
+@property(nonatomic, copy, nullable) void (^recoveryHandler)(void);
+@property(nonatomic, readonly) BOOL recoveryVisible;
+@property(nonatomic, readonly) BOOL actionFailureVisible;
+- (CGFloat)preferredHeightForWidth:(CGFloat)width;
++ (BOOL)runInterfaceSelfTests;
 
 - (instancetype)initWithFrame:(NSRect)frame theme:(TerminalTheme *)theme;
 - (void)showReadyInDirectory:(NSString *)directory;
 - (void)showConnectionMessage:(NSString *)message;
 - (void)showInputReviewMessage;
+- (void)showViewingMessageOn:(NSString *)workstation;
+- (void)showEndedMessageOn:(NSString *)workstation;
+- (void)showActionError:(NSString *)message;
+- (void)showMissingSessionMessage;
 - (void)beginCommand:(NSString *)command directory:(NSString *)directory;
 - (void)displayRecord:(NSDictionary *)record;
 - (void)finishCommand:(NSString *)command

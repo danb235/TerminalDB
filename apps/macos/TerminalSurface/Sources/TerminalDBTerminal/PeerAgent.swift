@@ -20,6 +20,7 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
     private var identity: PeerDeviceIdentity!
     private var trust: PeerTrustStore!
     private let gate = PeerPairingGate()
+    private var pairingGeneration: UInt64 = 0
     private var network: PeerTLSNetwork!
     private var listener: PeerLocalListener?
     private var advertisement: NetService?
@@ -244,15 +245,35 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
             case "accounts.sync.now": syncAccounts(); reply(state())
             case "peers.state": reply(state())
             case "peers.pairing.open":
+                // A new window cannot inherit approval or queued messages from
+                // any prior attempt, even when the old window is still open.
+                gate.close()
+                for pair in Array(pendingPairs.values) { pair.link.close() }
+                pendingPairs.removeAll()
+                pairingGeneration &+= 1
                 gate.open(); advertise(); reply(state()); broadcastState()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 180) { [weak self] in self?.expirePairing() }
-            case "peers.pairing.close": gate.close(); expirePairing(); reply(state())
+                let generation = pairingGeneration
+                DispatchQueue.main.asyncAfter(deadline: .now() + 180) { [weak self] in
+                    guard let self, self.pairingGeneration == generation else { return }
+                    self.expirePairing()
+                }
+            case "peers.pairing.close":
+                guard message["pairingGeneration"] == nil || (message["pairingGeneration"] as? NSNumber)?.uint64Value == pairingGeneration else {
+                    reply(state()); return
+                }
+                gate.close(); expirePairing(); reply(state())
             case "peers.pair":
+                guard message["pairingGeneration"] == nil || (message["pairingGeneration"] as? NSNumber)?.uint64Value == pairingGeneration else { throw PeerFailure("This pairing request ended. Search again.") }
                 guard gate.isOpen, let service = message["service"] as? String, let endpoint = nearby[service] else {
                     throw PeerFailure("Open pairing on both Macs, then select a discovered Mac on this LAN.")
                 }
+                let generation = pairingGeneration
                 network.connect(endpoint: endpoint, expected: nil, pairing: true) { [weak self] result in
                     guard let self else { return }
+                    guard self.gate.isOpen, self.pairingGeneration == generation else {
+                        if case .success(let link) = result { link.close() }
+                        reply(["error": "This pairing request ended. Search again."]); return
+                    }
                     switch result {
                     case .failure: reply(["error": "The nearby Mac could not pair. Open pairing on both Macs, allow Local Network access, and allow TerminalDB incoming connections in macOS Firewall settings."])
                     case .success(let link):
@@ -262,6 +283,7 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
                     }
                 }
             case "peers.approve":
+                guard message["pairingGeneration"] == nil || (message["pairingGeneration"] as? NSNumber)?.uint64Value == pairingGeneration else { throw PeerFailure("This pairing request ended. Search again.") }
                 guard let id = message["candidate"] as? String, let candidate = pendingPairs[id], gate.isOpen, candidate.infoReady,
                       message["fingerprint"] as? String == candidate.link.peerID else {
                     throw PeerFailure("This pairing expired or its fingerprint changed. Start pairing again.")
@@ -419,8 +441,10 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
 
     private func installPairing(_ candidate: PendingPeerPair) {
         let link = candidate.link
+        let generation = pairingGeneration
         link.receive = { [weak self, weak candidate] message in
-            guard let self, let candidate, self.gate.isOpen else { link.close(); return }
+            guard let self, let candidate, self.gate.isOpen, self.pairingGeneration == generation,
+                  self.pendingPairs[link.id] === candidate else { link.close(); return }
             switch message["type"] as? String {
             case "pair.info":
                 let name = message["name"] as? String ?? "Mac"
@@ -547,7 +571,7 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
             ["id": $0.id, "name": $0.name, "endpoints": $0.endpoints.map { ["address": $0.display, "scope": $0.scope] }]
         }
         return ["status": status, "detail": statusDetail, "fingerprint": identity.fingerprint,
-                "hardwareBacked": identity.hardwareBacked, "pairingOpen": gate.isOpen, "port": trust.settings.listenPort,
+                "hardwareBacked": identity.hardwareBacked, "pairingOpen": gate.isOpen, "pairingGeneration": pairingGeneration, "port": trust.settings.listenPort,
                 "peers": peers, "accountPeers": trust.settings.accountPeers ?? [], "accountStatus": accountStatus,
                 "awsPeers": trust.settings.awsPeers ?? [], "awsStatus": awsStatus,
                 "pendingRemovals": (trust.settings.pendingRevocations ?? [:]).keys.sorted().map { trust.settings.peers[$0]?.name ?? "Unavailable Mac" },
@@ -556,6 +580,7 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
                     let txt = NetService.dictionary(fromTXTRecord: data)
                     let name = txt["name"].flatMap { String(data: $0, encoding: .utf8) }
                     return ["service": service, "address": nearby[service]!.display,
+                            "local": service.hasPrefix("tdb-" + identity.fingerprint.prefix(12)) && Self.isLocalAddress(nearby[service]!.host),
                             "name": name.map(PeerProtocol.displayName) ?? "Nearby Mac",
                             "pairingReady": txt["pairing"] == Data("1".utf8)]
                 },
@@ -566,6 +591,23 @@ public final class TDBPeerAgent: NSObject, NetServiceBrowserDelegate, NetService
     private func broadcastState() {
         var result = state(); result["type"] = "peers.state"
         for connection in localClients.values { connection.send(result) }
+    }
+
+    // Local interface equality is only a discovery hint, never authorization.
+    private static func isLocalAddress(_ host: String) -> Bool {
+        var interfaces: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&interfaces) == 0 else { return false }
+        defer { freeifaddrs(interfaces) }
+        var item = interfaces
+        while let current = item {
+            defer { item = current.pointee.ifa_next }
+            guard let address = current.pointee.ifa_addr,
+                  address.pointee.sa_family == AF_INET || address.pointee.sa_family == AF_INET6 else { continue }
+            var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(address, socklen_t(address.pointee.sa_len), &buffer, socklen_t(buffer.count), nil, 0, NI_NUMERICHOST) == 0,
+               String(cString: buffer).components(separatedBy: "%").first == host.components(separatedBy: "%").first { return true }
+        }
+        return false
     }
 
     private func receiveAccountSync(_ message: [String: Any], link: PeerTLSLink) {

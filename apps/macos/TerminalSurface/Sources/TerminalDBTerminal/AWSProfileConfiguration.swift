@@ -102,6 +102,13 @@ final class AWSProfileConfiguration {
         return result.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
+    func configuredNames() throws -> [String] {
+        let document = try INI(data: read(configURL, missing: true) ?? Data())
+        let names = document.sections.compactMap(\.profileName)
+        guard names.count <= 1024 else { throw PeerFailure("Too many AWS profile names are configured.") }
+        return Array(Set(names)).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
     // Creates a private source profile even on a receiving Mac. Only supported
     // auth metadata is emitted; endpoint/plugin/process settings never enter it.
     @discardableResult func prepareBackingConfig(_ profile: AWSProfileDescriptor) throws -> URL {
@@ -185,7 +192,7 @@ final class AWSProfileConfiguration {
                 return existing
             }
             if let section {
-                guard allowReplacingSource, targetName == profile.name,
+                guard allowReplacingSource,
                       let source = try self.descriptor(name: targetName, fields: section.fields, document: document), source.id == profile.id else {
                     throw PeerFailure("That AWS profile name already exists. Choose another name, or explicitly replace its matching sign-in profile.")
                 }

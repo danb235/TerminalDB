@@ -45,6 +45,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)selectProfile:(nullable ClaudeProfile *)profile;
 - (void)refreshNow;
 - (void)presentUsageWindow;
+- (void)presentAccountPicker;
+- (void)accountSelectionDidComplete:(BOOL)accepted;
 - (NSView *)prepareUsagePanel;
 - (void)refreshUsageDashboard;
 - (void)dismissUsagePanel:(nullable id)sender;
@@ -57,6 +59,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)showPasteReceiptWithByteCount:(NSUInteger)byteCount
                             lineCount:(NSUInteger)lineCount;
 + (BOOL)runUsageNormalizationSelfTests;
++ (BOOL)runInterfaceSelfTests;
 
 @end
 

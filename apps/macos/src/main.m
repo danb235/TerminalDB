@@ -36,9 +36,20 @@ static int TerminalDBExitStatus = 0;
 static NSString *const TerminalDBCommandBarHiddenDefaultsKey =
     @"TerminalDBCommandBarHidden";
 
-static CGFloat TerminalDBCommandBarHeight(BOOL focusMode,
-                                          BOOL commandBarHidden) {
-    return (focusMode || commandBarHidden) ? 0.0 : 132.0;
+static CGFloat TerminalDBCommandBarHeight(BOOL focusMode, BOOL commandBarHidden, CGFloat contentHeight, BOOL recovery) {
+    return recovery ? contentHeight : (focusMode || commandBarHidden) ? 0.0 : contentHeight;
+}
+
+static NSWindow *TerminalDBSelectedTabWindow(NSWindow *window) {
+    return window.tabGroup.selectedWindow ?: window;
+}
+
+static AppDelegate *TerminalDBSelectedTabController(NSWindow *window, NSArray<AppDelegate *> *controllers) {
+    NSWindow *selected = TerminalDBSelectedTabWindow(window);
+    AppDelegate *controller = [selected.delegate isKindOfClass:AppDelegate.class] ? (AppDelegate *)selected.delegate : nil;
+    if (!controller) for (AppDelegate *candidate in controllers) if (candidate.window == selected) { controller = candidate; break; }
+    AppDelegate *pane = controller.peerFocusedPane;
+    return pane.terminalView.window == selected && pane != nil ? pane : controller;
 }
 
 static BOOL TerminalDBCanRestartTrackedClaudeLogin(
@@ -1162,11 +1173,11 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 
 - (AppDelegate *)activeTerminalController {
     AppDelegate *root = [self rootController];
-    NSWindow *focusedWindow = NSApp.keyWindow ?: NSApp.mainWindow;
+    NSWindow *focusedWindow = TerminalDBSelectedTabWindow(NSApp.keyWindow ?: NSApp.mainWindow);
     NSView *focusedView =
         [focusedWindow.firstResponder isKindOfClass:NSView.class]
             ? (NSView *)focusedWindow.firstResponder : nil;
-    if (focusedView != nil) {
+    if (focusedView != nil && focusedView.window == focusedWindow) {
         for (AppDelegate *controller in root.windowControllers) {
             if (!controller.utilityPanelView.hidden &&
                 [focusedView isDescendantOf:controller.utilityPanelView]) {
@@ -1188,16 +1199,20 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     for (NSWindow *candidate in @[NSApp.keyWindow ?: NSNull.null,
                                   NSApp.mainWindow ?: NSNull.null]) {
         if (![candidate isKindOfClass:NSWindow.class]) continue;
-        id delegate = candidate.delegate;
-        if ([delegate isKindOfClass:AppDelegate.class]) {
-            AppDelegate *controller = (AppDelegate *)delegate;
-            return controller.peerFocusedPane ?: controller;
-        }
+        AppDelegate *controller = TerminalDBSelectedTabController(candidate, root.windowControllers);
+        if (controller) return controller;
+    }
+    for (NSWindow *candidate in NSApp.orderedWindows) {
+        if (!candidate.isVisible) continue;
+        AppDelegate *controller = TerminalDBSelectedTabController(candidate, root.windowControllers);
+        if (controller) return controller;
     }
     for (AppDelegate *controller in root.windowControllers.reverseObjectEnumerator) {
-        if (controller.window.isVisible) return controller;
+        if (controller.window.isVisible) return TerminalDBSelectedTabController(controller.window, root.windowControllers) ?: controller;
     }
-    return root.windowControllers.lastObject;
+    AppDelegate *last = root.windowControllers.lastObject;
+    while (last.embeddedSplitOwner) last = last.embeddedSplitOwner;
+    return TerminalDBSelectedTabController(last.window, root.windowControllers) ?: last;
 }
 
 - (void)toggleAIChatFromMenu:(id)sender {
@@ -1367,7 +1382,6 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                         }
                     }
                     if (profile != nil) {
-                        [target.claudeStatusBar selectProfile:profile];
                         [target claudeStatusBar:target.claudeStatusBar
                               didSelectProfile:profile];
                     }
@@ -1607,8 +1621,9 @@ static BOOL TerminalDBReapShell(pid_t pid) {
               directory:[controller currentAssistantDirectory]
            accountLabel:controller.selectedProfile.label
                 inWindow:[controller peerPresentationWindow]];
+    NSArray *titles = @[@"Project Tools", @"Environments", @"Monitors", @"Playbooks", @"Workspaces", @"Settings", @"Welcome"];
     [controller showUtilityPanelView:root.productWindowController.panelView
-                               title:@"TerminalDB"
+                               title:titles[MIN((NSUInteger)section, titles.count - 1)]
                            fullWidth:YES
                       dismissHandler:^{
         [weakProduct didDismissPanel];
@@ -2338,7 +2353,6 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         ? [controller.profileManager profileWithIdentifier:identifier]
         : nil;
     if (controller == nil || profile == nil) return;
-    [controller.claudeStatusBar selectProfile:profile];
     [controller claudeStatusBar:controller.claudeStatusBar
                didSelectProfile:profile];
 }
@@ -2347,7 +2361,6 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     (void)sender;
     AppDelegate *controller = [[self rootController] activeTerminalController];
     if (controller == nil) return;
-    [controller.claudeStatusBar selectProfile:nil];
     [controller claudeStatusBar:controller.claudeStatusBar
                didSelectProfile:nil];
 }
@@ -3580,7 +3593,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     [self.window center];
 
     const CGFloat statusBarHeight = 28;
-    const CGFloat ledgerBarHeight = 132;
+    const CGFloat ledgerBarHeight = 0;
     NSView *contentView = [[NSView alloc] initWithFrame:frame];
     self.workspaceView = contentView;
     NSView *scrollView = [[NSView alloc]
@@ -3713,6 +3726,27 @@ static BOOL TerminalDBReapShell(pid_t pid) {
             [strongSelf.ledgerStore recordWithIdentifier:identifier];
         if (updated != nil) [strongSelf.ledgerBar displayRecord:updated];
     };
+    self.ledgerBar.presentationChanged = ^{ [weakSelf layoutWorkspace]; };
+    self.ledgerBar.recoveryHandler = ^{
+        AppDelegate *pane = weakSelf; if (!pane.sessionClient) return;
+        AppDelegate *owner = pane; while (owner.embeddedSplitOwner) owner = owner.embeddedSplitOwner;
+        owner.peerFocusedPane = pane;
+        if (pane.ledgerBar.actionFailureVisible) {
+            [pane.ledgerBar showReadyInDirectory:[pane currentAssistantDirectory]];
+        } else if (pane.sessionClient.sessionID.length == 0 && pane.sessionClient.snapshotFailed) {
+            [pane showSessionsOnWorkstation:pane.peerTarget ?: @""]; return;
+        } else if (pane.sessionClient.ended) {
+            [pane openPeerTabOn:pane.peerTarget ?: @"" name:[pane peerWorkstationLabel] session:nil directory:nil private:NO window:[pane peerPresentationWindow]]; return;
+        } else if (pane.sessionClient.inputUncertain) {
+            // The inline button explicitly acknowledges the visible warning.
+            [pane.sessionClient acknowledgeUncertainInput];
+        } else if (!pane.sessionClient.connected || pane.sessionClient.snapshotFailed) [pane.sessionClient reconnect];
+        else [pane.sessionClient request:@"control.acquire" payload:@{} completion:^(NSDictionary *result) {
+            if (result[@"error"]) [pane showPeerError:result[@"error"]];
+        }];
+        NSWindow *window = [pane peerPresentationWindow];
+        if (window.isKeyWindow) [window makeFirstResponder:pane.terminalView];
+    };
     [contentView addSubview:self.ledgerBar];
 
     self.assistantView = [[ClaudeAssistantView alloc]
@@ -3817,54 +3851,37 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     self.assistantToggleButton.toolTip =
         @"Open AI Chat (Command-Shift-L)";
     self.assistantToggleButton.frame = NSMakeRect(332, 1, 30, 26);
-    NSView *assistantAccessoryView =
-        [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 366, 28)];
     self.peerControlButton = [NSButton buttonWithTitle:@"Connecting…" target:self action:@selector(takePeerControl:)];
-    self.peerControlButton.frame = NSMakeRect(182, 1, 108, 26);
     self.peerControlButton.bezelStyle = NSBezelStyleRounded;
-    self.peerControlButton.font = [NSFont systemFontOfSize:11];
-    [assistantAccessoryView addSubview:self.peerControlButton];
-    self.workstationsButton =
-        [[NSButton alloc] initWithFrame:NSMakeRect(0, 1, 176, 26)];
-    self.workstationsButton.title = @"This Mac ▾";
+    self.peerControlButton.font = [NSFont systemFontOfSize:12];
+    self.workstationsButton = [NSButton buttonWithTitle:@"This Mac ▾" target:self action:@selector(showWorkstationMenu:)];
     self.workstationsButton.bezelStyle = NSBezelStyleRounded;
-    self.workstationsButton.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+    self.workstationsButton.font = [NSFont systemFontOfSize:12 weight:NSFontWeightMedium];
     self.workstationsButton.cell.lineBreakMode = NSLineBreakByTruncatingMiddle;
-    self.workstationsButton.controlSize = NSControlSizeSmall;
-    NSImage *workstationsImage =
-        [NSImage imageWithSystemSymbolName:@"desktopcomputer"
-                  accessibilityDescription:@"Workstations"];
-    workstationsImage = [workstationsImage imageWithSymbolConfiguration:
-        [NSImageSymbolConfiguration configurationWithPointSize:14
-                                                        weight:NSFontWeightMedium]];
-    self.workstationsButton.image = workstationsImage;
+    self.workstationsButton.image = [NSImage imageWithSystemSymbolName:@"desktopcomputer" accessibilityDescription:@"Macs and sessions"];
     self.workstationsButton.imagePosition = NSImageLeft;
-    [self.workstationsButton setAccessibilityLabel:@"Workstations"];
+    [self.workstationsButton setAccessibilityLabel:@"Macs and sessions"];
     [self.workstationsButton setAccessibilityIdentifier:@"workstation-menu"];
-    self.workstationsButton.contentTintColor = self.theme.ansiColors[6];
-    self.workstationsButton.target = self;
-    self.workstationsButton.action = @selector(showWorkstationMenu:);
-    self.workstationsButton.toolTip = @"This session is on This Mac. Open the Workstations menu to start or resume work on a Mac.";
-
-    self.commandBarToggleButton =
-        [[NSButton alloc] initWithFrame:NSMakeRect(296, 1, 30, 26)];
-    self.commandBarToggleButton.title = @"";
+    [self.workstationsButton.widthAnchor constraintGreaterThanOrEqualToConstant:104].active = YES;
+    [self.workstationsButton.widthAnchor constraintLessThanOrEqualToConstant:220].active = YES;
+    [self.workstationsButton setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    self.commandBarToggleButton = [NSButton buttonWithTitle:@"" target:self action:@selector(toggleCommandBar:)];
     self.commandBarToggleButton.bordered = NO;
-    self.commandBarToggleButton.controlSize = NSControlSizeSmall;
     self.commandBarToggleButton.imagePosition = NSImageOnly;
-    self.commandBarToggleButton.contentTintColor = self.theme.ansiColors[6];
-    self.commandBarToggleButton.target = self;
-    self.commandBarToggleButton.action = @selector(toggleCommandBar:);
-    [assistantAccessoryView addSubview:self.workstationsButton];
-    [assistantAccessoryView addSubview:self.commandBarToggleButton];
-    [assistantAccessoryView addSubview:self.assistantToggleButton];
-    self.assistantAccessoryController =
-        [[NSTitlebarAccessoryViewController alloc] init];
-    self.assistantAccessoryController.view = assistantAccessoryView;
-    self.assistantAccessoryController.layoutAttribute =
-        NSLayoutAttributeRight;
-    [self.window addTitlebarAccessoryViewController:
-        self.assistantAccessoryController];
+    self.commandBarToggleButton.contentTintColor = self.theme.statusBarActiveForeground;
+    for (NSButton *b in @[self.commandBarToggleButton, self.assistantToggleButton]) {
+        [b.widthAnchor constraintEqualToConstant:28].active = YES;
+        [b.heightAnchor constraintEqualToConstant:28].active = YES;
+    }
+    NSStackView *toolbar = [NSStackView stackViewWithViews:@[self.workstationsButton, self.peerControlButton, self.commandBarToggleButton, self.assistantToggleButton]];
+    toolbar.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    toolbar.alignment = NSLayoutAttributeCenterY; toolbar.spacing = 8;
+    toolbar.detachesHiddenViews = YES;
+    toolbar.frame = NSMakeRect(0, 0, toolbar.fittingSize.width, 28);
+    self.assistantAccessoryController = [[NSTitlebarAccessoryViewController alloc] init];
+    self.assistantAccessoryController.view = toolbar;
+    self.assistantAccessoryController.layoutAttribute = NSLayoutAttributeRight;
+    [self.window addTitlebarAccessoryViewController:self.assistantAccessoryController];
 
     [self configureClaudeIntegration];
     self.claudeStatusBar = [[ClaudeStatusBar alloc]
@@ -3901,8 +3918,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     }
     NSRect bounds = self.workspaceView.bounds;
     CGFloat statusBarHeight = self.focusMode ? 0 : 28;
-    CGFloat ledgerBarHeight = TerminalDBCommandBarHeight(
-        self.focusMode, self.commandBarHidden);
+    CGFloat ledgerBarHeight = 0;
     // AppKit's unified tab bar overlaps the content edge slightly. Preserve a
     // compact optical inset so the ledger keyline clears that control.
     CGFloat titlebarInset =
@@ -3931,6 +3947,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     }
     CGFloat terminalWidth = utilityOverlaysTerminal
         ? bounds.size.width : MAX(1, bounds.size.width - paneWidth);
+    ledgerBarHeight = TerminalDBCommandBarHeight(self.focusMode, self.commandBarHidden, [self.ledgerBar preferredHeightForWidth:terminalWidth], self.ledgerBar.recoveryVisible);
     self.terminalScrollView.frame =
         NSMakeRect(0, statusBarHeight,
                    terminalWidth,
@@ -3968,7 +3985,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                 self.utilityPanelScrollView.contentView];
         }
     }
-    self.ledgerBar.hidden = self.focusMode || self.commandBarHidden;
+    self.ledgerBar.hidden = ledgerBarHeight <= 0;
     self.claudeStatusBar.hidden = self.focusMode;
     BOOL commandBarVisible = !self.focusMode && !self.commandBarHidden;
     NSString *commandBarSymbolName = commandBarVisible
@@ -4063,7 +4080,9 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     }
     host.assistantView.hidden = YES;
     host.utilityPanelUsesFullWidth = fullWidth;
-    host.utilityPanelMinimumContentHeight = MAX(1, view.frame.size.height);
+    // Tool panels adapt their internal scrolling regions to the viewport.
+    // Do not retain their original standalone-window height when embedded.
+    host.utilityPanelMinimumContentHeight = view == [host rootController].productWindowController.panelView ? 380 : MAX(1, view.frame.size.height);
     host.utilityPanelDismissHandler = dismissHandler;
     host.utilityPanelTitleLabel.stringValue = title.length > 0
         ? title : @"Control Panel";
@@ -5723,7 +5742,32 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 - (void)claudeStatusBar:(ClaudeStatusBar *)statusBar
        didSelectProfile:(ClaudeProfile *)profile {
     if (self.sessionClient) {
-        [self.sessionClient request:@"account.select" payload:@{@"accountId": profile.identifier ?: @""} completion:^(NSDictionary *result) {}];
+        __weak AppDelegate *weakSelf = self;
+        NSUInteger selectionGeneration = ++self.peerAccountSelectionGeneration;
+        NSWindow *selectionWindow = [self peerPresentationWindow];
+        __weak NSResponder *selectionFocus = selectionWindow.firstResponder;
+        AppDelegate *owner = self; while (owner.embeddedSplitOwner) owner = owner.embeddedSplitOwner;
+        owner.peerFocusedPane = self;
+        [self.sessionClient request:@"account.select" payload:@{@"accountId": profile.identifier ?: @""} completion:^(NSDictionary *result) {
+            AppDelegate *pane = weakSelf; if (!pane || !pane.window || pane.peerAccountSelectionGeneration != selectionGeneration) return;
+            if (!result[@"error"]) {
+                pane.selectedProfile = profile;
+                [statusBar selectProfile:profile];
+                [statusBar accountSelectionDidComplete:YES];
+                if (selectionWindow.isKeyWindow && owner.peerFocusedPane == pane && owner.utilityPanelView.hidden && selectionWindow.firstResponder == selectionFocus) [selectionWindow makeFirstResponder:pane.terminalView];
+                return;
+            }
+            [statusBar accountSelectionDidComplete:NO];
+            BOOL busy = [result[@"code"] isEqual:@"session-busy"];
+            NSAlert *alert = [[NSAlert alloc] init];
+            alert.messageText = busy ? @"This terminal is busy" : [result[@"uncertain"] boolValue] ? @"Account change unconfirmed" : @"Account unavailable";
+            alert.informativeText = [NSString stringWithFormat:@"%@\n\nSession on %@.", result[@"error"], [pane peerWorkstationLabel]];
+            [alert addButtonWithTitle:busy ? @"Open New Tab with This Account" : @"OK"];
+            if (busy) [alert addButtonWithTitle:@"Cancel"];
+            [alert beginSheetModalForWindow:[pane peerPresentationWindow] completionHandler:^(NSModalResponse response) {
+                if (busy && response == NSAlertFirstButtonReturn) [pane openPeerAccountTab:profile.identifier login:NO];
+            }];
+        }];
         return;
     }
     pid_t foregroundProcessGroup =
@@ -5738,10 +5782,12 @@ static BOOL TerminalDBReapShell(pid_t pid) {
              "with.";
         [alert runModal];
         [statusBar selectProfile:self.selectedProfile];
+        [statusBar accountSelectionDidComplete:NO];
         return;
     }
 
     self.selectedProfile = profile;
+    [statusBar selectProfile:profile];
     [self.profileManager setLastSelectedProfile:profile];
     if (profile != nil) {
         [self.profileManager prepareRuntimeFilesForProfile:profile];
@@ -5752,10 +5798,11 @@ static BOOL TerminalDBReapShell(pid_t pid) {
             isEqualToString:ClaudeAIProviderSubscription]) {
         [self resetAssistantConversation];
     }
+    [statusBar accountSelectionDidComplete:YES];
 }
 
 - (void)claudeStatusBarDidRequestAddProfile:(ClaudeStatusBar *)statusBar {
-    if (TerminalDBUsesPeerSessions() && [[self rootController].peerPanel.peerInventory[@"accountPeers"] count] > 0) {
+    if (TerminalDBUsesPeerSessions()) {
         [self claudeStatusBar:statusBar didRequestSharedSignIn:nil];
         return;
     }
@@ -5853,6 +5900,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     while (host.embeddedSplitOwner != nil) {
         host = host.embeddedSplitOwner;
     }
+    host.peerFocusedPane = self;
     BOOL visualQA = [NSProcessInfo.processInfo.arguments
         containsObject:@"--visual-qa"];
     if (!visualQA) {
@@ -5867,7 +5915,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         [weakHost hideUtilityPanel:nil];
     };
     [host showUtilityPanelView:usageView
-                         title:@"Claude Accounts & Usage"
+                         title:@"Claude Accounts"
                      fullWidth:YES
     dismissHandler:^{
         [weakStatusBar didDismissUsagePanel];
@@ -6114,7 +6162,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         AppDelegate *shown = owner.peerFocusedPane ?: owner;
         NSString *title = shown.peerState[@"title"] ?: shown.peerStartDirectory.lastPathComponent ?: @"Terminal";
         owner.window.tab.title = [TDBWorkstationPresentation tabTitleForWorkstation:[shown peerWorkstationLabel] session:title];
-        owner.window.title = [@"TerminalDB — " stringByAppendingString:owner.window.tab.title];
+        owner.window.title = [@"TerminalDB — " stringByAppendingString:[TDBWorkstationPresentation displayName:title]];
         [shown refreshPeerToolbar];
         [owner refreshTabToolTip]; return;
     }
@@ -6650,9 +6698,11 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                 [NSData dataWithBytes:bytes length:length]];
         };
 
-    if (TerminalDBCommandBarHeight(NO, NO) != 132.0 ||
-        TerminalDBCommandBarHeight(NO, YES) != 0.0 ||
-        TerminalDBCommandBarHeight(YES, NO) != 0.0) {
+    if (TerminalDBCommandBarHeight(NO, NO, 44, NO) != 44 ||
+        TerminalDBCommandBarHeight(NO, YES, 44, NO) != 0 ||
+        TerminalDBCommandBarHeight(YES, NO, 44, NO) != 0 ||
+        TerminalDBCommandBarHeight(YES, YES, 80, YES) != 80 ||
+        ![TerminalLedgerBar runInterfaceSelfTests] || ![TDBAWSAccessPanel runInterfaceSelfTests] || ![TDBSharedAccountPanel runInterfaceSelfTests]) {
         fprintf(stderr, "FAIL collapsible command bar geometry\n");
         failures++;
     }
@@ -7525,7 +7575,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         failures++;
     }
 
-    if (![ClaudeStatusBar runUsageNormalizationSelfTests]) {
+    if (![ClaudeStatusBar runUsageNormalizationSelfTests] || ![ClaudeStatusBar runInterfaceSelfTests]) {
         fprintf(stderr,
                 "FAIL usage normalization and burn-rate forecasting\n");
         failures++;

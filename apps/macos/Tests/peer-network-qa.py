@@ -33,13 +33,15 @@ def main():
                 fakebin = root / "bin"; fakebin.mkdir()
                 fake = fakebin / "claude"
                 fake.write_text('''#!/usr/bin/env python3
-import os,sys,json,hashlib
+import os,sys,json,hashlib,time
 from pathlib import Path
 args=sys.argv[1:]
 if args[:1]==["--settings"]: args=args[2:]
 if args==["--version"]:
  print("999.0.0 (Claude Code)")
 elif args==["setup-token"]:
+ pause=Path(__file__).resolve().parent.parent/"pause-signin"
+ while pause.exists():time.sleep(0.02)
  print("tdb-test-"+"a"*96,flush=True)
 elif args==["verify-shared"]:
  token=os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
@@ -72,6 +74,14 @@ elif args[:2]==["auth","status"]:
             assert all(not discovered(i)["pairingReady"] and discovered(i)["name"] == "Nearby Mac" for i in range(2))
             checks += 1
             for manager in managers: assert "error" not in manager.request("peers.pairing.open")
+            old_generation = state(0)["pairingGeneration"]
+            restarted = managers[0].request("peers.pairing.open")
+            assert restarted["pairingGeneration"] > old_generation
+            stale_close = managers[0].request("peers.pairing.close", pairingGeneration=old_generation)
+            assert stale_close["pairingOpen"]
+            assert "error" in managers[0].request("peers.pair", service="tdb-"+fingerprints[1][:12], pairingGeneration=old_generation)
+            assert "error" in managers[0].request("peers.approve", candidate=str(uuid.uuid4()), fingerprint="0"*64, pairingGeneration=old_generation)
+            checks += 1
             wait_for(lambda: all(discovered(i)["pairingReady"] and discovered(i)["name"] != "Nearby Mac" for i in range(2)))
             checks += 1
             assert "error" not in managers[0].request("peers.pair", service="tdb-"+fingerprints[1][:12])
@@ -88,6 +98,17 @@ elif args[:2]==["auth","status"]:
             checks += 1
             assert "error" not in managers[0].request("peers.approve", candidate=candidates[0]["id"], fingerprint=fingerprints[1])
             assert not state(0)["peers"] and not state(1)["peers"]
+            checks += 1
+            old_candidate = candidates[0]["id"]
+            restarted = managers[0].request("peers.pairing.open")
+            assert not restarted["candidates"] and not restarted["peers"]
+            assert "error" in managers[0].request("peers.approve", candidate=old_candidate, fingerprint=fingerprints[1])
+            wait_for(lambda: not state(1)["candidates"])
+            assert "error" not in managers[0].request("peers.pair", service="tdb-"+fingerprints[1][:12])
+            wait_for(lambda: all(state(i)["candidates"] and state(i)["candidates"][0].get("ready") for i in range(2)))
+            candidates = [state(i)["candidates"][0] for i in range(2)]
+            assert not any(c.get("approvedHere") or c.get("approvedThere") for c in candidates)
+            assert "error" not in managers[0].request("peers.approve", candidate=candidates[0]["id"], fingerprint=fingerprints[1])
             checks += 1
             assert "error" not in managers[1].request("peers.approve", candidate=candidates[1]["id"], fingerprint=fingerprints[0])
             wait_for(lambda: all(state(i)["peers"] for i in range(2)))
@@ -138,6 +159,16 @@ elif args[:2]==["auth","status"]:
                 result = local.request("accounts.signIn.start", label=label, email=email,
                     organization="", plan="Max", executable=str(roots[0]/"bin/claude"), configDirectory=str(directory))
                 assert result.get("accepted")
+            pause = roots[0] / "pause-signin"; pause.touch()
+            sign_in("Pending synthetic", "pending@example.invalid")
+            assert local.request("accounts.catalog")["signInActive"]
+            assert "error" in local.request("accounts.signIn.start", label="Duplicate", email="duplicate@example.invalid")
+            assert local.request("accounts.catalog")["signInActive"]
+            assert local.request("accounts.signIn.cancel").get("accepted")
+            pause.unlink()
+            wait_for(lambda: not local.request("accounts.catalog")["signInActive"])
+            assert not catalog(local)
+            checks += 1
             sign_in("Synthetic Personal", "personal@example.invalid")
             wait_for(lambda: len(catalog(local))==1)
             account_id = catalog(local)[0]["id"]

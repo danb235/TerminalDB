@@ -7,6 +7,14 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Simplify the native terminal window, account selection and recovery controls;
+  make workstation context clear and management layouts fit narrow windows.
+- Clean up Mac pairing with explicit progress and timeout states, stable device
+  selection, separate test discovery and direct access to existing sessions.
+- Discover AWS profiles generically across Macs, preserve local aliases and
+  distinguish matching names that refer to different AWS identities.
+- Save Claude sharing changes automatically and keep account rows stable during
+  background updates, with clear selection failures and per-Mac availability.
 - Share selected AWS SSO and console-login profiles across approved Macs using
   expiring credentials, separate AWS sync controls, and native sign-in.
   Preserve original profiles and synchronize offline changes over LAN or VPN.
