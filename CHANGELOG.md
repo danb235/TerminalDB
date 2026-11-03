@@ -7,35 +7,106 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-- Simplify the native terminal window, account selection and recovery controls;
-  make workstation context clear and management layouts fit narrow windows.
-- Clean up Mac pairing with explicit progress and timeout states, stable device
-  selection, separate test discovery and direct access to existing sessions.
-- Discover AWS profiles generically across Macs, preserve local aliases and
-  distinguish matching names that refer to different AWS identities.
-- Save Claude sharing changes automatically and keep account rows stable during
-  background updates, with clear selection failures and per-Mac availability.
-- Share selected AWS SSO and console-login profiles across approved Macs using
-  expiring credentials, separate AWS sync controls, and native sign-in.
-  Preserve original profiles and synchronize offline changes over LAN or VPN.
-- Show one Claude account picker across approved Macs, with reusable sign-ins
-  stored in Keychain and explicit account-sync approval on both Macs. Accounts
-  added or removed offline sync automatically when LAN or VPN connectivity returns.
-- Keep account selection specific to each tab and its execution workstation;
-  simplify account rows while keeping usage and renewal under Usage & Settings.
-- Keep terminal connections open after temporary buffer pressure clears, reduce
-  account-usage work during typing, and keep input-review warnings visible.
-- Give background helpers separate macOS identities so opening and quitting
-  TerminalDB always targets its visible app, including after a macOS upgrade.
-- Replace browser terminals and TerminalDB cloud accounts with explicitly paired
-  native Macs connected directly over the LAN or your existing VPN, with saved
-  internal addresses and sleep/wake recovery. No public endpoints or forwarding.
-- Keep shells running in a per-user session helper when views close; add
-  workstation/session selection, shared viewing, Take Control and End Session.
-- Run terminal tools, history and Claude services on the selected workstation,
-  with controller fencing, bounded queues and visible uncertain-input recovery.
-- Remove the obsolete cloud/browser source and account bridge while preserving
-  the marketing site, updater, release automation and Claude integrations.
+## [0.6.5] - 2026-11-03
+
+TerminalDB now runs entirely in native macOS apps. Work across explicitly paired
+Macs on your LAN or your existing VPN, without a TerminalDB cloud account.
+
+**Upgrading from 0.5.x:** finish and save active work before installing; sessions
+owned by the old app end when it quits. Pair your Macs again in
+**Workstations → Add Mac** and approve the requested macOS background, Local
+Network and Keychain permissions. Existing cloud enrollment does not establish
+native device trust. Execution Macs must remain powered on, awake and logged in.
+
+### Added
+
+- Create terminals and reopen existing sessions on paired Macs from one native
+  interface. Save internal addresses for routed VPNs and reconnect after viewing
+  laptop sleep or network changes.
+- Keep terminal sessions running when their tabs or the app close. Multiple Macs
+  can view one session; **Take Control** transfers typing and terminal sizing,
+  while **End Session** explicitly stops the shell and its work. Sessions do not
+  survive execution-Mac logout, reboot or session-host failure.
+- Share reusable Claude Code sign-ins for model requests across explicitly
+  approved Macs, then choose an account for each terminal tab. Offline additions,
+  renewals and removals synchronize when the Macs reconnect. Ordinary local
+  Claude logins remain independent; an existing login needs a one-time reusable
+  sign-in to share it.
+- Share selected AWS SSO and console-login profiles using expiring access.
+  Detect supported profiles from each Mac's `~/.aws/config`, sign in with the
+  official AWS CLI, or share a current sign-in. Receiving Macs use an explicit
+  one-time profile mapping.
+
+### Changed
+
+- New tabs, new windows and private sessions start on **This Mac** immediately.
+  Choose another workstation explicitly; splits inherit their parent pane's Mac.
+- Run commands, Claude, assistant inspections, approved patches, history,
+  monitors, playbooks and project tools on the session's workstation. Keep
+  appearance and keyboard preferences local. Saved workspaces remember Mac and
+  session references; unavailable sessions restore as reconnectable views.
+  Files remain on their hosting Mac; automatic file synchronization is not added.
+- Give the terminal more space with a compact command bar, contextual control
+  and recovery actions, and clear workstation labels. Use one searchable
+  **Macs & Sessions** picker for new terminals and existing work.
+- Switch Claude accounts from a compact menu and return directly to typing after
+  the workstation confirms the change. A running command keeps its account;
+  selecting another account can open a new tab on the same Mac.
+- Use compact, aligned account rows, responsive tool panels, and automatically
+  saved Claude and AWS sharing settings. Keep detailed usage, renewal and
+  connection information available on demand.
+- Recognize AWS profiles by their provider, account and role identity rather
+  than their name. Preserve local aliases, distinguish same-named profiles that
+  access different identities, and require approval before replacing a profile
+  mapping. A managed receiving profile uses TerminalDB's **Sign In** action for
+  renewal; choosing another local name preserves its original AWS login command.
+
+### Fixed
+
+- Keep zsh command history in the user's configured history file rather than
+  temporary per-window configuration. Respect custom `HISTFILE` settings.
+- Keep terminal input responsive during output and account-usage refreshes.
+  Preserve ordered input, large pastes and terminal snapshots through temporary
+  buffer pressure and reconnects without unnecessarily dropping the connection.
+- Give the visible app and background helpers separate macOS identities so
+  launching, quitting and recovery target the correct process after an upgrade.
+- Clear stale discovery rows and fingerprints when pairing expires or restarts.
+  Show only ready candidates, preserve device selection, separate test discovery
+  from normal Macs, and offer **Open Terminal** when pairing finishes.
+- Explain unavailable accounts and failed account changes. Preserve the original
+  workstation when a busy session needs another account tab, and keep focus,
+  selection and scroll position stable during background updates.
+- Keep input-review and recovery messages visible while typing is blocked;
+  provide explicit recovery for ended or unavailable sessions and prevent old
+  pairing responses or approval state from carrying into a new attempt.
+
+### Removed
+
+- The browser terminal application, TerminalDB cloud-account and enrollment
+  flows, and AWS-backed terminal relay. Terminal connectivity uses direct LAN or
+  VPN routes; public terminal endpoints, router port forwarding and workstation
+  relaying are not supported. The marketing/download site, updater, release
+  automation and existing Claude integrations remain available.
+
+### Security
+
+- Require complete device-fingerprint comparison and approval on both Macs.
+  Connections use mutually authenticated TLS with pinned device identities;
+  device names and discovery advertisements do not establish trust.
+- Keep Claude and AWS sharing independently off until explicitly enabled on both
+  Macs. Approved Macs can forward received accounts and profiles through their
+  other explicitly approved sharing connections. Store reusable Claude sign-ins
+  and temporary AWS access in device-only Keychain items. AWS refresh tokens and
+  console-login device keys stay with their owning CLI; ordinary rotating Claude
+  credentials are not copied.
+- Fence session changes with the current controller generation. Uncertain input
+  remains blocked until the user reviews the terminal and is never automatically
+  replayed. Recovery reattaches to the original execution Mac.
+- Disabling sharing or removing a pairing stops future transfers; it cannot erase
+  offline copies or credentials already held by running processes. AWS access
+  retains its provider expiry. Revoke access with the provider when immediate
+  termination is required. Claude.ai connectors still need their normal local
+  sign-in.
 
 
 ## [0.5.6] - 2026-09-25

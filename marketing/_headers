@@ -4,19 +4,13 @@
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
   Cross-Origin-Opener-Policy: same-origin
   X-Frame-Options: DENY
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self'; frame-src https://app.terminaldb.app; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'
+  Content-Security-Policy: default-src 'none'; script-src 'none'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'none'
 
 /uploads/*
-  Cache-Control: public, max-age=604800
+  Cache-Control: public, max-age=300, must-revalidate
 
-/vendor/*
-  Cache-Control: public, max-age=31536000, immutable
-
-/support.js
-  Cache-Control: public, max-age=86400
-
-/account-status.js
-  Cache-Control: public, max-age=86400
+/styles.css
+  Cache-Control: public, max-age=300, must-revalidate
 
 /index.html
   Cache-Control: public, max-age=300, must-revalidate
