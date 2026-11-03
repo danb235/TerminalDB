@@ -62,6 +62,10 @@ account form. It does not collect credentials or simulate an actual sign-in.
 
 ## Deployment
 
+The current public site is [terminaldb.pages.dev](https://terminaldb.pages.dev/).
+The custom domain is not configured; custom-domain setup is separate from this
+website update, and no DNS changes are included.
+
 Cloudflare Pages serves `marketing` as its asset directory through the dedicated
 site workflow. Configure repository variable `CLOUDFLARE_PAGES_PROJECT` and the
 secrets `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. Deploying this static
