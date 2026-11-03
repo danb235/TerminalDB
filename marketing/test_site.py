@@ -100,7 +100,7 @@ def main() -> None:
 
     required_copy = [
         "Your Macs.", "One terminal", "workspace.", "New tabs open locally.",
-        "No TerminalDB cloud account is needed.", "through your own VPN",
+        "TerminalDB works without an account.", "through your own VPN",
         "complete fingerprints", "approve on both", "TLS 1.3",
         "End Session", "reboot, logout, or session-host failure",
         "Share Sign-In", "next Claude launch", "When LAN or VPN returns",

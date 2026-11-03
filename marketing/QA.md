@@ -35,8 +35,11 @@ native functionality.
 6. Inspect both native screenshots at full size. Confirm they show the release
    interface and only synthetic data. Alt text should describe the visible app,
    not an obsolete layout or a long transcription of account values.
-7. Read as a new user: a new tab starts on This Mac; another workstation is an
-   explicit choice; both pairing approvals and both account-sync approvals are
+7. Read every heading, description, FAQ, and metadata summary as a first-time
+   visitor. Copy uses the present tense, introduces the native terminal and its
+   core tools, and explains current benefits without migration history or
+   comparisons to former implementations. A new tab starts on This Mac; another
+   workstation is an explicit choice; both pairing approvals and both account-sync approvals are
    clear; LAN works without internet; away access uses the user's VPN. No public
    terminal ports, browser terminals, cloud account requirement, or security
    guarantee should be implied.
@@ -90,3 +93,34 @@ Not executed or still pending:
   must not be reported as visible passes.
 - Native application functionality and physical Mac/VPN scenarios are covered
   separately; this website pass does not substitute for those tests.
+
+## Present-tense product copy review
+
+Plan: read the introduction, privacy section, account FAQs, and page metadata as
+someone encountering TerminalDB for the first time. Check that the native
+terminal and its core tools lead the page, current capabilities use the present
+tense, and device/account approval, VPN, expiry, and installation boundaries
+remain clear. Inspect desktop and phone layouts and use the normal navigation
+and revised FAQ controls.
+
+Automated outcome:
+
+- `python3 marketing/test_site.py` passes after updating the existing account
+  boundary assertion to match the present-day account-free product description.
+
+Visible browser outcomes:
+
+- The introduction identifies the native terminal, command history, project
+  tools, and Claude assistance. The privacy section explains direct paired-Mac
+  connections over LAN or VPN. Both read without migration context.
+- At 1440, 390, and 320 pixel widths, the page has no horizontal overflow. The
+  hero and privacy copy wrap within their columns; Privacy navigation clears
+  the sticky header.
+- Both revised account FAQs open through their normal summary controls and
+  display the present-tense reconnect and token-sharing explanations.
+- Independent editorial review finds no past/future product narrative or
+  migration framing; the security and provider boundaries remain intact.
+
+This pass covers website copy and layout. Native application behavior and the
+broader accessibility/network-inspector scenarios are unchanged and are not
+claimed as newly executed here.

@@ -26,8 +26,12 @@ the [visible website QA plan](QA.md); they do not replace a browser pass.
 
 ## Product copy
 
-The page describes the shipped macOS app, rather than the retired browser remote
-stack. Workstation connections are direct over a LAN or an existing VPN. Pairing
+Write for a first-time visitor in the present tense. Lead with the native
+terminal, command history, project tools, and Claude assistance. Describe what
+people can do today; omit migration history, former implementations, release
+announcements, and comparisons to unfamiliar alternatives.
+
+Workstation connections are direct over a LAN or an existing VPN. Pairing
 is bilateral, and Claude and AWS sharing each require separate bilateral
 approval. Keep the distinction between ordinary local Claude sign-ins and shared
 reusable sign-ins. AWS shares selected temporary credentials, never a promise of
@@ -79,5 +83,5 @@ stable asset names without leaving the previous interface cached for a week.
 
 The page keeps TerminalDB's Graphite Ledger palette: graphite surfaces, cyan
 context, lime availability, restrained borders, and native system typography.
-It replaces the former exported interactive mockups with semantic HTML and local
-CSS, keeping the shipped app screenshots as the visual source of truth.
+Semantic HTML and local CSS support the layout, with native app screenshots
+as the visual source of truth.
