@@ -816,7 +816,7 @@ enum SharedAWSServiceTests {
         setenv("TERMINALDB_PEER_STATE_DIR", root.path, 1); setenv("TERMINALDB_AWS_QA_EXECUTABLE", fake.path, 1)
         let program = """
         #!/usr/bin/python3
-        import sys,json,datetime,os,time,configparser,hashlib
+        import sys,json,datetime,os,time,configparser,hashlib,fcntl
         from pathlib import Path
         args=sys.argv[1:]
         if (Path(os.environ['HOME'])/'capture-config').exists():
@@ -829,8 +829,12 @@ enum SharedAWSServiceTests {
                 time.sleep(8)
             generation=('-'+(Path(os.environ['HOME'])/'generation').read_text()) if (Path(os.environ['HOME'])/'generation').exists() else ''
             expiry=Path(os.environ['HOME'])/('expiration'+generation)
-            if not expiry.exists(): expiry.write_text((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(minutes=10)).isoformat())
-            print(json.dumps({'Version':1,'AccessKeyId':'tdb-test-access-key'+generation,'SecretAccessKey':'tdb-test-secret-key'+generation,'SessionToken':'tdb-test-session-token'+generation,'Expiration':expiry.read_text()}))
+            # Parallel role exports share one stable, fully written expiry per generation.
+            with (Path(os.environ['HOME'])/'expiration.lock').open('a') as lock:
+                fcntl.flock(lock.fileno(),fcntl.LOCK_EX)
+                if not expiry.exists(): expiry.write_text((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(minutes=10)).isoformat())
+                expiration=expiry.read_text()
+            print(json.dumps({'Version':1,'AccessKeyId':'tdb-test-access-key'+generation,'SecretAccessKey':'tdb-test-secret-key'+generation,'SessionToken':'tdb-test-session-token'+generation,'Expiration':expiration}))
         elif args[:2]==['sts','get-caller-identity']:
             config=configparser.RawConfigParser(); config.read(os.environ['AWS_CONFIG_FILE'])
             section=next(s for s in config.sections() if s.startswith('profile ') or s=='default')

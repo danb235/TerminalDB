@@ -6,6 +6,7 @@ QA; it never reads normal AWS configuration/caches or uses a real AWS process.
 Credential-process stdout is captured privately and never included in failures.
 """
 import configparser
+import hashlib
 import importlib.util
 import json
 import os
@@ -23,7 +24,7 @@ Client, wait_for = qa.Client, qa.wait_for
 
 
 FAKE_AWS = r'''#!/usr/bin/env python3
-import configparser, datetime, hashlib, json, os, shlex, subprocess, sys
+import configparser, datetime, fcntl, hashlib, json, os, shlex, subprocess, sys, uuid
 from pathlib import Path
 
 root = Path(__file__).resolve().parent.parent
@@ -50,25 +51,46 @@ def process_credentials():
         result = subprocess.run(command, env=os.environ, capture_output=True, timeout=55)
         assert result.returncode == 0 and len(result.stdout) < 32768
         return json.loads(result.stdout)
-    marker = root / "aws-fixture" / ("signed-in-" + hashlib.sha256(profile.encode()).hexdigest())
-    assert marker.exists()
+    if values.get("sso_session"):
+        cache = root / ".aws/sso/cache" / (hashlib.sha1(values["sso_session"].encode()).hexdigest() + ".json")
+        token = json.loads(cache.read_text())
+        assert token["accessToken"].startswith("tdb-test-")
+        assert datetime.datetime.fromisoformat(token["expiresAt"].replace("Z", "+00:00")) > datetime.datetime.now(datetime.timezone.utc)
+    else:
+        marker = root / "aws-fixture" / ("signed-in-" + hashlib.sha256(profile.encode()).hexdigest())
+        assert marker.exists()
     account, role = values["sso_account_id"], values["sso_role_name"]
     cache = root / "aws-fixture" / ("role-" + hashlib.sha256((account + role).encode()).hexdigest() + ".json")
-    if not cache.exists():
-        now = datetime.datetime.now(datetime.timezone.utc)
-        expiration = now + datetime.timedelta(minutes=30)
-        value = {"Version": 1,
-                 "AccessKeyId": "tdb-test-" + role + "-" + account,
-                 "SecretAccessKey": "tdb-test-secret-" + hashlib.sha256((account + role).encode()).hexdigest(),
-                 "SessionToken": "tdb-test-session-" + hashlib.sha256((role + account).encode()).hexdigest(),
-                 "Expiration": expiration.isoformat(timespec="milliseconds").replace("+00:00", "Z")}
-        cache.write_text(json.dumps(value)); cache.chmod(0o600)
-    return json.loads(cache.read_text())
+    # Concurrent alias exports share one role cache and one fixed expiration.
+    # Readers participate in the same lock, so no partial JSON is observable.
+    with (root / "aws-fixture/roles.lock").open("a") as lock:
+        os.chmod(lock.name, 0o600)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        if not cache.exists():
+            now = datetime.datetime.now(datetime.timezone.utc)
+            expiration = now + datetime.timedelta(minutes=30)
+            value = {"Version": 1,
+                     "AccessKeyId": "tdb-test-" + role + "-" + account,
+                     "SecretAccessKey": "tdb-test-secret-" + hashlib.sha256((account + role).encode()).hexdigest(),
+                     "SessionToken": "tdb-test-session-" + hashlib.sha256((role + account).encode()).hexdigest(),
+                     "Expiration": expiration.isoformat(timespec="milliseconds").replace("+00:00", "Z")}
+            cache.write_text(json.dumps(value)); cache.chmod(0o600)
+        return json.loads(cache.read_text())
 
 if args[:2] == ["sso", "login"] or args[:1] == ["login"]:
-    profile_values()
-    marker = root / "aws-fixture" / ("signed-in-" + hashlib.sha256(profile.encode()).hexdigest())
-    marker.write_text("ready"); marker.chmod(0o600)
+    if "--sso-session" in args:
+        session = args[args.index("--sso-session") + 1]
+        settings = parser["sso-session " + session]
+        cache = root / ".aws/sso/cache"
+        cache.mkdir(parents=True, mode=0o700, exist_ok=True)
+        token = cache / (hashlib.sha1(session.encode()).hexdigest() + ".json")
+        temporary = token.with_name(token.name + ".tmp-" + uuid.uuid4().hex)
+        temporary.write_text(json.dumps({"accessToken":"tdb-test-generic-audit-sso", "startUrl":settings["sso_start_url"], "region":settings["sso_region"], "expiresAt":(datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")})); temporary.chmod(0o600)
+        os.replace(temporary, token)
+    else:
+        profile_values()
+        marker = root / "aws-fixture" / ("signed-in-" + hashlib.sha256(profile.encode()).hexdigest())
+        marker.write_text("ready"); marker.chmod(0o600)
 elif args[:2] == ["configure", "export-credentials"]:
     print(json.dumps(process_credentials()))
 elif args[:2] == ["sts", "get-caller-identity"]:
@@ -318,10 +340,47 @@ def main():
             assert available(1, offline_id)  # Already copied temporary keys expire normally.
             checks += 1
 
-            for root in roots:
-                assert not (root / ".aws/sso/cache").exists()
+            # The sender owns its SSO login. Its token cache never reaches a
+            # receiving Mac that only uses shared temporary role credentials.
+            assert (roots[0] / ".aws/sso/cache").exists()
+            assert not (roots[1] / ".aws/sso/cache").exists()
             assert all(host.poll() is None for host in hosts)
             checks += 1
+            # A receiving Mac can already have a native profile with an
+            # expired local SSO login. Valid shared access remains independent
+            # of that login, including while the source is unreachable.
+            receiving_config = roots[1] / "aws-fixture/config"
+            receiving_config.write_text(receiving_config.read_text() + "\n[profile receiver-existing]\nsso_session = receiver-session\nsso_account_id = 123456789012\nsso_role_name = Auditor\nregion = us-east-1\n\n[sso-session receiver-session]\nsso_start_url = https://fixture.awsapps.com/start\nsso_region = us-east-1\n")
+            receiving_config.chmod(0o600)
+            for directory in [roots[1] / ".aws", roots[1] / ".aws/sso", roots[1] / ".aws/sso/cache"]:
+                directory.mkdir(mode=0o700, exist_ok=True)
+            local_cache = roots[1] / ".aws/sso/cache" / (hashlib.sha1(b"receiver-session").hexdigest() + ".json")
+            local_cache.write_text(json.dumps({"accessToken": "tdb-test-expired-local-sso", "startUrl": "https://fixture.awsapps.com/start", "region": "us-east-1", "expiresAt": "2020-01-01T00:00:00Z"}))
+            local_cache.chmod(0o600)
+            original_receiver = receiving_config.read_bytes()
+            original_local_cache = local_cache.read_bytes()
+            assert "error" in locals_[1].request("aws.use", profileId=offline_id, targetName="receiver-existing")
+            assert receiving_config.read_bytes() == original_receiver
+            checks += 1
+
+            assert "error" not in locals_[1].request("aws.use", profileId=offline_id, targetName="receiver-existing", replaceSource=True)
+            receiving_state = catalog(1)
+            assert receiving_state["authentication"][offline_id]["state"] == "expired"
+            shared = next(item for item in receiving_state["accounts"] if item["profileId"] == offline_id)
+            assert shared["available"] and not shared["local"]
+            received_command = run_private([str(roots[1] / "bin/aws"), "sts", "get-caller-identity", "--profile", "receiver-existing"], environment(roots[1]))
+            assert received_command.returncode == 0
+            assert json.loads(received_command.stdout).get("Account") == "123456789012"
+            assert local_cache.read_bytes() == original_local_cache
+            assert sorted(path.name for path in local_cache.parent.iterdir()) == [local_cache.name]
+            checks += 1
+
+            assert "error" not in locals_[1].request("aws.remove", profileId=offline_id)
+            assert receiving_config.read_bytes() == original_receiver
+            assert local_cache.read_bytes() == original_local_cache
+            assert launch(1, offline_id) is not None
+            checks += 1
+
             print(f"TerminalDB AWS native agent integration checks: {checks} passed")
         except (Exception, KeyboardInterrupt):
             # No repr/traceback: a failed subprocess/JSON assertion can retain

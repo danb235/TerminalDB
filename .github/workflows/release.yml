@@ -100,8 +100,14 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${RELEASE_TAG#v}"
+          RELEASE_BUILD_FLOOR="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' apps/macos/Info.plist)"
+          [[ "${RELEASE_BUILD_FLOOR}" =~ ^[1-9][0-9]*$ ]]
+          RELEASE_BUILD_NUMBER="${GITHUB_RUN_NUMBER}"
+          if (( RELEASE_BUILD_FLOOR > RELEASE_BUILD_NUMBER )); then
+            RELEASE_BUILD_NUMBER="${RELEASE_BUILD_FLOOR}"
+          fi
           TERMINALDB_VERSION="${VERSION}" \
-            TERMINALDB_BUILD="${GITHUB_RUN_NUMBER}" \
+            TERMINALDB_BUILD="${RELEASE_BUILD_NUMBER}" \
             "${RELEASE_BASH}" ./apps/macos/Scripts/build-app.sh release
 
           APP="apps/macos/build/TerminalDB.app"

@@ -10,7 +10,7 @@ APP_DIR="build/${APP_NAME}.app"
 CONTENTS_DIR="${APP_DIR}/Contents"
 BIN_PATH="${CONTENTS_DIR}/MacOS/${APP_NAME}"
 VERSION="${TERMINALDB_VERSION:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)}"
-BUILD_NUMBER="${TERMINALDB_BUILD:-${VERSION}}"
+BUILD_NUMBER="${TERMINALDB_BUILD:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Info.plist)}"
 
 if [[ "${CONFIGURATION}" == "debug" ]]; then
   SWIFT_OPTIMIZATION_FLAGS=(-Onone -g)

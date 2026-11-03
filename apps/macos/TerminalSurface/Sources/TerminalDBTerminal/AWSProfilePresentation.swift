@@ -25,6 +25,36 @@ struct AWSProfileAuthentication {
     var label: String { summary + (sessionName.map { " · " + $0 } ?? "") }
 }
 
+enum AWSProfileRowAction: Equatable {
+    case signIn, signInAgain, shareAccess, useSharedAccess, syncNow, refreshAccess
+    case review, ready, signingIn, refreshing
+
+    var title: String {
+        switch self {
+        case .signIn: return "Sign In"
+        case .signInAgain: return "Sign In Again"
+        case .shareAccess: return "Share Access"
+        case .useSharedAccess: return "Use on This Mac"
+        case .syncNow: return "Sync Now"
+        case .refreshAccess: return "Refresh Access"
+        case .review: return "Review…"
+        case .ready: return "Ready on This Mac"
+        case .signingIn: return "Signing In…"
+        case .refreshing: return "Refreshing…"
+        }
+    }
+}
+
+struct AWSProfileRowState {
+    var primaryAction: AWSProfileRowAction?
+    var secondaryAction: AWSProfileRowAction?
+    var authenticationText: String
+    var authenticationTooltip: String
+    var availabilityText: String
+    var needsAttention: Bool
+    var showsAuthentication: Bool
+}
+
 struct AWSProfilePresentation {
     var id: String
     var descriptor: AWSProfileDescriptor
@@ -44,6 +74,97 @@ struct AWSProfilePresentation {
         if descriptor.kind == "sso" { return [descriptor.accountID, descriptor.roleName].filter { !$0.isEmpty }.joined(separator: " · ") }
         let principal = descriptor.loginSession.split(separator: ":", maxSplits: 5).last.map(String.init) ?? ""
         return [descriptor.accountID, principal].filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    // Receiving profiles use the shared credential provider, including aliases
+    // whose original native sign-in is retained for restoration. That original
+    // browser token does not determine whether the mapped profile works.
+    func rowState(isSource: Bool, sourceStatus: String?, isSigningIn: Bool,
+                  now: Date = Date()) -> AWSProfileRowState {
+        let usable = available && (expiration.map { $0.isFinite && $0 > now.timeIntervalSince1970 } ?? false)
+        let receiving = isInstalled && !isSource
+        let sharedPresentation = receiving || (!isSource && (!hasLocalProfile || usable))
+        let providers = sourceNames.joined(separator: ", ")
+        let origin = providers.isEmpty ? "Shared access" : "From " + providers
+        let time = expiration.flatMap { value -> String? in
+            guard value.isFinite else { return nil }
+            return DateFormatter.localizedString(from: Date(timeIntervalSince1970: value), dateStyle: .none, timeStyle: .short)
+        }
+        var tooltip = authentication.label
+        if let value = authentication.expiration, value.isFinite {
+            tooltip += "\nSSO sign-in expires: " + DateFormatter.localizedString(from: Date(timeIntervalSince1970: value), dateStyle: .short, timeStyle: .short)
+        }
+        var state = AWSProfileRowState(primaryAction: nil, secondaryAction: nil,
+            authenticationText: authentication.summary, authenticationTooltip: tooltip,
+            availabilityText: sourceStatus ?? (hasLocalProfile && !isSource ? "Not shared" : status),
+            needsAttention: false, showsAuthentication: descriptor.kind == "sso" || sharedPresentation)
+
+        if sharedPresentation {
+            state.authenticationText = origin
+            state.authenticationTooltip = providers.isEmpty
+                ? "Shared AWS access can be used on this Mac without a local browser sign-in."
+                : "Shared AWS access is provided by " + providers + ". Commands run on this Mac. A local browser sign-in is optional."
+        }
+        if status == "Choose Account Again" {
+            state.primaryAction = .review
+            state.availabilityText = "Choose the shared account to use"
+            state.needsAttention = true
+            return state
+        }
+        if isSigningIn {
+            state.primaryAction = .signingIn
+            if usable, let time { state.availabilityText = "Access until " + time }
+            return state
+        }
+        if sharedPresentation {
+            if usable {
+                state.primaryAction = receiving ? .ready : .useSharedAccess
+                state.secondaryAction = !receiving && hasLocalProfile ? .shareAccess : nil
+                if let time { state.availabilityText = (receiving ? "Access until " : "Available until ") + time }
+            } else {
+                state.primaryAction = .syncNow
+                state.secondaryAction = .signIn
+                let expired = status == "Expired" || (expiration.map { $0.isFinite && $0 <= now.timeIntervalSince1970 } ?? false)
+                state.availabilityText = expired ? "Shared access expired" : "Waiting for shared access"
+                state.needsAttention = true
+            }
+            return state
+        }
+
+        let sourceNeedsSignIn = sourceStatus == "Sign in on this Mac to renew"
+        let localSSONeedsSignIn = descriptor.kind == "sso" && authentication.state != "current"
+        if usable, let time { state.availabilityText = "Access until " + time }
+        if isSource {
+            if sourceStatus == "Renewing…" {
+                state.primaryAction = .refreshing
+                state.availabilityText = "Updating access…"
+            } else if !hasLocalProfile && !isInstalled && usable {
+                // Signing in from received metadata can make this Mac a source
+                // before any CLI alias exists. Keep the setup action visible.
+                state.primaryAction = .useSharedAccess
+                state.secondaryAction = localSSONeedsSignIn ? .signIn : .refreshAccess
+                state.needsAttention = localSSONeedsSignIn
+            } else if localSSONeedsSignIn || (descriptor.kind != "sso" && sourceNeedsSignIn) {
+                state.primaryAction = .signIn
+                state.secondaryAction = .refreshAccess
+                state.needsAttention = true
+            } else {
+                state.primaryAction = .refreshAccess
+                state.secondaryAction = .signInAgain
+                if sourceNeedsSignIn || !usable {
+                    state.availabilityText = sourceNeedsSignIn ? "Access needs renewal" : state.availabilityText
+                    state.needsAttention = sourceNeedsSignIn
+                }
+            }
+        } else if descriptor.kind != "sso" || authentication.state == "current" {
+            state.primaryAction = .shareAccess
+            state.secondaryAction = descriptor.kind == "sso" ? .signInAgain : .signIn
+        } else {
+            state.primaryAction = .signIn
+            state.secondaryAction = .shareAccess
+            state.needsAttention = true
+        }
+        return state
     }
 
     static func rows(catalog: [String: Any]) -> [Self] {
