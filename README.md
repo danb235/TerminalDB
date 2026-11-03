@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <a href="https://terminaldb.app/">Website</a> ·
+  <a href="https://terminaldb.pages.dev/">Website</a> ·
   <a href="https://github.com/danb235/TerminalDB/releases/latest/download/TerminalDB-macOS.zip">Download for macOS</a> ·
   <a href="https://github.com/danb235/TerminalDB/releases/latest">Release notes and checksums</a>
 </p>
