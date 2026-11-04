@@ -126,3 +126,34 @@ Visible browser outcomes:
 This pass covers website copy and layout. Native application behavior and the
 broader accessibility/network-inspector scenarios are unchanged and are not
 claimed as newly executed here.
+
+## Product accuracy review, November 4, 2026
+
+Plan: compare every public claim with the current workstation, Claude account,
+and AWS sharing implementation. Review changed text at desktop and phone
+widths, follow AWS navigation, and open both revised FAQ disclosures through
+their normal controls. Keep this pass limited to marketing copy; the installed
+native release and running terminal sessions do not need replacement.
+
+Automated outcome:
+
+- `python3 marketing/test_site.py` and `git diff --check` pass. The existing
+  credential-boundary assertion now covers temporary AWS credentials, including
+  supported console-login credentials as well as SSO role credentials.
+
+Visible browser outcomes:
+
+- The live page matches the repository before editing. The terminal remains
+  the primary product message; requirements state Apple Silicon and macOS 13+.
+- In the local preview at desktop width and 390 pixels, the revised AWS section
+  wraps within its columns and the AWS navigation reaches the intended section.
+- The AWS and Claude sharing FAQs open through their normal disclosure controls.
+  AWS describes the current Sync Now and Sign In Here actions and distinguishes
+  an offline source Mac from connectivity to AWS. Claude explains restarting
+  after renewal. Sharing approval and provider expiry boundaries remain clear.
+- Independent source review confirms that renewing an SSO session applies to all
+  local profiles using that session; publication remains limited to selected
+  profiles. The privacy note includes AWS provider activity.
+
+Native functionality, physical networking, browser network inspection, and the
+broader accessibility matrix are not newly tested by this copy-only pass.

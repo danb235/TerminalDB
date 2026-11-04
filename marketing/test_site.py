@@ -105,7 +105,7 @@ def main() -> None:
         "End Session", "reboot, logout, or session-host failure",
         "Share Sign-In", "next Claude launch", "When LAN or VPN returns",
         "separately on both Macs", "~/.aws/config", "local alias",
-        "temporary role credentials", "until AWS expires it",
+        "temporary AWS credentials", "until AWS expires it",
         "Claude subscription", "Anthropic API key", "not notarized",
         "Apple Silicon (M1 or later)", "macOS 13+", "SHA-256",
         "0.6.7 or earlier", "one-time manual update",
