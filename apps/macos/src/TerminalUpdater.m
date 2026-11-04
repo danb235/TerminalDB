@@ -2,10 +2,30 @@
 #import "TerminalUpdater.h"
 
 #import <CommonCrypto/CommonDigest.h>
+#import <sys/stat.h>
 
 static NSString *const TerminalUpdaterLastCheckKey =
     @"TerminalDBUpdaterLastCheckAt";
 static NSTimeInterval const TerminalUpdaterCheckInterval = 24.0 * 60.0 * 60.0;
+
+static BOOL TerminalUpdaterHasRegularExecutable(NSURL *appURL,
+                                               NSString *relativePath) {
+    struct stat metadata;
+    NSString *path = appURL.path;
+    if (lstat(path.fileSystemRepresentation, &metadata) != 0 ||
+        !S_ISDIR(metadata.st_mode)) return NO;
+    NSArray<NSString *> *components = relativePath.pathComponents;
+    for (NSUInteger index = 0; index < components.count; index++) {
+        path = [path stringByAppendingPathComponent:components[index]];
+        if (lstat(path.fileSystemRepresentation, &metadata) != 0) return NO;
+        if (index + 1 == components.count) {
+            if (!S_ISREG(metadata.st_mode)) return NO;
+        } else if (!S_ISDIR(metadata.st_mode)) {
+            return NO;
+        }
+    }
+    return components.count > 0;
+}
 
 @implementation TerminalUpdateRelease
 @end
@@ -18,6 +38,10 @@ static NSTimeInterval const TerminalUpdaterCheckInterval = 24.0 * 60.0 * 60.0;
 @property(nonatomic, readwrite, getter=isDownloading) BOOL downloading;
 @property(nonatomic, strong, nullable) NSURL *activeUpdateDirectory;
 + (BOOL)hasRequiredArchitectures:(NSString *)output;
++ (NSArray<NSString *> *)requiredExecutablePaths;
+- (BOOL)validateAppleSiliconExecutablesAtURL:(NSURL *)appURL
+                                    error:(NSError **)error;
++ (BOOL)runPackageArchitectureSelfTests;
 @end
 
 @implementation TerminalUpdater
@@ -392,19 +416,7 @@ static NSTimeInterval const TerminalUpdaterCheckInterval = 24.0 * 60.0 * 60.0;
         }
         return nil;
     }
-    NSString *architectures = [self runTool:@"/usr/bin/lipo"
-        arguments:@[
-            [newApp.path stringByAppendingPathComponent:
-                @"Contents/MacOS/TerminalDB"],
-            @"-archs"] error:error];
-    if (architectures == nil) {
-        return nil;
-    }
-    if (![TerminalUpdater hasRequiredArchitectures:architectures]) {
-        if (error != NULL) {
-            *error = [self errorWithCode:25
-                message:@"The update must include both Apple Silicon and Intel binaries."];
-        }
+    if (![self validateAppleSiliconExecutablesAtURL:newApp error:error]) {
         return nil;
     }
     NSBundle *bundle = [NSBundle bundleWithURL:newApp];
@@ -421,6 +433,37 @@ static NSTimeInterval const TerminalUpdaterCheckInterval = 24.0 * 60.0 * 60.0;
         return nil;
     }
     return newApp;
+}
+
++ (NSArray<NSString *> *)requiredExecutablePaths {
+    return @[
+        @"Contents/MacOS/TerminalDB",
+        @"Contents/Library/LoginItems/TerminalDBSessionHost.app/Contents/MacOS/TerminalDBSessionHost",
+        @"Contents/Library/LoginItems/TerminalDBPeerAgent.app/Contents/MacOS/TerminalDBPeerAgent",
+    ];
+}
+
+- (BOOL)validateAppleSiliconExecutablesAtURL:(NSURL *)appURL
+                                    error:(NSError **)error {
+    for (NSString *relativePath in TerminalUpdater.requiredExecutablePaths) {
+        // Check only from the candidate bundle root downward, allowing normal
+        // system aliases outside it while refusing linked app components.
+        NSString *architectures = TerminalUpdaterHasRegularExecutable(appURL, relativePath)
+            ? [self runTool:@"/usr/bin/lipo"
+                arguments:@[[appURL.path stringByAppendingPathComponent:relativePath],
+                            @"-archs"] error:nil]
+            : nil;
+        if (architectures == nil ||
+            ![TerminalUpdater hasRequiredArchitectures:architectures]) {
+            if (error != NULL) {
+                *error = [self errorWithCode:25
+                    message:@"This update is not a complete Apple Silicon–only package. "
+                             "Download the latest TerminalDB for Apple Silicon and try again."];
+            }
+            return NO;
+        }
+    }
+    return YES;
 }
 
 - (NSData *)signingCertificateForApp:(NSURL *)appURL {
@@ -725,20 +768,93 @@ static NSTimeInterval const TerminalUpdaterCheckInterval = 24.0 * 60.0 * 60.0;
 }
 
 + (BOOL)hasRequiredArchitectures:(NSString *)output {
-    NSArray<NSString *> *parts = [output
-        componentsSeparatedByCharactersInSet:
-            NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    NSSet<NSString *> *architectures = [NSSet setWithArray:parts];
-    return [architectures containsObject:@"arm64"] &&
-           [architectures containsObject:@"x86_64"];
+    // lipo emits one architecture token for a thin executable. Requiring the
+    // exact token rejects Intel, universal, unexpected and malformed packages.
+    return [[output stringByTrimmingCharactersInSet:
+        NSCharacterSet.whitespaceAndNewlineCharacterSet] isEqualToString:@"arm64"];
+}
+
++ (BOOL)runPackageArchitectureSelfTests {
+    NSFileManager *files = NSFileManager.defaultManager;
+    NSURL *root = [NSURL fileURLWithPath:[NSTemporaryDirectory()
+        stringByAppendingPathComponent:[@"terminaldb-updater-architecture-"
+            stringByAppendingString:NSUUID.UUID.UUIDString]] isDirectory:YES];
+    NSURL *executable = NSBundle.mainBundle.executableURL;
+    if (executable == nil || ![files createDirectoryAtURL:root
+            withIntermediateDirectories:YES
+            attributes:@{NSFilePosixPermissions : @0700} error:nil]) {
+        return NO;
+    }
+    @try {
+        // Only the architecture validator sees this private temporary fixture.
+        // Its regular files use the test binary without modifying it. Copy
+        // when the checkout and temporary directory are on different volumes.
+        BOOL (^placeExecutable)(NSURL *) = ^BOOL(NSURL *destination) {
+            return [files linkItemAtURL:executable toURL:destination error:nil] ||
+                [files copyItemAtURL:executable toURL:destination error:nil];
+        };
+        for (NSString *path in self.requiredExecutablePaths) {
+            NSURL *destination = [root URLByAppendingPathComponent:path];
+            if (![files createDirectoryAtURL:destination.URLByDeletingLastPathComponent
+                    withIntermediateDirectories:YES attributes:nil error:nil] ||
+                !placeExecutable(destination)) {
+                return NO;
+            }
+        }
+        TerminalUpdater *updater = [[TerminalUpdater alloc]
+            initWithRepository:@"example/TerminalDB"];
+        if (![updater validateAppleSiliconExecutablesAtURL:root error:nil]) {
+            return NO;
+        }
+        for (NSString *path in self.requiredExecutablePaths) {
+            NSURL *missing = [root URLByAppendingPathComponent:path];
+            if (![files removeItemAtURL:missing error:nil]) return NO;
+            NSError *error = nil;
+            if ([updater validateAppleSiliconExecutablesAtURL:root error:&error] ||
+                error.code != 25 ||
+                ![error.localizedDescription containsString:@"Apple Silicon"]) {
+                return NO;
+            }
+            if (![files createSymbolicLinkAtURL:missing
+                    withDestinationURL:executable error:nil]) return NO;
+            if ([updater validateAppleSiliconExecutablesAtURL:root error:nil]) return NO;
+            if (![files removeItemAtURL:missing error:nil] ||
+                !placeExecutable(missing)) return NO;
+        }
+        for (NSString *path in @[@"Contents", @"Contents/MacOS",
+                @"Contents/Library/LoginItems"]) {
+            NSURL *original = [root URLByAppendingPathComponent:path];
+            NSURL *moved = [root URLByAppendingPathComponent:@"fixture-directory"];
+            if (![files moveItemAtURL:original toURL:moved error:nil] ||
+                ![files createSymbolicLinkAtURL:original
+                    withDestinationURL:moved error:nil]) return NO;
+            if ([updater validateAppleSiliconExecutablesAtURL:root error:nil]) return NO;
+            if (![files removeItemAtURL:original error:nil] ||
+                ![files moveItemAtURL:moved toURL:original error:nil]) return NO;
+        }
+        NSURL *linkedApp = [root URLByAppendingPathComponent:@"linked-app"];
+        if (![files createSymbolicLinkAtURL:linkedApp
+                withDestinationURL:root error:nil] ||
+            [updater validateAppleSiliconExecutablesAtURL:linkedApp error:nil]) return NO;
+        if (![files removeItemAtURL:linkedApp error:nil]) return NO;
+        return YES;
+    } @finally {
+        [files removeItemAtURL:root error:nil];
+    }
 }
 
 + (BOOL)runSelfTests {
-    if (![self hasRequiredArchitectures:@"x86_64 arm64\n"] ||
-        [self hasRequiredArchitectures:@"arm64\n"] ||
-        [self hasRequiredArchitectures:@"x86_64\n"]) {
+    if (![self hasRequiredArchitectures:@"arm64\n"] ||
+        ![self hasRequiredArchitectures:@" \tarm64 \r\n"]) {
         return NO;
     }
+    for (NSString *unsupported in @[@"", @" \n", @"x86_64\n",
+            @"x86_64 arm64\n", @"arm64 x86_64\n", @"arm64e\n",
+            @"arm64 unknown\n", @"arm64 arm64\n", @"arm64,x86_64",
+            @"Architectures in the fat file: arm64"]) {
+        if ([self hasRequiredArchitectures:unsupported]) return NO;
+    }
+    if (![self runPackageArchitectureSelfTests]) return NO;
     if (![self isVersion:@"0.1.1" newerThan:@"0.1.0"] ||
         ![self isVersion:@"1.0.0" newerThan:@"0.99.99"] ||
         [self isVersion:@"0.1.0" newerThan:@"0.1.0"] ||
@@ -748,9 +864,13 @@ static NSTimeInterval const TerminalUpdaterCheckInterval = 24.0 * 60.0 * 60.0;
     NSString *hash =
         @"0123456789abcdef0123456789abcdef"
          "0123456789abcdef0123456789abcdef";
+    // Versioned historical and Apple Silicon archives must never substitute
+    // their checksums for the exact stable asset downloaded by the updater.
     NSString *checksums = [NSString stringWithFormat:
         @"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff  "
          "TerminalDB-v0.1.0-macOS-universal.zip\n"
+         "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee  "
+         "TerminalDB-v0.6.8-macOS-arm64.zip\n"
          "%@  TerminalDB-macOS.zip\n", hash];
     if (![[self checksumForAssetNamed:@"TerminalDB-macOS.zip"
                               contents:checksums] isEqualToString:hash] ||

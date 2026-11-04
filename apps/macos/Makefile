@@ -25,13 +25,14 @@ all: $(BIN)
 
 SURFACE_SOURCES := $(wildcard TerminalSurface/Sources/TerminalDBTerminal/*.swift)
 SURFACE_BUILD := Scripts/patch-terminal-parser.py Scripts/prepare-terminal-package.sh $(wildcard TerminalSurface/Patches/*.swift) Scripts/build-terminal-surface.sh TerminalSurface/Package.swift TerminalSurface/Package.resolved
+SURFACE_SCRATCH := TerminalSurface/.build/terminaldb-arm64
 
 $(BIN): $(SOURCES) $(HEADERS) $(HELPER_RESOURCES) Info.plist Makefile $(FONT_RESOURCES) $(LICENSE_RESOURCES) $(SCRIPT_RESOURCES) $(ICON_RESOURCE) $(SURFACE_SOURCES) $(SURFACE_BUILD) Scripts/build-app.sh
-	TERMINALDB_NATIVE_ONLY=1 ./Scripts/build-app.sh debug
+	./Scripts/build-app.sh debug
 
 test-surface:
-	./Scripts/prepare-terminal-package.sh TerminalSurface/.build
-	xcrun swift run --build-system native --package-path TerminalSurface -c release TerminalSurfaceTests
+	./Scripts/prepare-terminal-package.sh "$(SURFACE_SCRATCH)"
+	xcrun swift run --build-system native --package-path TerminalSurface --scratch-path "$(SURFACE_SCRATCH)" --arch arm64 --configuration release TerminalSurfaceTests
 
 run: all
 	open $(APP)

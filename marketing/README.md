@@ -43,10 +43,16 @@ remain awake and logged in. Session continuity does not survive session-host
 failure, logout, or reboot. Do not claim universal connectivity, provider
 endorsement, automatic file synchronization, or absolute security.
 
-All download buttons use the latest stable universal GitHub asset. The current
-build requires macOS 13 or later, supports Apple Silicon and Intel, and is not
+All download buttons use the latest stable `TerminalDB-macOS.zip` GitHub asset.
+The current build requires an Apple Silicon Mac (M1 or later) running macOS 13
+or later and is not
 notarized. Keep that installation caveat visible near the primary download and
 in the installation instructions until the release process changes.
+
+Keep the one-time manual update from 0.6.7 and earlier in the download/install
+instructions, separate from the hero. Those versions' updaters expect a
+universal bundle and cannot install the current Apple Silicon app. Do not
+introduce an intermediate download or change the stable URL.
 
 ## Product screenshots
 

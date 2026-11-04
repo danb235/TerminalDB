@@ -14,7 +14,7 @@ delivery promise.
 - isolated management for multiple Claude subscription accounts
 - usage display for session, weekly, and model specific limits
 - playbooks, workspaces, environments, monitors, splits, and private sessions
-- universal macOS build, checksums, and GitHub release automation
+- Apple Silicon builds for M1 and later Macs on macOS 13+, checksums, and GitHub release automation
 
 ## Near term
 

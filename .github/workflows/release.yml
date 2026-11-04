@@ -28,6 +28,11 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
 
+      - name: Verify Apple Silicon runner
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == "arm64" ]]
+
       - name: Validate release tag
         run: |
           set -euo pipefail
@@ -115,11 +120,11 @@ jobs:
           AGENT="${APP}/Contents/Library/LoginItems/TerminalDBPeerAgent.app/Contents/MacOS/TerminalDBPeerAgent"
           HOST="${APP}/Contents/Library/LoginItems/TerminalDBSessionHost.app/Contents/MacOS/TerminalDBSessionHost"
           codesign --verify --deep --strict --verbose=2 "${APP}"
-          lipo "${BIN}" -verify_arch arm64 x86_64
-          lipo "${AGENT}" -verify_arch arm64 x86_64
-          lipo "${HOST}" -verify_arch arm64 x86_64
+          for EXECUTABLE in "${BIN}" "${AGENT}" "${HOST}"; do
+            [[ "$(lipo -archs "${EXECUTABLE}")" == "arm64" ]]
+          done
 
-          VERSIONED_ZIP="TerminalDB-${RELEASE_TAG}-macOS-universal.zip"
+          VERSIONED_ZIP="TerminalDB-${RELEASE_TAG}-macOS-arm64.zip"
           STABLE_ZIP="TerminalDB-macOS.zip"
           CHECKSUM_FILE="TerminalDB-${RELEASE_TAG}-SHA256.txt"
 
@@ -141,6 +146,8 @@ jobs:
             ' CHANGELOG.md
             echo ""
             echo "### Install"
+            echo ""
+            echo "Requires Apple Silicon (M1 or later) and macOS 13 or later."
             echo ""
             echo "1. Download \`${VERSIONED_ZIP}\`."
             echo "2. Unzip it and move **TerminalDB.app** to \`/Applications\`."
