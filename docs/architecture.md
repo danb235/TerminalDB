@@ -78,8 +78,14 @@ uses:
 validates and deploys it independently from the app.
 
 `.github/workflows/release.yml` validates version tags, runs native tests,
-builds a universal bundle, applies the configured stable identity, publishes
+builds an `arm64` bundle for Apple Silicon Macs (M1 or later) on macOS 13 or
+later, applies the configured stable identity, publishes
 SHA 256 checksums, and creates a GitHub release.
+
+The app and both bundled helpers contain only Apple Silicon code. The stable
+download remains `TerminalDB-macOS.zip`; versioned assets identify `arm64`.
+Versions 0.6.7 and earlier need a one-time manual update because their updater
+requires a universal bundle. See [manual update steps](build.md#updating-from-067-or-earlier).
 
 ## Persistent native workstation sessions
 

@@ -107,7 +107,8 @@ def main() -> None:
         "separately on both Macs", "~/.aws/config", "local alias",
         "temporary role credentials", "until AWS expires it",
         "Claude subscription", "Anthropic API key", "not notarized",
-        "Apple Silicon + Intel", "macOS 13+", "SHA-256",
+        "Apple Silicon (M1 or later)", "macOS 13+", "SHA-256",
+        "0.6.7 or earlier", "one-time manual update",
     ]
     for fragment in required_copy:
         check(fragment in visible, f"missing product boundary or feature: {fragment}")
@@ -117,12 +118,17 @@ def main() -> None:
         "data-omelette-injected", "__om_srcmap", "/Users/daniel", "danny@", "tkdan",
         "100% secure", "arrives in the next", "releases/download/v0.", "releases/tag/v0.",
         "stelao", "guideline", "192.168.",
+        "Apple Silicon + Intel", "universal download", "macOS-universal.zip", "x86_64",
     ]:
         check(fragment.lower() not in html.lower(), f"obsolete, private, or user-specific content: {fragment}")
     check("app.terminaldb.app" not in headers and "auth.terminaldb.app" not in headers, "obsolete cloud endpoint in headers")
 
     downloads = [link for link in parser.links if "releases/latest/download/" in link]
-    check(len(downloads) == 3 and set(downloads) == {DOWNLOAD}, "download CTAs must all use the latest stable universal asset")
+    check(len(downloads) == 3 and set(downloads) == {DOWNLOAD}, "download CTAs must all use the latest stable asset")
+    download_start = html.find('id="download"')
+    faq_start = html.find('id="faq"')
+    check("0.6.7 or earlier" in html[download_start:faq_start], "manual update guidance must be in the download instructions")
+    check("0.6.7 or earlier" not in html[:download_start], "upgrade history must stay out of the primary product introduction")
     for href in parser.links:
         check(bool(href), "empty link destination")
         parsed = urlparse(href)

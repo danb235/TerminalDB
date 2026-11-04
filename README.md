@@ -10,6 +10,7 @@
 
 <p align="center">
   <img alt="macOS 13+" src="https://img.shields.io/badge/macOS-13%2B-22262b">
+  <img alt="Apple Silicon M1 or later" src="https://img.shields.io/badge/Apple_Silicon-M1_or_later-22262b">
   <img alt="Objective-C" src="https://img.shields.io/badge/Objective--C-AppKit-52d0dd">
   <img alt="Build with Make" src="https://img.shields.io/badge/build-make-b4e34d">
   <img alt="Project status: alpha" src="https://img.shields.io/badge/status-alpha-e5b454">
@@ -177,7 +178,7 @@ monitoring surfaces:
 
 ## Requirements
 
-- macOS 13 Ventura or newer
+- An Apple Silicon Mac (M1 or later) running macOS 13 Ventura or newer
 - Apple Command Line Tools
 - `zsh` as the interactive shell
 - At least one AI provider:
@@ -216,9 +217,15 @@ runtime, notarization, and a release-specific bundle/version process.
 
 Release builds check GitHub once per day and on demand from
 **TerminalDB → Check for Updates…**. Before replacing the app, TerminalDB
-verifies the published SHA 256 checksum, archive paths, universal
-architectures, bundle identifier, version, code signature, and the signing
+verifies the published SHA 256 checksum, archive paths, the Apple Silicon
+architecture of the app and its helpers, bundle identifier, version, code signature, and the signing
 certificate used by the installed release.
+
+**Updating from 0.6.7 or earlier:** install the [latest download](https://github.com/danb235/TerminalDB/releases/latest/download/TerminalDB-macOS.zip)
+manually once. The updater in those versions expects a universal app and cannot
+install the current Apple Silicon download. Finish active terminal work, quit
+TerminalDB, and replace your copy in Applications. In-app updates work from the
+new version. See the [manual update steps](docs/build.md#updating-from-067-or-earlier).
 
 ### Work across your Macs
 

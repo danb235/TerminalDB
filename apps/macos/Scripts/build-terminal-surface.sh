@@ -5,6 +5,10 @@ cd "$(dirname "$0")/.."
 arch="${1:?architecture required}"
 destination="${2:?output executable required}"
 configuration="${3:-release}"
+if [[ "${arch}" != "arm64" ]]; then
+  echo "TerminalDB supports Apple Silicon builds only (arm64)." >&2
+  exit 1
+fi
 package="TerminalSurface"
 scratch="${package}/.build/terminaldb-${arch}"
 objects="build/terminal-surface/${arch}"
@@ -52,8 +56,7 @@ xcrun swiftc -target "${arch}-apple-macosx13.0" \
   -Xlinker -ObjC -lc++ -framework AppKit -framework Foundation \
   -framework CoreImage -framework LocalAuthentication \
   -o "${destination}"
-# SPM's resource files are read-only. Both architecture slices use the same
-# resources; copy once rather than trying to overwrite the first slice's bundle.
+# SPM's resource files are read-only. Copy them into the assembled app once.
 if [[ ! -d build/TerminalDB.app/Contents/Resources/SwiftTerm_SwiftTerm.bundle ]]; then
   cp -R "${package_bin}/SwiftTerm_SwiftTerm.bundle" build/TerminalDB.app/Contents/Resources/
   cp "${scratch}/checkouts/SwiftTerm/LICENSE" \

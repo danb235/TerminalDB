@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and assemble a universal TerminalDB.app without requiring Xcode.
+# Build and assemble an Apple Silicon TerminalDB.app without requiring Xcode.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -11,12 +11,6 @@ CONTENTS_DIR="${APP_DIR}/Contents"
 BIN_PATH="${CONTENTS_DIR}/MacOS/${APP_NAME}"
 VERSION="${TERMINALDB_VERSION:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)}"
 BUILD_NUMBER="${TERMINALDB_BUILD:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Info.plist)}"
-
-if [[ "${CONFIGURATION}" == "debug" ]]; then
-  SWIFT_OPTIMIZATION_FLAGS=(-Onone -g)
-else
-  SWIFT_OPTIMIZATION_FLAGS=(-O)
-fi
 
 if [[ -d "${APP_DIR}" ]]; then
   /bin/rm -r "${APP_DIR}"
@@ -45,16 +39,7 @@ chmod 755 "${CONTENTS_DIR}/Resources/Scripts/"*.sh
   -c "Set :CFBundleVersion ${BUILD_NUMBER}" \
   "${CONTENTS_DIR}/Info.plist"
 
-architectures=(arm64 x86_64)
-if [[ "${TERMINALDB_NATIVE_ONLY:-0}" == "1" ]]; then architectures=("$(uname -m)"); fi
-app_slices=()
-for arch in "${architectures[@]}"; do
-  slice="${BIN_PATH}.${arch}"
-  ./Scripts/build-terminal-surface.sh "${arch}" "${slice}" "${CONFIGURATION}"
-  app_slices+=("${slice}")
-
-done
-lipo -create "${app_slices[@]}" -output "${BIN_PATH}"
+./Scripts/build-terminal-surface.sh arm64 "${BIN_PATH}" "${CONFIGURATION}"
 for helper in TerminalDBSessionHost TerminalDBPeerAgent; do
   helper_contents="${CONTENTS_DIR}/Library/LoginItems/${helper}.app/Contents"
   mkdir -p "${helper_contents}/MacOS"
@@ -67,7 +52,6 @@ for helper in TerminalDBSessionHost TerminalDBPeerAgent; do
   # visible app's bundle URL or identity.
   /usr/bin/ditto "${CONTENTS_DIR}/Resources" "${helper_contents}/Resources"
 done
-rm "${app_slices[@]}"
 chmod 755 "${BIN_PATH}"
 
 IDENTITY_CN="TerminalDB Self-Signed"
@@ -95,9 +79,14 @@ for component in TerminalDBSessionHost TerminalDBPeerAgent TerminalDB; do
 done
 
 codesign --verify --deep --strict --verbose=2 "${APP_DIR}"
-lipo "${BIN_PATH}" -verify_arch "${architectures[@]}"
-lipo "${CONTENTS_DIR}/Library/LoginItems/TerminalDBSessionHost.app/Contents/MacOS/TerminalDBSessionHost" -verify_arch "${architectures[@]}"
-lipo "${CONTENTS_DIR}/Library/LoginItems/TerminalDBPeerAgent.app/Contents/MacOS/TerminalDBPeerAgent" -verify_arch "${architectures[@]}"
+for executable in "${BIN_PATH}" \
+  "${CONTENTS_DIR}/Library/LoginItems/TerminalDBSessionHost.app/Contents/MacOS/TerminalDBSessionHost" \
+  "${CONTENTS_DIR}/Library/LoginItems/TerminalDBPeerAgent.app/Contents/MacOS/TerminalDBPeerAgent"; do
+  if [[ "$(lipo -archs "${executable}")" != "arm64" ]]; then
+    echo "Expected an arm64-only executable: ${executable}" >&2
+    exit 1
+  fi
+done
 
 echo "Built ${APP_DIR}"
 echo "Version: ${VERSION}"

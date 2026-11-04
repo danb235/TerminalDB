@@ -7,6 +7,26 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.8] - 2026-11-03
+
+### Changed
+
+- Build TerminalDB and its background helpers exclusively for Apple Silicon
+  (M1 or later). Release builds retain optimized native code and macOS 13+
+  compatibility, with smaller downloads and no Intel or Rosetta components.
+- Validate the Apple Silicon architecture of the app and both background
+  helpers before installing an update.
+
+### Removed
+
+- Intel Mac support.
+
+**Updating from 0.6.7 or earlier:** download the latest ZIP from the release
+page, finish and save active terminal work, quit TerminalDB and replace the app
+in Applications. Older in-app updaters require a universal package and cannot
+install this Apple Silicon-only update. Settings and paired-device identities
+are preserved; subsequent updates use the in-app updater normally.
+
 ## [0.6.7] - 2026-11-03
 
 ### Changed

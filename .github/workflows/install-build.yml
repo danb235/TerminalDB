@@ -23,6 +23,11 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
+      - name: Verify Apple Silicon runner
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == "arm64" ]]
+
       - name: Verify trusted source and app version
         id: version
         env:
@@ -98,7 +103,7 @@ jobs:
           "${INSTALL_BASH}" -c '(( BASH_VERSINFO[0] >= 5 ))'
           printf 'INSTALL_BASH=%s\n' "${INSTALL_BASH}" >> "${GITHUB_ENV}"
 
-      - name: Build and verify universal installation bundle
+      - name: Build and verify Apple Silicon installation bundle
         env:
           INSTALL_VERSION: ${{ steps.version.outputs.version }}
           INSTALL_BUILD: ${{ steps.version.outputs.build }}
@@ -115,7 +120,7 @@ jobs:
             codesign -dv --verbose=4 "${BUNDLE}" 2>&1 |
               grep -F 'Authority=TerminalDB Self-Signed' >/dev/null
             EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "${BUNDLE}/Contents/Info.plist")"
-            lipo "${BUNDLE}/Contents/MacOS/${EXECUTABLE}" -verify_arch arm64 x86_64
+            [[ "$(lipo -archs "${BUNDLE}/Contents/MacOS/${EXECUTABLE}")" == "arm64" ]]
             [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${BUNDLE}/Contents/Info.plist")" == "${INSTALL_VERSION}" ]]
             [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "${BUNDLE}/Contents/Info.plist")" == "${INSTALL_BUILD}" ]]
           done

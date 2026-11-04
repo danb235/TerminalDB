@@ -31,10 +31,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Verify Apple Silicon runner
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == "arm64" ]]
+
       - name: Build and test
         run: make test-ci
 
-      - name: Build universal release bundle
+      - name: Build Apple Silicon release bundle
         env:
           TERMINALDB_VERSION: 0.1.0
           TERMINALDB_BUILD: ci
@@ -48,8 +53,8 @@ jobs:
           AGENT="${APP}/Contents/Library/LoginItems/TerminalDBPeerAgent.app/Contents/MacOS/TerminalDBPeerAgent"
           HOST="${APP}/Contents/Library/LoginItems/TerminalDBSessionHost.app/Contents/MacOS/TerminalDBSessionHost"
           codesign --verify --deep --strict --verbose=2 "${APP}"
-          lipo "${BIN}" -verify_arch arm64 x86_64
-          lipo "${AGENT}" -verify_arch arm64 x86_64
-          lipo "${HOST}" -verify_arch arm64 x86_64
+          for EXECUTABLE in "${BIN}" "${AGENT}" "${HOST}"; do
+            [[ "$(lipo -archs "${EXECUTABLE}")" == "arm64" ]]
+          done
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${APP}/Contents/Info.plist")" = "0.1.0"
           test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "${APP}/Contents/Info.plist")" = "13.0"

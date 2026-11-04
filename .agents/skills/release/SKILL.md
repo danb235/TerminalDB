@@ -9,8 +9,8 @@ description: >-
 # Release TerminalDB
 
 A pushed `vX.Y.Z` tag triggers `.github/workflows/release.yml`. The workflow
-runs the full test suite, builds one universal macOS application containing
-Apple Silicon and Intel architectures, signs it with the stable self signed
+runs the full test suite, builds one Apple Silicon macOS application containing
+only `arm64` code in the app and both bundled helpers, signs it with the stable self signed
 identity when configured, verifies the bundle, creates versioned and stable
 ZIP files, and publishes a GitHub release.
 
@@ -27,8 +27,9 @@ Stop with a clear explanation if any condition fails:
 - `gh auth status` succeeds.
 - `make test` passes locally.
 - `make test-ci` passes without requiring an interactive desktop session.
-- `./apps/macos/Scripts/build-app.sh release` produces a universal binary containing
-  `arm64` and `x86_64`.
+- `./apps/macos/Scripts/build-app.sh release` produces the app and both bundled
+  helpers containing exactly `arm64`, with a macOS 13 minimum. Verify every
+  Mach-O file in the bundle; Apple Silicon Macs with M1 or later are supported.
 
 Never tag a broken, dirty, or divergent working tree.
 
@@ -49,6 +50,11 @@ git diff --stat LAST_TAG..HEAD
 
 Read the `Unreleased` section of `CHANGELOG.md` and reconcile it against the
 commits so no user facing change is missed.
+
+For the Apple Silicon download, explain the one-time manual update from 0.6.7
+and earlier in the release/install instructions: those updaters require a
+universal bundle. Keep the stable download URL unchanged. Publish no Intel or
+intermediate bridge artifact.
 
 ## 3. Select the version
 
@@ -117,10 +123,11 @@ gh run watch RUN_ID --exit-status
 On success, verify:
 
 - The release is visible publicly.
-- The versioned universal ZIP exists.
+- The versioned `TerminalDB-vX.Y.Z-macOS-arm64.zip` exists.
 - `TerminalDB-macOS.zip` resolves from the latest release URL.
 - The checksum file exists.
-- The downloaded bundle contains both architectures.
+- Every Mach-O file in the downloaded app and both helpers contains exactly
+  `arm64`; no Intel slice is present. Their minimum macOS version remains 13.
 
 On failure, report the failing step with:
 

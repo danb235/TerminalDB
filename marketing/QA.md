@@ -47,9 +47,11 @@ native functionality.
    syncs on return to approved Macs. Ordinary local sign-ins need Share Sign-In.
    AWS profiles are detected generically, collisions offer aliases, and cached
    access expires unless renewed. Unpairing cannot revoke copies already issued.
-9. Confirm download requirements are visible: macOS 13+, Apple Silicon and Intel,
+9. Confirm download requirements are visible: macOS 13+, Apple Silicon (M1 or later),
    not notarized, GitHub source and checksum verification, and first-launch
-   instructions. Do not imply that the app has completed Developer ID notarization.
+   instructions. The download steps explain the one-time manual update from
+   0.6.7 or earlier, away from the hero, and retain the stable ZIP URL. Do not
+   imply that the app has completed Developer ID notarization.
 10. With browser network inspection, reload and expand FAQ disclosures. The page
     should request only its own HTML, CSS, favicon, and two screenshots. It should
     make no analytics, font CDN, script, account, or terminal connection requests.
