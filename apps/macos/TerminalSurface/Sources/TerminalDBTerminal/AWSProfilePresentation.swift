@@ -25,9 +25,34 @@ struct AWSProfileAuthentication {
     var label: String { summary + (sessionName.map { " · " + $0 } ?? "") }
 }
 
+struct AWSSourceCheck {
+    let state: String
+    let checkedAt: Double?
+    let expiration: Double?
+    let needsSharedRenewal: Bool
+    init(_ value: [String: Any]? = nil) {
+        let candidate = value?["state"] as? String ?? "notChecked"
+        state = ["ready", "checking", "signInRequired", "networkUnavailable", "accessDenied", "checkFailed"].contains(candidate) ? candidate : "notChecked"
+        checkedAt = value?["checkedAt"] as? Double
+        expiration = value?["expiresAt"] as? Double
+        needsSharedRenewal = value?["needsSharedRenewal"] as? Bool == true
+    }
+    var guidance: String {
+        switch state {
+        case "ready": return "Access is ready."
+        case "checking": return "Checking access…"
+        case "signInRequired": return "AWS requires a new sign-in to renew access."
+        case "networkUnavailable": return "AWS could not be reached. Check this Mac’s internet connection."
+        case "accessDenied": return "AWS denied access to this account or role. Check its permissions."
+        case "checkFailed": return "Access could not be checked. Try Check Access again."
+        default: return "Access has not been checked yet."
+        }
+    }
+}
+
 enum AWSProfileRowAction: Equatable {
     case signIn, signInAgain, shareAccess, useSharedAccess, syncNow, refreshAccess
-    case review, ready, signingIn, refreshing
+    case review, ready, signingIn, refreshing, accessDenied, checkFailed, networkUnavailable
 
     var title: String {
         switch self {
@@ -38,9 +63,12 @@ enum AWSProfileRowAction: Equatable {
         case .syncNow: return "Sync Now"
         case .refreshAccess: return "Refresh Access"
         case .review: return "Review…"
-        case .ready: return "Ready on This Mac"
+        case .ready: return "Ready"
         case .signingIn: return "Signing In…"
-        case .refreshing: return "Refreshing…"
+        case .refreshing: return "Checking…"
+        case .accessDenied: return "Access denied"
+        case .checkFailed: return "Check failed"
+        case .networkUnavailable: return "Can’t reach AWS"
         }
     }
 }
@@ -66,6 +94,7 @@ struct AWSProfilePresentation {
     var expiration: Double?
     var status: String
     var authentication: AWSProfileAuthentication
+    var sourceCheck = AWSSourceCheck()
 
     var name: String { installedNames.first ?? localNames.first ?? descriptor.name }
     var hasLocalProfile: Bool { !localNames.isEmpty }
@@ -76,94 +105,88 @@ struct AWSProfilePresentation {
         return [descriptor.accountID, principal].filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
-    // Receiving profiles use the shared credential provider, including aliases
-    // whose original native sign-in is retained for restoration. That original
-    // browser token does not determine whether the mapped profile works.
+    func usableExpiration(now: Date = Date()) -> Double? {
+        let candidates = [available ? expiration : nil, !isInstalled && hasLocalProfile ? sourceCheck.expiration : nil].compactMap { $0 }
+        return candidates.filter { $0.isFinite && $0 > now.timeIntervalSince1970 }.max()
+    }
+
+    // Only a provider-confirmed authentication failure requires another login.
+    // OAuth token-cache timestamps do not establish whether renewal can work.
     func rowState(isSource: Bool, sourceStatus: String?, isSigningIn: Bool,
                   now: Date = Date()) -> AWSProfileRowState {
-        let usable = available && (expiration.map { $0.isFinite && $0 > now.timeIntervalSince1970 } ?? false)
-        let receiving = isInstalled && !isSource
-        let sharedPresentation = receiving || (!isSource && (!hasLocalProfile || usable))
+        let usable = usableExpiration(now: now) != nil
+        let receiver = isInstalled && !isSource
+        let shared = !isSource && (!hasLocalProfile || receiver || available)
         let providers = sourceNames.joined(separator: ", ")
-        let origin = providers.isEmpty ? "Shared access" : "From " + providers
-        let time = expiration.flatMap { value -> String? in
-            guard value.isFinite else { return nil }
-            return DateFormatter.localizedString(from: Date(timeIntervalSince1970: value), dateStyle: .none, timeStyle: .short)
-        }
-        var tooltip = authentication.label
-        if let value = authentication.expiration, value.isFinite {
-            tooltip += "\nSSO sign-in expires: " + DateFormatter.localizedString(from: Date(timeIntervalSince1970: value), dateStyle: .short, timeStyle: .short)
-        }
+        let context = isSource ? "Shared from This Mac" : shared ? (providers.isEmpty ? "Shared access" : "From " + providers) : "On This Mac"
         var state = AWSProfileRowState(primaryAction: nil, secondaryAction: nil,
-            authenticationText: authentication.summary, authenticationTooltip: tooltip,
-            availabilityText: sourceStatus ?? (hasLocalProfile && !isSource ? "Not shared" : status),
-            needsAttention: false, showsAuthentication: descriptor.kind == "sso" || sharedPresentation)
-
-        if sharedPresentation {
-            state.authenticationText = origin
-            state.authenticationTooltip = providers.isEmpty
-                ? "Shared AWS access can be used on this Mac without a local browser sign-in."
-                : "Shared AWS access is provided by " + providers + ". Commands run on this Mac. A local browser sign-in is optional."
-        }
+            authenticationText: context, authenticationTooltip: shared
+                ? "Shared AWS access runs on this Mac. Its providing Mac renews it when connected."
+                : isSource ? "This Mac renews and shares the profiles you select." : "This profile is configured on this Mac. Sharing is optional.",
+            availabilityText: "Not checked", needsAttention: false, showsAuthentication: true)
         if status == "Choose Account Again" {
-            state.primaryAction = .review
-            state.availabilityText = "Choose the shared account to use"
+            state.primaryAction = .review; state.availabilityText = "Choose the shared account to use"; state.needsAttention = true
+            return state
+        }
+        if isSigningIn { state.primaryAction = .signingIn; state.availabilityText = ""; return state }
+        if shared && sourceCheck.needsSharedRenewal && !usable {
+            state.primaryAction = .syncNow; state.availabilityText = "Waiting for shared access"; state.needsAttention = true
+            return state
+        }
+        let incomingRecovery = !isSource && !isInstalled && hasLocalProfile && available &&
+            (expiration.map { $0.isFinite && $0 > now.timeIntervalSince1970 } ?? false)
+        if !incomingRecovery && !sourceCheck.needsSharedRenewal && (sourceCheck.state == "accessDenied" || sourceCheck.state == "checkFailed") {
+            state.primaryAction = sourceCheck.state == "accessDenied" ? .accessDenied : .checkFailed
+            state.availabilityText = sourceCheck.state == "accessDenied" ? "Review this role’s permissions in Details" : "Open Details to check access again"
             state.needsAttention = true
-            return state
-        }
-        if isSigningIn {
-            state.primaryAction = .signingIn
-            if usable, let time { state.availabilityText = "Access until " + time }
-            return state
-        }
-        if sharedPresentation {
-            if usable {
-                state.primaryAction = receiving ? .ready : .useSharedAccess
-                state.secondaryAction = !receiving && hasLocalProfile ? .shareAccess : nil
-                if let time { state.availabilityText = (receiving ? "Access until " : "Available until ") + time }
-            } else {
-                state.primaryAction = .syncNow
-                state.secondaryAction = .signIn
-                let expired = status == "Expired" || (expiration.map { $0.isFinite && $0 <= now.timeIntervalSince1970 } ?? false)
-                state.availabilityText = expired ? "Shared access expired" : "Waiting for shared access"
-                state.needsAttention = true
-            }
             return state
         }
 
-        let sourceNeedsSignIn = sourceStatus == "Sign in on this Mac to renew"
-        let localSSONeedsSignIn = descriptor.kind == "sso" && authentication.state != "current"
-        if usable, let time { state.availabilityText = "Access until " + time }
-        if isSource {
-            if sourceStatus == "Renewing…" {
-                state.primaryAction = .refreshing
-                state.availabilityText = "Updating access…"
-            } else if !hasLocalProfile && !isInstalled && usable {
-                // Signing in from received metadata can make this Mac a source
-                // before any CLI alias exists. Keep the setup action visible.
+        if usable {
+            if !isInstalled && (shared || !hasLocalProfile) {
                 state.primaryAction = .useSharedAccess
-                state.secondaryAction = localSSONeedsSignIn ? .signIn : .refreshAccess
-                state.needsAttention = localSSONeedsSignIn
-            } else if localSSONeedsSignIn || (descriptor.kind != "sso" && sourceNeedsSignIn) {
-                state.primaryAction = .signIn
-                state.secondaryAction = .refreshAccess
-                state.needsAttention = true
+                state.availabilityText = "Ready to use"
+            } else if !isSource && !receiver {
+                state.primaryAction = .shareAccess
+                state.availabilityText = "Ready · Not shared"
             } else {
-                state.primaryAction = .refreshAccess
-                state.secondaryAction = .signInAgain
-                if sourceNeedsSignIn || !usable {
-                    state.availabilityText = sourceNeedsSignIn ? "Access needs renewal" : state.availabilityText
-                    state.needsAttention = sourceNeedsSignIn
-                }
+                state.primaryAction = .ready
+                state.availabilityText = isSource ? "Renews automatically" : "Updates automatically when connected"
             }
-        } else if descriptor.kind != "sso" || authentication.state == "current" {
-            state.primaryAction = .shareAccess
-            state.secondaryAction = descriptor.kind == "sso" ? .signInAgain : .signIn
-        } else {
-            state.primaryAction = .signIn
-            state.secondaryAction = .shareAccess
-            state.needsAttention = true
+            if shared && !receiver && hasLocalProfile { state.secondaryAction = .shareAccess }
+            if !shared || isSource {
+                switch sourceCheck.state {
+                case "signInRequired": state.secondaryAction = .signIn; state.availabilityText = "Sign in to keep renewal working"; state.needsAttention = true
+                case "networkUnavailable": state.availabilityText = "Waiting for internet to renew"; state.needsAttention = true
+                case "accessDenied": state.availabilityText = "AWS denied renewal · Details"; state.needsAttention = true
+                case "checkFailed": state.availabilityText = "Renewal needs attention · Details"; state.needsAttention = true
+                default: break
+                }
+            } else if sourceCheck.state == "networkUnavailable" {
+                state.availabilityText = "Last check couldn’t reach AWS"; state.needsAttention = true
+            }
+            return state
         }
+        if shared {
+            state.primaryAction = .syncNow
+            state.availabilityText = "Waiting for shared access"
+            state.needsAttention = true
+            return state
+        }
+        switch sourceCheck.state {
+        case "signInRequired":
+            state.primaryAction = .signIn; state.secondaryAction = !isSource && hasLocalProfile ? .shareAccess : nil
+            state.availabilityText = "Sign-in needed"; state.needsAttention = true
+        case "checking":
+            state.primaryAction = isSource ? .refreshing : .shareAccess
+            state.availabilityText = isSource ? "" : "Checking access…"
+        case "networkUnavailable": state.availabilityText = "Waiting for internet"; state.needsAttention = true
+        case "accessDenied": state.availabilityText = "AWS access denied · Details"; state.needsAttention = true
+        case "checkFailed": state.availabilityText = "Couldn’t check access · Details"; state.needsAttention = true
+        default: break
+        }
+        if sourceCheck.state == "networkUnavailable" { state.primaryAction = .networkUnavailable }
+        if !isSource && state.primaryAction == nil { state.primaryAction = .shareAccess }
         return state
     }
 
@@ -174,6 +197,7 @@ struct AWSProfilePresentation {
         let shared = catalog["accounts"] as? [[String: Any]] ?? []
         let installed = catalog["installed"] as? [[String: Any]] ?? []
         let authentication = catalog["authentication"] as? [String: [String: Any]] ?? [:]
+        let checks = catalog["sourceChecks"] as? [String: [String: Any]] ?? [:]
         var candidates: [String: [AWSProfileDescriptor]] = [:]
         for local in locals { candidates[local.id, default: []].append(local) }
         for profile in profiles { candidates[profile.id, default: []].append(profile) }
@@ -194,7 +218,7 @@ struct AWSProfilePresentation {
                         available: account?["available"] as? Bool == true,
                         expiration: account?["expires"] as? Double,
                         status: account?["status"] as? String ?? "Not shared",
-                        authentication: AWSProfileAuthentication(authentication[id]))
+                        authentication: AWSProfileAuthentication(authentication[id]), sourceCheck: AWSSourceCheck(checks[id]))
         }.sorted { a, b in a.name == b.name ? before(a.identitySummary, b.identitySummary) : before(a.name, b.name) }
     }
 

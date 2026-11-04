@@ -7,13 +7,18 @@ private final class SharedAWSCommand {
     private let queue: DispatchQueue
     private let task = Process()
     private var reader: DispatchSourceRead?
+    private var errorReader: DispatchSourceRead?
     private var deadline: DispatchSourceTimer?
     private var output = Data()
+    private var errorOutput = Data()
     private var descriptor: Int32 = -1
+    private var errorDescriptor: Int32 = -1
     private var completed = false
     private var callback: ((Result<Data, Error>) -> Void)?
     private var pipe: Pipe?
+    private var errorPipe: Pipe?
     private let maximumOutput = 65_536
+    private let maximumErrorOutput = 16_384
 
     init(queue: DispatchQueue) { self.queue = queue }
 
@@ -24,12 +29,22 @@ private final class SharedAWSCommand {
         task.executableURL = executable; task.arguments = arguments
         task.environment = environment
         task.standardInput = FileHandle.nullDevice
-        task.standardError = FileHandle.nullDevice
+        let errors = Pipe(); errorPipe = errors
+        errorDescriptor = errors.fileHandleForReading.fileDescriptor
+        guard fcntl(errorDescriptor, F_SETFL, fcntl(errorDescriptor, F_GETFL) | O_NONBLOCK) == 0 else {
+            callback = nil; finish(.failure(SharedAWSCommandFailure(state: .checkFailed)))
+            throw SharedAWSCommandFailure(state: .checkFailed)
+        }
+        task.standardError = errors
+        let errorSource = DispatchSource.makeReadSource(fileDescriptor: errorDescriptor, queue: queue)
+        errorSource.setEventHandler { [weak self] in self?.drainErrors() }
+        errorReader = errorSource; errorSource.resume()
         if capture {
             let channel = Pipe(); pipe = channel
             descriptor = channel.fileHandleForReading.fileDescriptor
             guard fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL) | O_NONBLOCK) == 0 else {
-                throw PeerFailure("AWS credentials could not be read privately.")
+                callback = nil; finish(.failure(SharedAWSCommandFailure(state: .checkFailed)))
+                throw SharedAWSCommandFailure(state: .checkFailed)
             }
             task.standardOutput = channel
             let source = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: queue)
@@ -39,32 +54,47 @@ private final class SharedAWSCommand {
         task.terminationHandler = { [weak self] _ in
             guard let self else { return }
             self.queue.async {
-                self.drain()
+                self.drain(); self.drainErrors()
                 guard !self.completed else { return }
                 if self.task.terminationStatus == 0 { self.finish(.success(self.output)) }
-                else { self.finish(.failure(PeerFailure("AWS sign-in is unavailable. Sign in on this Mac, then try again."))) }
+                else { self.finish(.failure(SharedAWSCommandFailure.classify(self.errorOutput))) }
             }
         }
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + timeout)
         timer.setEventHandler { [weak self] in
-            self?.finish(.failure(PeerFailure("AWS did not finish in time. Check your connection and try again.")))
+            self?.finish(.failure(SharedAWSCommandFailure(state: .networkUnavailable)))
         }
         deadline = timer; timer.resume()
         do { try task.run() }
-        catch { callback = nil; finish(.failure(PeerFailure("The installed AWS CLI could not start."))); throw PeerFailure("The installed AWS CLI could not start.") }
+        catch { callback = nil; finish(.failure(SharedAWSCommandFailure(state: .checkFailed))); throw SharedAWSCommandFailure(state: .checkFailed) }
     }
 
     private func drain() {
         guard descriptor >= 0, !completed else { return }
         var bytes = [UInt8](repeating: 0, count: 4096)
+        defer { bytes.withUnsafeMutableBytes { $0.initializeMemory(as: UInt8.self, repeating: 0) } }
         for _ in 0..<32 {
             let count = Darwin.read(descriptor, &bytes, bytes.count)
             guard count > 0 else { break }
             guard output.count + count <= maximumOutput else {
-                finish(.failure(PeerFailure("AWS returned an invalid credential response."))); return
+                finish(.failure(SharedAWSCommandFailure(state: .checkFailed))); return
             }
             output.append(contentsOf: bytes.prefix(count))
+        }
+    }
+
+    private func drainErrors() {
+        guard errorDescriptor >= 0, !completed else { return }
+        var bytes = [UInt8](repeating: 0, count: 4096)
+        defer { bytes.withUnsafeMutableBytes { $0.initializeMemory(as: UInt8.self, repeating: 0) } }
+        for _ in 0..<32 {
+            let count = Darwin.read(errorDescriptor, &bytes, bytes.count)
+            guard count > 0 else { break }
+            guard errorOutput.count + count <= maximumErrorOutput else {
+                finish(.failure(SharedAWSCommandFailure(state: .checkFailed))); return
+            }
+            errorOutput.append(contentsOf: bytes.prefix(count))
         }
     }
 
@@ -72,7 +102,9 @@ private final class SharedAWSCommand {
         guard !completed else { return }; completed = true
         deadline?.cancel(); deadline = nil
         reader?.cancel(); reader = nil; descriptor = -1
+        errorReader?.cancel(); errorReader = nil; errorDescriptor = -1
         try? pipe?.fileHandleForReading.close(); try? pipe?.fileHandleForWriting.close(); pipe = nil
+        try? errorPipe?.fileHandleForReading.close(); try? errorPipe?.fileHandleForWriting.close(); errorPipe = nil
         if task.isRunning {
             task.terminate()
             let process = task
@@ -81,9 +113,10 @@ private final class SharedAWSCommand {
             }
         }
         output.resetBytes(in: 0..<output.count); output.removeAll()
+        errorOutput.resetBytes(in: 0..<errorOutput.count); errorOutput.removeAll()
         let completion = callback; callback = nil; completion?(result)
     }
-    func cancel() { finish(.failure(PeerFailure("AWS sign-in cancelled."))) }
+    func cancel() { finish(.failure(SharedAWSCommandFailure(state: .checkFailed))) }
 }
 
 private enum SharedAWSCLI {
@@ -210,6 +243,7 @@ final class SharedAWSService {
     private var signInRenewalGeneration: UInt64 = 0
     private var phase = ""
     private var sourceStatus: [String: String] = [:]
+    private var sourceChecks: [String: SharedAWSAccessCheck] = [:]
     private static let maximumLocalSources = 16
     var changed: (() -> Void)?
 
@@ -252,7 +286,18 @@ final class SharedAWSService {
                 }
                 switch operation {
                 case "aws.catalog": reply(try self.catalog())
-                case "aws.check": reply(["accepted": true])
+                case "aws.check":
+                    let profile = try self.profile(payload)
+                    let receiving = try self.configuration.installations().contains(where: { $0.descriptor.id == profile.id })
+                    let configured = try self.configuration.discover().contains(where: { $0 == profile })
+                    guard self.document.sources[profile.id] == nil,
+                          receiving || configured else {
+                        throw PeerFailure("Check a local AWS profile, or use the shared profile's access controls.")
+                    }
+                    let manual = payload["manual"] as? Bool == true
+                    let accepted = self.checkLocal(profile, manual: manual, receiving: receiving)
+                    if manual && !accepted { throw PeerFailure("AWS is checking other profiles. Try Check Access again in a moment.") }
+                    reply(["accepted": accepted])
                 case "aws.sync.digest": reply(["digest": try self.store.digest()])
                 case "aws.sync.export": reply(["bundle": try self.store.exportBundle()])
                 case "aws.sync.import":
@@ -290,6 +335,10 @@ final class SharedAWSService {
                     let previousInstallation = try self.configuration.installations().first { $0.targetName == target }
                     let installation = try self.configuration.install(profile, targetName: target, launcherPath: TDBSharedAWS.launcherPath,
                                                                       allowReplacingSource: payload["replaceSource"] as? Bool == true)
+                    if operation == "aws.use" {
+                        self.cancelRefresh(profile.id)
+                        self.sourceChecks.removeValue(forKey: profile.id)
+                    }
                     if operation == "aws.share" {
                         do {
                             let changed = try self.saveSource(profile)
@@ -314,8 +363,9 @@ final class SharedAWSService {
                     let sessionKey = try self.sessionKey(for: profile)
                     self.signInRenewalGeneration &+= 1
                     let renewalGeneration = self.signInRenewalGeneration
-                    for source in Array(self.document.sources.values) where source.descriptor.id == profile.id || (sessionKey != nil && (try? self.sessionKey(for: source.descriptor)) == sessionKey) {
-                        self.cancelRefresh(source.descriptor.id)
+                    for candidate in try self.localProfiles() where candidate.id == profile.id || (sessionKey != nil && (try? self.sessionKey(for: candidate)) == sessionKey) {
+                        self.cancelRefresh(candidate.id)
+                        self.sourceChecks.removeValue(forKey: candidate.id)
                     }
                     guard self.jobs.count < 4 else {
                         throw PeerFailure("AWS is renewing other profiles. Try Sign In again in a moment.")
@@ -382,7 +432,10 @@ final class SharedAWSService {
                     self.phase = "AWS sign-in cancelled. Existing cached profile access is kept until it expires."; self.notify(); reply(["accepted": true])
                 case "aws.refresh":
                     if let id = payload["profileId"] as? String {
-                        guard self.document.sources[id] != nil else { throw PeerFailure("Sign in on this Mac to renew this AWS profile.") }
+                        guard let source = self.document.sources[id] else { throw PeerFailure("Sign in on this Mac to renew this AWS profile.") }
+                        guard !self.isSigningIn(source.descriptor) else { throw PeerFailure("Complete or cancel this AWS sign-in before checking access.") }
+                        if self.renewing.contains(id) { reply(["accepted": true]); return }
+                        guard self.jobs.count < 4 else { throw PeerFailure("AWS is checking other profiles. Try Check Access again in a moment.") }
                         self.refresh(id, manual: true)
                     } else { self.refreshEligible(manual: true) }
                     reply(["accepted": true])
@@ -394,6 +447,7 @@ final class SharedAWSService {
                     catch { self.document.sources[profile.id] = previous; throw error }
                     try self.store.withdraw(profile.id)
                     self.sourceStatus.removeValue(forKey: profile.id)
+                    self.sourceChecks.removeValue(forKey: profile.id)
                     self.cancelRefresh(profile.id)
                     var incomplete = false
                     for installation in try self.configuration.installations() where installation.descriptor.id == profile.id {
@@ -517,6 +571,7 @@ final class SharedAWSService {
     }
     private func catalog() throws -> [String: Any] {
         let local = try localProfiles()
+        pruneChecks(keeping: Set(local.map(\.id) + (try configuration.installations()).map { $0.descriptor.id }))
         let profiles = try local.map { try JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) }
         var authentication: [String: [String: Any]] = [:]
         for profile in local where authentication[profile.id] == nil { authentication[profile.id] = configuration.authenticationStatus(for: profile) }
@@ -524,12 +579,29 @@ final class SharedAWSService {
             ["profileId": $0.descriptor.id, "targetName": $0.targetName, "source": document.sources[$0.descriptor.id] != nil,
              "descriptor": try JSONSerialization.jsonObject(with: JSONEncoder().encode($0.descriptor))]
         }
-        return ["profiles": profiles, "accounts": try store.catalog(), "installed": installed,
+        let accounts = try store.catalog()
+        // Reuse the catalog's already-resolved metadata; never read another
+        // credential copy merely to discard an obsolete check. A newly arrived
+        // copy resolves prior unavailability, and a changed expiration belongs
+        // to a different access result. Same-expiry permission failures stay.
+        let receivers = Set(installed.compactMap { item -> String? in
+            guard let id = item["profileId"] as? String, document.sources[id] == nil else { return nil }
+            return id
+        })
+        for account in accounts where account["available"] as? Bool == true {
+            guard let id = account["profileId"] as? String, receivers.contains(id),
+                  let check = sourceChecks[id], let expiry = account["expires"] as? Double else { continue }
+            if check.needsSharedRenewal || check.expiresAt.map({ abs($0 - expiry) > 0.001 }) == true {
+                sourceChecks.removeValue(forKey: id)
+            }
+        }
+        return ["profiles": profiles, "accounts": accounts, "installed": installed,
                 "configuredProfileIDs": Array(Set(try configuration.discover().map(\.id))).sorted(),
                 "localProfileNames": try configuration.configuredNames(),
                 "phase": phase, "sourceStatus": sourceStatus, "signInProfile": signInProfile ?? "",
                 "signInProfiles": Array(Set(local.filter { isSigningIn($0) }.map(\.id))).sorted(),
                 "authentication": authentication,
+                "sourceChecks": sourceChecks.mapValues(\.metadata),
                 "sources": document.sources.keys.sorted()]
     }
     private func notify() { DispatchQueue.main.async { self.changed?() } }
@@ -545,12 +617,59 @@ final class SharedAWSService {
         let now = Date().timeIntervalSince1970
         guard manual || source.lastExpiry <= now + 300 else { completion?(); return }
         guard manual || !source.failed || now < source.lastAttempt || now - source.lastAttempt >= 300 else { completion?(); return }
-        renewing.insert(id)
         document.sources[id]?.lastAttempt = now
-        sourceStatus[id] = "Renewing…"
         try? save()
+        performCheck(source.descriptor, publish: true, completion: completion)
+    }
+    // An ordinary local profile can be checked without enrolling it, creating
+    // a provider mapping, publishing access, or starting a browser sign-in.
+    // First-open callers reuse recent outcomes before consuming a CLI job slot.
+    private func checkLocal(_ profile: AWSProfileDescriptor, manual: Bool, receiving: Bool = false) -> Bool {
+        let now = Date().timeIntervalSince1970
+        if !manual, let previous = sourceChecks[profile.id], previous.checkedAt <= now {
+            let ttl: Double = previous.state == .ready ? 60 : 300
+            if now - previous.checkedAt < ttl { return true }
+        }
+        if renewing.contains(profile.id) { return true }
+        guard !isSigningIn(profile), jobs.count < 4 else { return false }
+        if sourceChecks.count >= 256,
+           let oldest = sourceChecks.filter({ document.sources[$0.key] == nil && !renewing.contains($0.key) }).min(by: { $0.value.checkedAt < $1.value.checkedAt })?.key {
+            sourceChecks.removeValue(forKey: oldest)
+        }
+        if receiving { performReceiverCheck(profile) }
+        else { performCheck(profile, publish: false) }
+        return true
+    }
+    private func pruneChecks(keeping ids: Set<String>) {
+        sourceChecks = sourceChecks.filter { ids.contains($0.key) || renewing.contains($0.key) }
+    }
+    private func performReceiverCheck(_ profile: AWSProfileDescriptor) {
+        let id = profile.id
+        renewing.insert(id)
+        let knownExpiry = (try? store.catalog().first { $0["profileId"] as? String == id }?["expires"] as? Double) ?? sourceChecks[id]?.expiresAt
+        sourceChecks[id] = SharedAWSAccessCheck(state: .checking, checkedAt: Date().timeIntervalSince1970, expiresAt: knownExpiry)
+        notify()
+        let credentials: AWSRoleCredentials
+        do { credentials = try store.credentials(forProfile: id) }
+        catch { finishRefresh(id, expiry: nil, needsSharedRenewal: true); return }
         do {
-            let profile = source.descriptor
+            let config = root.appendingPathComponent("aws-access-check.config")
+            // This STS request uses only the received copy. It must never fall
+            // through to a preserved native SSO profile or browser-login cache.
+            try Data().write(to: config, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: config.path)
+            verifyAndPublish(profile, credentials: credentials, executable: try SharedAWSCLI.executable(root: root),
+                             config: config, publish: false, receiving: true, completion: nil)
+        } catch { finishRefresh(id, expiry: nil) }
+    }
+    private func performCheck(_ profile: AWSProfileDescriptor, publish: Bool, completion: (() -> Void)? = nil) {
+        let id = profile.id
+        renewing.insert(id)
+        sourceChecks[id] = SharedAWSAccessCheck(state: .checking, checkedAt: Date().timeIntervalSince1970,
+                                                expiresAt: sourceChecks[id]?.expiresAt)
+        if publish { sourceStatus[id] = SharedAWSCheckState.checking.status }
+        notify()
+        do {
             let config = try configuration.prepareBackingConfig(profile)
             let executable = try SharedAWSCLI.executable(root: root)
             let environment = try SharedAWSCLI.environment(root: root, config: config)
@@ -563,17 +682,18 @@ final class SharedAWSService {
                 guard let command, self.jobs[key] === command else { completion?(); return }
                 self.jobs.removeValue(forKey: key)
                 do {
-                    let data = try result.get()
+                    var data = try result.get()
+                    defer { data.resetBytes(in: 0..<data.count) }
                     guard let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw PeerFailure("AWS returned an invalid credential response.") }
                     let credentials = try AWSRoleCredentials(process: value)
                     try credentials.validate(now: Date().timeIntervalSince1970, syntheticOnly: SharedAccountCodeIdentity.fixture)
-                    self.verifyAndPublish(profile, credentials: credentials, executable: executable, config: config, completion: completion)
-                } catch { self.finishRefresh(id, expiry: nil); completion?() }
+                    self.verifyAndPublish(profile, credentials: credentials, executable: executable, config: config, publish: publish, completion: completion)
+                } catch { self.finishRefresh(id, expiry: nil, failure: (error as? SharedAWSCommandFailure)?.state ?? .checkFailed); completion?() }
             }
-        } catch { jobs.removeValue(forKey: "refresh:" + id); finishRefresh(id, expiry: nil); completion?() }
+        } catch { jobs.removeValue(forKey: "refresh:" + id); finishRefresh(id, expiry: nil, failure: (error as? SharedAWSCommandFailure)?.state ?? .checkFailed); completion?() }
     }
     private func verifyAndPublish(_ profile: AWSProfileDescriptor, credentials: AWSRoleCredentials, executable: URL,
-                                  config: URL, completion: (() -> Void)?) {
+                                  config: URL, publish: Bool, receiving: Bool = false, completion: (() -> Void)?) {
         do {
             let key = "refresh:" + profile.id
             let environment = try SharedAWSCLI.environment(root: root, config: config, credentials: credentials,
@@ -586,24 +706,48 @@ final class SharedAWSService {
                 guard let command, self.jobs[key] === command else { completion?(); return }
                 self.jobs.removeValue(forKey: key)
                 do {
-                    guard self.document.sources[profile.id]?.descriptor == profile else { throw PeerFailure("The AWS source selection changed.") }
-                    let data = try result.get()
+                    if publish {
+                        guard self.document.sources[profile.id]?.descriptor == profile else { throw PeerFailure("The AWS source selection changed.") }
+                    } else if receiving {
+                        guard self.document.sources[profile.id] == nil,
+                              try self.configuration.installations().contains(where: { $0.descriptor.id == profile.id }) else {
+                            throw PeerFailure("The receiving AWS profile changed.")
+                        }
+                    } else {
+                        guard self.document.sources[profile.id] == nil,
+                              try self.configuration.discover().contains(where: { $0 == profile }),
+                              try !self.configuration.installations().contains(where: { $0.descriptor.id == profile.id }) else {
+                            throw PeerFailure("The local AWS profile changed.")
+                        }
+                    }
+                    var data = try result.get()
+                    defer { data.resetBytes(in: 0..<data.count) }
                     guard let identity = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw PeerFailure("AWS returned an invalid account identity.") }
                     let arn = try SharedAWSPrincipal.verify(identity, profile: profile)
-                    _ = try self.store.publish(profile: profile, principalARN: arn, credentials: credentials,
-                                               sourceName: PeerProtocol.displayName(Host.current().localizedName ?? "This Mac"))
+                    if publish {
+                        _ = try self.store.publish(profile: profile, principalARN: arn, credentials: credentials,
+                                                   sourceName: PeerProtocol.displayName(Host.current().localizedName ?? "This Mac"))
+                    }
                     self.finishRefresh(profile.id, expiry: credentials.expiration)
-                } catch { self.finishRefresh(profile.id, expiry: nil) }
+                } catch {
+                    let outcome = (error as? SharedAWSCommandFailure)?.state ?? .checkFailed
+                    self.finishRefresh(profile.id, expiry: nil, failure: receiving && outcome == .signInRequired ? .checkFailed : outcome)
+                }
                 completion?()
             }
-        } catch { finishRefresh(profile.id, expiry: nil); completion?() }
+        } catch { jobs.removeValue(forKey: "refresh:" + profile.id); finishRefresh(profile.id, expiry: nil, failure: (error as? SharedAWSCommandFailure)?.state ?? .checkFailed); completion?() }
     }
-    private func finishRefresh(_ id: String, expiry: Double?) {
+    private func finishRefresh(_ id: String, expiry: Double?, failure: SharedAWSCheckState = .checkFailed,
+                               needsSharedRenewal: Bool = false) {
         renewing.remove(id)
-        guard document.sources[id] != nil else { return }
+        let state: SharedAWSCheckState = expiry == nil ? failure : .ready
+        sourceChecks[id] = SharedAWSAccessCheck(state: state, checkedAt: Date().timeIntervalSince1970,
+                                                expiresAt: expiry ?? sourceChecks[id]?.expiresAt,
+                                                needsSharedRenewal: needsSharedRenewal)
+        guard document.sources[id] != nil else { notify(); return }
         document.sources[id]?.failed = expiry == nil
-        if let expiry { document.sources[id]?.lastExpiry = expiry; sourceStatus[id] = "Ready to share" }
-        else { sourceStatus[id] = "Sign in on this Mac to renew" }
+        if let expiry { document.sources[id]?.lastExpiry = expiry }
+        sourceStatus[id] = state.status
         try? save(); notify()
         queue.asyncAfter(deadline: .now() + 1) { [weak self] in self?.refreshEligible() }
     }
@@ -741,7 +885,7 @@ private enum SharedAWSCredentialRPC {
 // data. No AWS service, user configuration, Keychain or browser is involved.
 enum SharedAWSServiceTests {
     static func run(root: URL) throws -> Int {
-        var checks = 0
+        var checks = try SharedAWSChecksTests.run()
         func check(_ result: @autoclosure () throws -> Bool) throws {
             guard try result() else { throw PeerFailure("An AWS provider boundary regression failed after \(checks) checks.") }
             checks += 1
@@ -772,7 +916,8 @@ enum SharedAWSServiceTests {
         let scoped = try SharedAWSCLI.environment(root: root, config: root.appendingPathComponent("empty.config"), credentials: fixture, region: "us-east-1")
         try check(scoped["AWS_ACCESS_KEY_ID"] == fixture.accessKeyId && scoped["AWS_DEFAULT_REGION"] == "us-east-1")
         let runner = root.appendingPathComponent("synthetic-process")
-        func process(_ script: String, timeout: Double = 3, expectSuccess: Bool) throws -> Bool {
+        func process(_ script: String, timeout: Double = 3, expectSuccess: Bool,
+                     failureState: SharedAWSCheckState = .checkFailed) throws -> Bool {
             try Data(("#!/bin/sh\n" + script + "\n").utf8).write(to: runner, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: runner.path)
             let queue = DispatchQueue(label: "com.terminaldb.aws.boundary-test")
@@ -785,7 +930,7 @@ enum SharedAWSServiceTests {
                     try command.start(executable: runner, arguments: [], environment: ["PATH": "/usr/bin:/bin"], timeout: timeout, capture: true) { response in
                         switch response {
                         case .success: result.succeeded = expectSuccess
-                        case .failure: result.succeeded = !expectSuccess
+                        case .failure(let error): result.succeeded = !expectSuccess && (error as? SharedAWSCommandFailure)?.state == failureState
                         }
                         complete.signal()
                     }
@@ -797,7 +942,11 @@ enum SharedAWSServiceTests {
         try check(try process("printf '%s' 'synthetic response'", expectSuccess: true))
         try check(try process("exit 1", expectSuccess: false))
         try check(try process("/usr/bin/yes synthetic | /usr/bin/head -c 70000", expectSuccess: false))
-        try check(try process("/bin/sleep 2", timeout: 0.05, expectSuccess: false))
+        try check(try process("/bin/sleep 2", timeout: 0.05, expectSuccess: false, failureState: .networkUnavailable))
+        try check(try process("printf '%s' \"Your session has expired or credentials have changed. Please reauthenticate using 'aws login'.\" >&2; exit 1", expectSuccess: false, failureState: .signInRequired))
+        try check(try process("printf '%s' 'Could not connect to the endpoint URL: synthetic' >&2; exit 1", expectSuccess: false, failureState: .networkUnavailable))
+        try check(try process("printf '%s' 'AccessDeniedException' >&2; exit 1", expectSuccess: false, failureState: .accessDenied))
+        try check(try process("/usr/bin/yes synthetic | /usr/bin/head -c 20000 >&2; exit 1", expectSuccess: false))
         checks += try flow(root: root.appendingPathComponent("flow"))
         return checks
     }
@@ -819,6 +968,16 @@ enum SharedAWSServiceTests {
         import sys,json,datetime,os,time,configparser,hashlib,fcntl
         from pathlib import Path
         args=sys.argv[1:]
+        mode=(Path(os.environ['HOME'])/'check-failure').read_text().strip() if (Path(os.environ['HOME'])/'check-failure').exists() else ''
+        if args[:2]==['configure','export-credentials']:
+            messages={
+                'auth': 'The SSO session associated with this profile has expired or is otherwise invalid. To refresh this SSO session run aws sso login with the corresponding profile.',
+                'network': 'Token has expired and refresh failed: Could not connect to the endpoint URL: synthetic',
+                'denied': 'An error occurred (AccessDeniedException) when calling GetRoleCredentials',
+                'config': 'Synthetic configuration is unavailable; tdb-test-private-diagnostic'
+            }
+            if mode in messages:
+                print(messages[mode],file=sys.stderr);sys.exit(1)
         if (Path(os.environ['HOME'])/'capture-config').exists():
             profile=args[args.index('--profile')+1] if '--profile' in args else ''
             call={'operation':args[0], 'profile':profile, 'session':args[args.index('--sso-session')+1] if '--sso-session' in args else '', 'config':Path(os.environ['AWS_CONFIG_FILE']).read_text()}
@@ -826,7 +985,8 @@ enum SharedAWSServiceTests {
         if args[:2]==['configure','export-credentials']:
             if (Path(os.environ['HOME'])/'export-delay').exists():
                 (Path(os.environ['HOME'])/'export-started').write_text('ready')
-                time.sleep(8)
+                delay=(Path(os.environ['HOME'])/'export-delay').read_text().strip()
+                time.sleep(float(delay) if delay else 8)
             generation=('-'+(Path(os.environ['HOME'])/'generation').read_text()) if (Path(os.environ['HOME'])/'generation').exists() else ''
             expiry=Path(os.environ['HOME'])/('expiration'+generation)
             # Parallel role exports share one stable, fully written expiry per generation.
@@ -836,9 +996,15 @@ enum SharedAWSServiceTests {
                 expiration=expiry.read_text()
             print(json.dumps({'Version':1,'AccessKeyId':'tdb-test-access-key'+generation,'SecretAccessKey':'tdb-test-secret-key'+generation,'SessionToken':'tdb-test-session-token'+generation,'Expiration':expiration}))
         elif args[:2]==['sts','get-caller-identity']:
-            config=configparser.RawConfigParser(); config.read(os.environ['AWS_CONFIG_FILE'])
-            section=next(s for s in config.sections() if s.startswith('profile ') or s=='default')
-            account=config.get(section,'sso_account_id'); role=config.get(section,'sso_role_name')
+            if mode=='sts-denied': print('AccessDeniedException',file=sys.stderr);sys.exit(1)
+            if mode=='sts-auth': print("Your session has expired or credentials have changed. Please reauthenticate using 'aws login'.",file=sys.stderr);sys.exit(1)
+            if os.environ.get('AWS_ACCESS_KEY_ID','').startswith('tdb-test-other'):
+                account='123456789012';role='ReadOnly'
+            else:
+                config=configparser.RawConfigParser(); config.read(os.environ['AWS_CONFIG_FILE'])
+                section=next(s for s in config.sections() if s.startswith('profile ') or s=='default')
+                account=config.get(section,'sso_account_id'); role=config.get(section,'sso_role_name')
+            if mode=='identity': account='210987654321'
             print(json.dumps({'Account':account,'Arn':'arn:aws:sts::'+account+':assumed-role/AWSReservedSSO_'+role+'_0123456789abcdef/synthetic'}))
         elif args[:2]==['sso','login']:
             if (Path(os.environ['HOME'])/'signin-delay').exists():
@@ -871,12 +1037,58 @@ enum SharedAWSServiceTests {
             return response
         }
         var count = 0
-        func check(_ result: @autoclosure () throws -> Bool) throws {
-            guard try result() else { throw PeerFailure("An AWS service flow regression failed after \(count) checks.") }; count += 1
+        func check(_ result: @autoclosure () throws -> Bool, line: UInt = #line) throws {
+            guard try result() else { throw PeerFailure("An AWS service flow regression failed after \(count) checks at source line \(line).") }; count += 1
         }
         let before = try request("aws.catalog")
         guard let descriptor = (before["profiles"] as? [[String: Any]])?.first,
               let id = descriptor["id"] as? String else { throw PeerFailure("The synthetic AWS profile was not discovered.") }
+        func waitCheck(_ id: String, _ expected: String) throws -> [String: Any] {
+            let deadline = Date().addingTimeInterval(8)
+            while Date() < deadline {
+                let catalog = try request("aws.catalog")
+                if (catalog["sourceChecks"] as? [String: [String: Any]])?[id]?["state"] as? String == expected { return catalog }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+            }
+            throw PeerFailure("A synthetic AWS check did not reach its expected safe outcome.")
+        }
+        // Checking native access is not permission to enroll or publish it.
+        try Data().write(to: root.appendingPathComponent("capture-config"))
+        try check(try request("aws.check", ["profileId": id], authenticate: true)["error"] != nil)
+        try check(try request("aws.check", ["profileId": id])["accepted"] as? Bool == true)
+        let checkedLocal = try waitCheck(id, "ready")
+        let localCheck = (checkedLocal["sourceChecks"] as! [String: [String: Any]])[id]!
+        let localExpiry = localCheck["expiresAt"] as! Double
+        try check(localExpiry > Date().timeIntervalSince1970)
+        try check((checkedLocal["sources"] as? [String])?.isEmpty == true)
+        try check((checkedLocal["accounts"] as? [[String: Any]])?.isEmpty == true)
+        try check((checkedLocal["installed"] as? [[String: Any]])?.isEmpty == true)
+        try check(try request("aws.credentials", ["profileId": id])["credentials"] == nil)
+        try check(try Data(contentsOf: config) == original)
+        let callPath = root.appendingPathComponent("fixture-calls.jsonl")
+        let priorCalls = try Data(contentsOf: callPath)
+        try check(try request("aws.check", ["profileId": id])["accepted"] as? Bool == true)
+        try check(try Data(contentsOf: callPath) == priorCalls)
+        // Classified failures never leak private provider output or turn a
+        // network/permission/configuration error into a browser-login prompt.
+        let failurePath = root.appendingPathComponent("check-failure")
+        for (mode, expected) in [("auth", "signInRequired"), ("network", "networkUnavailable"), ("denied", "accessDenied"), ("config", "checkFailed"), ("identity", "checkFailed")] {
+            try Data(mode.utf8).write(to: failurePath)
+            try check(try request("aws.check", ["profileId": id, "manual": true])["accepted"] as? Bool == true)
+            let failed = try waitCheck(id, expected)
+            try check((failed["sources"] as? [String])?.isEmpty == true && (failed["accounts"] as? [[String: Any]])?.isEmpty == true)
+            try check(!String(decoding: JSONSerialization.data(withJSONObject: failed), as: UTF8.self).contains("tdb-test-private-diagnostic"))
+            try check(try Data(contentsOf: config) == original)
+            let unchangedCalls = try Data(contentsOf: callPath)
+            try check(try request("aws.check", ["profileId": id])["accepted"] as? Bool == true)
+            try check(try Data(contentsOf: callPath) == unchangedCalls)
+        }
+        try FileManager.default.removeItem(at: failurePath)
+        try check(try request("aws.check", ["profileId": id, "manual": true])["accepted"] as? Bool == true)
+        let checkedAgain = try waitCheck(id, "ready")
+        try check((checkedAgain["sourceChecks"] as? [String: [String: Any]])?[id]?["expiresAt"] as? Double == localExpiry)
+        try check(!String(decoding: Data(contentsOf: callPath), as: UTF8.self).contains("\"operation\": \"sso\""))
+        try FileManager.default.removeItem(at: root.appendingPathComponent("capture-config"))
         // A native source can publish its existing login without replacing
         // the profile or changing ordinary aws sso login commands.
         try check(try request("aws.source.enable", ["profileId": id], authenticate: true)["error"] != nil)
@@ -897,6 +1109,31 @@ enum SharedAWSServiceTests {
         }
         try check(nativeReady)
         try check(try Data(contentsOf: config) == original)
+        // Hold exactly four CLI jobs. A repeated source check coalesces;
+        // different manual checks report busy instead of claiming success.
+        var capacityBytes = original
+        for number in 1...5 {
+            capacityBytes.append(Data("\n[profile capacity-\(number)]\nsso_start_url = https://example.awsapps.com/start\nsso_region = us-east-1\nsso_account_id = 123456789012\nsso_role_name = Capacity\(number)\n".utf8))
+        }
+        try capacityBytes.write(to: config)
+        let capacityProfiles = try request("aws.catalog")["profiles"] as! [[String: Any]]
+        let capacityIDs = Dictionary(uniqueKeysWithValues: capacityProfiles.map { ($0["name"] as! String, $0["id"] as! String) })
+        let capacitySource = capacityIDs["capacity-4"]!
+        try check(try request("aws.source.enable", ["profileId": capacitySource])["error"] == nil)
+        _ = try waitCheck(capacitySource, "ready")
+        try Data("2".utf8).write(to: root.appendingPathComponent("export-delay"))
+        try check(try request("aws.refresh", ["profileId": id])["accepted"] as? Bool == true)
+        for number in 1...3 { try check(try request("aws.check", ["profileId": capacityIDs["capacity-\(number)"]!, "manual": true])["accepted"] as? Bool == true) }
+        try check(try request("aws.refresh", ["profileId": id])["accepted"] as? Bool == true)
+        try check(try request("aws.refresh", ["profileId": capacitySource])["error"] != nil)
+        try check(try request("aws.check", ["profileId": capacityIDs["capacity-5"]!, "manual": true])["error"] != nil)
+        try check(try request("aws.check", ["profileId": capacityIDs["capacity-5"]!, "manual": false])["accepted"] as? Bool == false)
+        _ = try waitCheck(id, "ready")
+        for number in 1...3 { _ = try waitCheck(capacityIDs["capacity-\(number)"]!, "ready") }
+        try FileManager.default.removeItem(at: root.appendingPathComponent("export-delay"))
+        try check(try request("aws.remove", ["profileId": capacitySource])["error"] == nil)
+        try original.write(to: config)
+        try check((try request("aws.catalog")["sources"] as? [String]) == [id])
         let nativeRemoved = try request("aws.remove", ["profileId": id])
         try check(nativeRemoved["error"] == nil)
         try check((nativeRemoved["sources"] as? [String])?.isEmpty == true)
@@ -962,9 +1199,55 @@ enum SharedAWSServiceTests {
         let credentials = AWSRoleCredentials(accessKeyId: "tdb-test-other-access", secretAccessKey: "tdb-test-other-secret", sessionToken: "tdb-test-other-session", expiration: Date().addingTimeInterval(600).timeIntervalSince1970)
         _ = try origin.publish(profile: otherProfile, principalARN: "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_ReadOnly_0123456789abcdef/synthetic", credentials: credentials, sourceName: "Synthetic source")
         try local.importBundle(origin.exportBundle())
-        try check(try request("aws.use", ["profileId": otherProfile.id, "targetName": "received"])["error"] == nil)
-        let receiverConfig = try Data(contentsOf: config)
+        try check(try request("aws.use", ["profileId": otherProfile.id, "targetName": "fresh-receiver"])["error"] == nil)
         try check(try request("aws.source.enable", ["profileId": otherProfile.id])["error"] != nil)
+        let freshReceiverConfig = try Data(contentsOf: config)
+        try check(try request("aws.share", ["profileId": otherProfile.id, "targetName": "should-not-install"])["error"] != nil)
+        try check(try Data(contentsOf: config) == freshReceiverConfig)
+        try check(try request("aws.remove", ["profileId": otherProfile.id])["error"] == nil)
+        try check(try Data(contentsOf: config) == original)
+        let receiverOriginal = original + Data("\n[profile received]\nsso_start_url = https://other.awsapps.com/start\nsso_region = us-east-1\nsso_account_id = 123456789012\nsso_role_name = ReadOnly\n".utf8)
+        try receiverOriginal.write(to: config)
+        let cacheWriter = Process(); cacheWriter.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        cacheWriter.arguments = ["-c", "import pathlib,hashlib,json,sys; d=pathlib.Path(sys.argv[1])/'.aws/sso/cache'; d.mkdir(parents=True,exist_ok=True); p=d/(hashlib.sha1(b'https://other.awsapps.com/start').hexdigest()+'.json'); p.write_text(json.dumps({'accessToken':'tdb-test-expired-token','startUrl':'https://other.awsapps.com/start','region':'us-east-1','expiresAt':'2020-01-01T00:00:00Z'})); p.chmod(0o600)", root.path]
+        cacheWriter.standardInput = FileHandle.nullDevice; cacheWriter.standardOutput = FileHandle.nullDevice; cacheWriter.standardError = FileHandle.nullDevice
+        try cacheWriter.run(); cacheWriter.waitUntilExit(); try check(cacheWriter.terminationStatus == 0)
+        // A prior original-profile failure must not contaminate its newly
+        // installed shared provider, whose preserved SSO cache is expired.
+        try Data("auth".utf8).write(to: failurePath)
+        try check(try request("aws.check", ["profileId": otherProfile.id, "manual": true])["accepted"] as? Bool == true)
+        _ = try waitCheck(otherProfile.id, "signInRequired")
+        try check(try request("aws.use", ["profileId": otherProfile.id, "targetName": "received", "replaceSource": true])["error"] == nil)
+        let receiverConfig = try Data(contentsOf: config)
+        try check((try request("aws.catalog")["sourceChecks"] as? [String: [String: Any]])?[otherProfile.id] == nil)
+        try Data().write(to: root.appendingPathComponent("capture-config"))
+        let receiverPriorCalls = try Data(contentsOf: callPath)
+        try check(try request("aws.check", ["profileId": otherProfile.id, "manual": true])["accepted"] as? Bool == true)
+        let receiverChecked = try waitCheck(otherProfile.id, "ready")
+        try check((receiverChecked["authentication"] as? [String: [String: Any]])?[otherProfile.id]?["state"] as? String == "expired")
+        try check((receiverChecked["sources"] as? [String])?.isEmpty == true)
+        let receiverCalls = try Data(contentsOf: callPath).dropFirst(receiverPriorCalls.count)
+        let receiverCall = try JSONSerialization.jsonObject(with: Data(receiverCalls).dropLast()) as! [String: Any]
+        try check(receiverCall["operation"] as? String == "sts" && receiverCall["config"] as? String == "")
+        try check(try Data(contentsOf: config) == receiverConfig)
+        for (mode, expected) in [("sts-denied", "accessDenied"), ("sts-auth", "checkFailed")] {
+            try Data(mode.utf8).write(to: failurePath)
+            try check(try request("aws.check", ["profileId": otherProfile.id, "manual": true])["accepted"] as? Bool == true)
+            let checked = try waitCheck(otherProfile.id, expected)
+            try check((checked["sources"] as? [String])?.isEmpty == true)
+            try check((checked["accounts"] as? [[String: Any]])?.first?["available"] as? Bool == true)
+            try check(try request("aws.sync.import", ["bundle": origin.exportBundle()])["accepted"] as? Bool == true)
+            try check((try request("aws.catalog")["sourceChecks"] as? [String: [String: Any]])?[otherProfile.id]?["state"] as? String == expected)
+        }
+        let renewedReceiverCredentials = AWSRoleCredentials(accessKeyId: "tdb-test-other-access-renewed", secretAccessKey: "tdb-test-other-secret-renewed", sessionToken: "tdb-test-other-session-renewed", expiration: credentials.expiration + 60)
+        _ = try origin.publish(profile: otherProfile, principalARN: "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_ReadOnly_0123456789abcdef/synthetic", credentials: renewedReceiverCredentials, sourceName: "Synthetic source")
+        try check(try request("aws.sync.import", ["bundle": origin.exportBundle()])["accepted"] as? Bool == true)
+        let renewedReceiver = try request("aws.catalog")
+        try check((renewedReceiver["sourceChecks"] as? [String: [String: Any]])?[otherProfile.id] == nil)
+        try check((renewedReceiver["accounts"] as? [[String: Any]])?.first?["expires"] as? Double == renewedReceiverCredentials.expiration)
+        try FileManager.default.removeItem(at: failurePath)
+        try FileManager.default.removeItem(at: root.appendingPathComponent("capture-config"))
+        try check((try request("aws.catalog")["sources"] as? [String])?.isEmpty == true)
         try check(try Data(contentsOf: config) == receiverConfig)
         try? FileManager.default.removeItem(at: root.appendingPathComponent("signin-started"))
         try check(try request("aws.signIn.start", ["profileId": otherProfile.id])["accepted"] as? Bool == true)
@@ -983,14 +1266,28 @@ enum SharedAWSServiceTests {
         let afterCancel = try request("aws.catalog")
         try check((afterCancel["accounts"] as? [[String: Any]])?.first?["local"] as? Bool == false)
         try check(afterCancel["signInProfile"] as? String == "")
-        try check(try request("aws.share", ["profileId": otherProfile.id, "targetName": "should-not-install"])["error"] != nil)
+        try check((afterCancel["sources"] as? [String])?.isEmpty == true)
         try check(try Data(contentsOf: config) == receiverConfig)
         try origin.withdraw(otherProfile.id); try local.importBundle(origin.exportBundle())
         let withdrawn = try request("aws.catalog")
         try check((withdrawn["accounts"] as? [[String: Any]])?.isEmpty == true)
         try check((withdrawn["installed"] as? [[String: Any]])?.first?["descriptor"] is [String: Any])
+        try check(try request("aws.check", ["profileId": otherProfile.id, "manual": true])["accepted"] as? Bool == true)
+        let withdrawnCheck = try waitCheck(otherProfile.id, "checkFailed")
+        try check((withdrawnCheck["sources"] as? [String])?.isEmpty == true)
+        try check((withdrawnCheck["sourceChecks"] as? [String: [String: Any]])?[otherProfile.id]?["needsSharedRenewal"] as? Bool == true)
+        // Reconnected peer delivery repairs missing access without a manual
+        // check or local browser sign-in, even when its expiry is unchanged.
+        _ = try origin.publish(profile: otherProfile, principalARN: "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_ReadOnly_0123456789abcdef/synthetic", credentials: credentials, sourceName: "Synthetic source")
+        try check(try request("aws.sync.import", ["bundle": origin.exportBundle()])["accepted"] as? Bool == true)
+        let reconnectedReceiver = try request("aws.catalog")
+        try check((reconnectedReceiver["accounts"] as? [[String: Any]])?.first?["available"] as? Bool == true)
+        try check((reconnectedReceiver["sourceChecks"] as? [String: [String: Any]])?[otherProfile.id] == nil)
+        try check((reconnectedReceiver["sources"] as? [String])?.isEmpty == true)
+        try check((reconnectedReceiver["signInProfile"] as? String)?.isEmpty == true)
         try check(try request("aws.remove", ["profileId": otherProfile.id])["error"] == nil)
-        try check(try Data(contentsOf: config) == original)
+        try check(try Data(contentsOf: config) == receiverOriginal)
+        try original.write(to: config)
 
         // Same-identity aliases can use different local SSO token caches. A
         // new explicit sign-in/share choice must drive the following export,
@@ -1164,6 +1461,16 @@ enum SharedAWSServiceTests {
         let cachedButExpired = try sessionRequest("aws.catalog")
         try check(authState(cachedButExpired, alpha) == "expired" && authState(cachedButExpired, beta) == "expired")
         try check((cachedButExpired["accounts"] as? [[String: Any]])?.filter { $0["available"] as? Bool == true }.count == 3)
+        try check((cachedButExpired["sourceChecks"] as? [String: [String: Any]])?[alpha]?["state"] as? String == "ready")
+        try check((cachedButExpired["sourceChecks"] as? [String: [String: Any]])?[beta]?["state"] as? String == "ready")
+        // A browser-renewable/expired token cache does not itself produce an
+        // authentication-required outcome when AWS credential checks succeed.
+        try check((cachedButExpired["signInProfile"] as? String)?.isEmpty == true)
+        let roleExpiryBeforeCheck = (cachedButExpired["accounts"] as? [[String: Any]])?.first { $0["profileId"] as? String == alpha }?["expires"] as? Double
+        try check(try sessionRequest("aws.refresh", ["profileId": alpha])["accepted"] as? Bool == true)
+        try check(try waitSessionReady("tdb-test-access-key", [alpha, beta, other]))
+        let unchangedAccess = try sessionRequest("aws.catalog")
+        try check((unchangedAccess["accounts"] as? [[String: Any]])?.first { $0["profileId"] as? String == alpha }?["expires"] as? Double == roleExpiryBeforeCheck)
         try Data("session-renewed".utf8).write(to: sessionRoot.appendingPathComponent("generation"))
         try Data().write(to: sessionRoot.appendingPathComponent("signin-delay"))
         try check(try sessionRequest("aws.signIn.start", ["profileId": alpha])["accepted"] as? Bool == true)

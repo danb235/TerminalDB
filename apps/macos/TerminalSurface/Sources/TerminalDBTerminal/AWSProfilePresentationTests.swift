@@ -8,108 +8,103 @@ enum AWSProfilePresentationTests {
             checks += 1
         }
         let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let future = now.addingTimeInterval(3600).timeIntervalSince1970
         let profile = AWSProfileDescriptor(name: "project-work", kind: "sso", region: "us-west-2",
             ssoStartURL: "https://example.awsapps.com/start", ssoRegion: "us-east-1",
             accountID: "111111111111", roleName: "Reader", ssoSessionName: "company-sso")
         func row(local: Bool = false, installed: Bool = true, auth: String = "expired",
-                 available: Bool = true, status: String = "Ready", expires: Double? = nil) -> AWSProfilePresentation {
-            AWSProfilePresentation(id: profile.id, descriptor: profile,
+                 available: Bool = true, status: String = "Ready", expires: Double? = nil,
+                 checkState: String? = nil, checkedExpiry: Double? = nil, needsSharedRenewal: Bool = false) -> AWSProfilePresentation {
+            var check: [String: Any] = ["needsSharedRenewal": needsSharedRenewal]
+            if let checkState { check["state"] = checkState }
+            if let checkedExpiry { check["expiresAt"] = checkedExpiry }
+            return AWSProfilePresentation(id: profile.id, descriptor: profile,
                 localNames: local ? [profile.name] : [], installedNames: installed ? [profile.name] : [],
                 sharedNames: [profile.name], sourceNames: ["Office Mac"], available: available,
-                expiration: expires ?? now.addingTimeInterval(3600).timeIntervalSince1970,
-                status: status, authentication: AWSProfileAuthentication(["state": auth,
-                    "sessionName": "company-sso", "expiresAt": now.addingTimeInterval(auth == "current" ? 3600 : -60).timeIntervalSince1970]))
+                expiration: expires ?? future, status: status,
+                authentication: AWSProfileAuthentication(["state": auth, "sessionName": "company-sso", "expiresAt": now.addingTimeInterval(-60).timeIntervalSince1970]),
+                sourceCheck: AWSSourceCheck(check))
         }
-
-        // Keeping an original native profile for restoration must not turn its
-        // old browser token into a requirement for the mapped shared provider.
+        func state(_ row: AWSProfilePresentation, source: Bool = false) -> AWSProfileRowState {
+            row.rowState(isSource: source, sourceStatus: nil, isSigningIn: false, now: now)
+        }
+        // Valid credentials, rather than an OAuth cache timestamp, determine
+        // readiness. Healthy rows have no renewal task or expiry warning.
         for local in [false, true] {
             for auth in ["current", "expired", "missing", "unknown", "notApplicable"] {
-                let state = row(local: local, auth: auth).rowState(isSource: false, sourceStatus: nil, isSigningIn: false, now: now)
-                try check(state.primaryAction == .ready)
-                try check(state.secondaryAction == nil && !state.needsAttention)
-                try check(state.authenticationText == "From Office Mac")
-                try check(!state.authenticationText.contains("SSO"))
-                try check(state.availabilityText.hasPrefix("Access until "))
-                try check(state.showsAuthentication)
+                let receiver = state(row(local: local, auth: auth))
+                try check(receiver.primaryAction == .ready && receiver.primaryAction?.title == "Ready")
+                try check(receiver.secondaryAction == nil && !receiver.needsAttention)
+                try check(receiver.authenticationText == "From Office Mac")
+                try check(!receiver.availabilityText.contains("until") && !receiver.authenticationText.contains("SSO"))
+                let source = state(row(local: true, auth: auth), source: true)
+                try check(source.primaryAction == .ready && source.secondaryAction == nil)
+                try check(source.availabilityText == "Renews automatically" && source.authenticationText == "Shared from This Mac")
             }
         }
-
-        // Receiving metadata is not a completed local CLI setup: a native
-        // alias must still be explicitly migrated before it uses shared keys.
-        let beforeMigration = row(local: true, installed: false).rowState(isSource: false, sourceStatus: nil, isSigningIn: false, now: now)
-        try check(beforeMigration.primaryAction == .useSharedAccess)
-        try check(beforeMigration.secondaryAction == .shareAccess)
-        try check(!beforeMigration.needsAttention)
-        try check(beforeMigration.availabilityText.hasPrefix("Available until "))
-        let freshReceiver = row(installed: false, auth: "missing").rowState(isSource: false, sourceStatus: nil, isSigningIn: false, now: now)
-        try check(freshReceiver.primaryAction == .useSharedAccess && freshReceiver.secondaryAction == nil)
-
-        // An unavailable shared provider is recovered through synchronization;
-        // signing in locally is an explicit fallback, even with an old alias.
-        for auth in ["current", "expired", "missing"] {
-            let state = row(local: true, auth: auth, available: false, status: "Expired", expires: now.addingTimeInterval(-1).timeIntervalSince1970)
-                .rowState(isSource: false, sourceStatus: nil, isSigningIn: false, now: now)
-            try check(state.primaryAction == .syncNow && state.secondaryAction == .signIn)
-            try check(state.needsAttention && state.availabilityText == "Shared access expired")
-            try check(state.authenticationText == "From Office Mac")
+        for auth in ["expired", "missing", "unknown", "current"] {
+            let local = state(row(local: true, installed: false, auth: auth, available: false))
+            try check(local.primaryAction == .shareAccess && local.secondaryAction == nil)
+            try check(local.availabilityText == "Not checked" && !local.needsAttention)
         }
-        let staleAvailable = row(local: true, expires: now.addingTimeInterval(-1).timeIntervalSince1970)
-            .rowState(isSource: false, sourceStatus: nil, isSigningIn: false, now: now)
-        try check(staleAvailable.primaryAction == .syncNow)
-        let invalidExpiry = row(expires: .nan).rowState(isSource: false, sourceStatus: nil, isSigningIn: false, now: now)
-        try check(invalidExpiry.primaryAction == .syncNow)
-        let conflict = row(local: true, auth: "current", status: "Choose Account Again")
-            .rowState(isSource: false, sourceStatus: nil, isSigningIn: false, now: now)
+        let verified = state(row(local: true, installed: false, available: false, checkState: "ready", checkedExpiry: future))
+        try check(verified.primaryAction == .shareAccess && verified.availabilityText == "Ready · Not shared")
+        let staleVerified = state(row(local: true, installed: false, available: false, checkState: "ready", checkedExpiry: now.timeIntervalSince1970 - 1))
+        try check(staleVerified.availabilityText == "Not checked")
+        let noExpiry = state(row(local: true, installed: false, available: false, checkState: "ready"))
+        try check(noExpiry.availabilityText == "Not checked")
+
+        let renewalRequired = state(row(local: true, checkState: "signInRequired"), source: true)
+        try check(renewalRequired.primaryAction == .ready && renewalRequired.secondaryAction == .signIn)
+        try check(renewalRequired.needsAttention && renewalRequired.availabilityText.contains("renewal"))
+        let expiredRequired = state(row(local: true, available: false, checkState: "signInRequired"), source: true)
+        try check(expiredRequired.primaryAction == .signIn && expiredRequired.needsAttention)
+        let ignoredOldLocalFailure = state(row(local: true, checkState: "signInRequired"))
+        try check(ignoredOldLocalFailure.primaryAction == .ready && ignoredOldLocalFailure.secondaryAction == nil)
+        let legacyStatus = row(local: true).rowState(isSource: true, sourceStatus: "Sign in on this Mac to renew", isSigningIn: false, now: now)
+        try check(legacyStatus.primaryAction == .ready && legacyStatus.secondaryAction == nil)
+
+        for failure in ["accessDenied", "checkFailed"] {
+            for source in [false, true] {
+                let failed = state(row(local: true, checkState: failure, checkedExpiry: future), source: source)
+                try check(failed.primaryAction != .ready && failed.primaryAction != .signIn && failed.needsAttention)
+            }
+            let local = state(row(local: true, installed: false, available: false, checkState: failure, checkedExpiry: future))
+            try check(local.primaryAction != .ready && !local.availabilityText.hasPrefix("Ready"))
+            // A failed native provider must not hide a valid shared import.
+            let migration = state(row(local: true, installed: false, checkState: failure))
+            try check(migration.primaryAction == .useSharedAccess && migration.secondaryAction == .shareAccess)
+        }
+        let offlineCached = state(row(local: true, checkState: "networkUnavailable"), source: true)
+        try check(offlineCached.primaryAction == .ready && offlineCached.needsAttention)
+        let offlineEmpty = state(row(local: true, available: false, checkState: "networkUnavailable"), source: true)
+        try check(offlineEmpty.primaryAction == .networkUnavailable && offlineEmpty.primaryAction != .signIn)
+        let missingShared = state(row(available: false, checkState: "checkFailed", needsSharedRenewal: true))
+        try check(missingShared.primaryAction == .syncNow && missingShared.secondaryAction == nil)
+        let renewedShared = state(row(checkState: "checkFailed", needsSharedRenewal: true))
+        try check(renewedShared.primaryAction == .ready && !renewedShared.needsAttention)
+        let waiting = state(row(available: false, status: "Expired"))
+        try check(waiting.primaryAction == .syncNow && waiting.secondaryAction == nil)
+        let stale = state(row(expires: now.timeIntervalSince1970 - 1))
+        try check(stale.primaryAction == .syncNow)
+        let malformed = state(row(expires: .nan))
+        try check(malformed.primaryAction == .syncNow)
+        let retainedCheckMustNotOverride = state(row(local: true, available: false, checkState: "ready", checkedExpiry: future))
+        try check(retainedCheckMustNotOverride.primaryAction == .syncNow)
+        let fresh = state(row(installed: false))
+        try check(fresh.primaryAction == .useSharedAccess && fresh.availabilityText == "Ready to use")
+        let sourceNeedsAlias = state(row(installed: false), source: true)
+        try check(sourceNeedsAlias.primaryAction == .useSharedAccess)
+        let conflict = state(row(status: "Choose Account Again"))
         try check(conflict.primaryAction == .review && conflict.needsAttention)
-
-        let localSignedIn = row(local: true, installed: false, auth: "current", available: false)
-            .rowState(isSource: false, sourceStatus: nil, isSigningIn: false, now: now)
-        try check(localSignedIn.primaryAction == .shareAccess && localSignedIn.secondaryAction == .signInAgain)
-        try check(!localSignedIn.needsAttention && localSignedIn.availabilityText == "Not shared")
-        let localExpired = row(local: true, installed: false, available: false)
-            .rowState(isSource: false, sourceStatus: nil, isSigningIn: false, now: now)
-        try check(localExpired.primaryAction == .signIn && localExpired.secondaryAction == .shareAccess)
-
-        let source = row(local: true, installed: false, auth: "current")
-            .rowState(isSource: true, sourceStatus: "Ready to share", isSigningIn: false, now: now)
-        try check(source.primaryAction == .refreshAccess && source.secondaryAction == .signInAgain)
-        try check(source.authenticationText == "SSO signed in" && !source.authenticationText.contains("company-sso"))
-        try check(source.authenticationTooltip.contains("company-sso"))
-        let newSourceWithoutAlias = row(installed: false, auth: "current")
-            .rowState(isSource: true, sourceStatus: "Ready to share", isSigningIn: false, now: now)
-        try check(newSourceWithoutAlias.primaryAction == .useSharedAccess)
-        try check(newSourceWithoutAlias.secondaryAction == .refreshAccess && !newSourceWithoutAlias.needsAttention)
-        let expiredSourceWithoutAlias = row(installed: false)
-            .rowState(isSource: true, sourceStatus: nil, isSigningIn: false, now: now)
-        try check(expiredSourceWithoutAlias.primaryAction == .useSharedAccess && expiredSourceWithoutAlias.secondaryAction == .signIn)
-        let expiredSource = row(local: true, installed: false)
-            .rowState(isSource: true, sourceStatus: nil, isSigningIn: false, now: now)
-        try check(expiredSource.primaryAction == .signIn && expiredSource.secondaryAction == .refreshAccess)
-        try check(expiredSource.needsAttention && expiredSource.availabilityText.hasPrefix("Access until "))
-        let failedRoleRenewal = row(local: true, installed: false, auth: "current", available: false)
-            .rowState(isSource: true, sourceStatus: "Sign in on this Mac to renew", isSigningIn: false, now: now)
-        try check(failedRoleRenewal.primaryAction == .refreshAccess)
-        try check(failedRoleRenewal.authenticationText == "SSO signed in" && failedRoleRenewal.availabilityText == "Access needs renewal")
-        let refreshing = row(local: true, installed: false, auth: "current")
-            .rowState(isSource: true, sourceStatus: "Renewing…", isSigningIn: false, now: now)
-        try check(refreshing.primaryAction == .refreshing && refreshing.secondaryAction == nil)
-        try check(!refreshing.needsAttention && refreshing.availabilityText == "Updating access…")
-        let signingIn = row(local: true).rowState(isSource: false, sourceStatus: nil, isSigningIn: true, now: now)
-        try check(signingIn.primaryAction == .signingIn && signingIn.secondaryAction == nil)
-        try check(signingIn.authenticationText == "From Office Mac" && !signingIn.needsAttention)
-
-        var browserLogin = row(local: true, installed: false, auth: "notApplicable", available: false)
-        browserLogin.descriptor = AWSProfileDescriptor(name: "console-work", kind: "login", loginSession: "arn:aws:iam::111111111111:user/example")
-        browserLogin.id = browserLogin.descriptor.id
-        let consoleState = browserLogin.rowState(isSource: false, sourceStatus: nil, isSigningIn: false, now: now)
-        try check(consoleState.primaryAction == .shareAccess && consoleState.secondaryAction == .signIn)
-        try check(!consoleState.showsAuthentication && !consoleState.needsAttention)
-        browserLogin.installedNames = ["console-work"]
-        browserLogin.available = true
-        let consoleReceiver = browserLogin.rowState(isSource: false, sourceStatus: nil, isSigningIn: false, now: now)
-        try check(consoleReceiver.primaryAction == .ready && consoleReceiver.showsAuthentication)
-        try check(consoleReceiver.authenticationText == "From Office Mac" && !consoleReceiver.needsAttention)
+        let signing = row().rowState(isSource: false, sourceStatus: nil, isSigningIn: true, now: now)
+        try check(signing.primaryAction == .signingIn && signing.availabilityText.isEmpty)
+        let checking = state(row(local: true, available: false, checkState: "checking"), source: true)
+        try check(checking.primaryAction == .refreshing && checking.primaryAction?.title == "Checking…")
+        let healthyChecking = state(row(local: true, checkState: "checking"), source: true)
+        try check(healthyChecking.primaryAction == .ready)
+        try check(AWSSourceCheck(["state": "arbitrary"]).state == "notChecked")
+        try check(AWSSourceCheck(["state": "accessDenied"]).guidance != AWSSourceCheck(["state": "networkUnavailable"]).guidance)
         return checks
     }
 }

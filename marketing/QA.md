@@ -157,3 +157,17 @@ Visible browser outcomes:
 
 Native functionality, physical networking, browser network inspection, and the
 broader accessibility matrix are not newly tested by this copy-only pass.
+
+## Ready and automatic renewal copy
+
+For 0.6.9, review AWS copy against the Ready-first native interface. Expiry and
+Check Access belong in Details, renewal is automatic, and a check does not
+promise eight more hours. Required sign-in follows AWS authentication failure;
+sharing remains selected and source-offline use still ends at actual expiry.
+
+- Static site validation passes with the updated copy and Ready illustration.
+- Local browser review at desktop and 390-pixel widths confirms the AWS copy
+  and illustration fit. AWS navigation and the updated source-offline FAQ work
+  through their normal controls.
+- Native interface and live provider outcomes are recorded separately in the
+  AWS Ready QA pass; website review does not substitute for them.
