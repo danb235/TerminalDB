@@ -18,6 +18,9 @@ Keep existing historical universal-build evidence in its original QA records.
   arm64 ZIP and the existing stable download alias with matching checksums.
 - Download the public artifact, verify its checksum, version, architecture and
   stable signing identity independently of the local build.
+- Use the same `arm64` Swift package scratch directory and release configuration
+  for the app and terminal-surface tests, avoiding a second cold compilation of
+  native dependencies during a clean build.
 
 ## Visible user plan
 
