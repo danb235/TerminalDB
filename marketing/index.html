@@ -90,7 +90,7 @@
             <figcaption>Choose an account. Get back to typing.</figcaption>
           </figure>
           <div class="feature-list">
-            <div><p class="eyebrow">SIGN IN ONCE TO SHARE</p><h3>Less signing in. More getting on.</h3><p>Enable Claude sync on both Macs, then Share Sign-In once per subscription. The official Claude Code sign-in creates a reusable token stored in each approved Mac's Keychain.</p></div>
+            <div><p class="eyebrow">SIGN IN ONCE TO SHARE</p><h3>Less signing in. More getting on.</h3><p>Enable Claude sync on both Macs, then choose Share Sign-In once per subscription. Claude Code opens its official reusable sign-in flow, and the token stays in each approved Mac's Keychain.</p></div>
             <div><h3>Add an account while away.</h3><p>A new reusable sign-in works on that Mac immediately. When LAN or VPN returns, it reaches your approved Macs automatically. Received accounts work even while the originating Mac is offline. Approved Macs can pass shared accounts to their other explicitly approved sync Macs.</p></div>
             <div><h3>Keep the right account in the right tab.</h3><p>Use the account picker in the status bar. Your choice applies to the next Claude launch in that tab; other tabs and already running Claude processes keep their account.</p></div>
             <p class="small-note">Ordinary local sign-ins need a one-time Share Sign-In before they can sync. Claude.ai connectors need a normal local sign-in.</p>
@@ -104,7 +104,7 @@
         <div class="section-heading">
           <p class="eyebrow">AWS ACCESS</p>
           <h2>Your profiles.<br>Fewer sign-ins.</h2>
-          <p>TerminalDB detects SSO and console-login profiles in <code>~/.aws/config</code>. Choose Sign In without re-entering their settings, or share a current sign-in with approved Macs.</p>
+          <p>TerminalDB detects SSO and console-login profiles in <code>~/.aws/config</code>. Choose Sign In without re-entering their settings, or Share Access to share selected temporary AWS credentials with approved Macs. One browser sign-in renews the SSO session for all local profiles that use it.</p>
           <a class="text-link" href="https://github.com/danb235/TerminalDB/blob/main/docs/shared-aws-access.md">How AWS sharing works<span aria-hidden="true">↗</span></a>
         </div>
         <div class="aws-panel">
@@ -120,7 +120,7 @@
             <li>Approve AWS sharing separately on both Macs.</li>
           </ul>
         </div>
-        <div class="aws-footnotes"><p><strong>Share selected AWS access.</strong> Only selected temporary role credentials sync, including through other explicitly approved AWS-sync Macs. AWS login and refresh material stays with the official AWS CLI on the Mac with the original AWS sign-in.</p><p><strong>Temporary access. Clear expiry.</strong> Received access works offline until AWS expires it. A reachable signed-in Mac can renew it; otherwise, choose Sign In on This Mac. Expired credentials are never extended.</p></div>
+        <div class="aws-footnotes"><p><strong>Choose what to share.</strong> Only profiles you select share temporary AWS credentials, including through other explicitly approved AWS-sync Macs. AWS login and refresh material stays with the official AWS CLI on the Mac where you sign in. On a receiving Mac, choose Use on This Mac once.</p><p><strong>Temporary access. Clear expiry.</strong> Received access stays usable while the source Mac is offline, until AWS expires it. Choose Sync Now to request renewed access from a reachable signed-in Mac, or Sign In Here to sign in locally. Local sign-in is optional while shared access is valid.</p></div>
       </div>
     </section>
 
@@ -156,7 +156,7 @@
           <div><span class="trust-number">02</span><div><h3>Choose which accounts you share.</h3><p>Pairing allows workstation access. You approve Claude and AWS sharing separately on both Macs.</p></div></div>
           <div><span class="trust-number">03</span><div><h3>Stay in control of access.</h3><p>A paired Mac has powerful access to terminals and tools under your macOS user. Remove a Mac to block it here. Stopping sync blocks additional transfers; revoke credentials at the provider to invalidate existing copies.</p></div></div>
         </div>
-        <p class="boundary-note">Security depends on verified pairing, correct implementation, and uncompromised Macs. Claude requests and software updates have their own network activity; terminal connectivity goes directly to your configured Macs.</p>
+        <p class="boundary-note">Security depends on verified pairing, correct implementation, and uncompromised Macs. Claude and AWS sign-in and requests, plus software updates, use their respective services. Terminal connections go directly to your configured Macs.</p>
       </div>
     </section>
 
@@ -180,9 +180,9 @@
           <details><summary>Can I use this away from my LAN?</summary><p>Yes, through your own VPN with a route to the execution Mac's private network. Pair initially on the same LAN. If Bonjour discovery does not cross your VPN, save the paired Mac's internal IP address or internal DNS name in its Connection settings. TerminalDB does not set up your VPN, forward router ports, relay traffic, or synchronize files.</p></details>
           <details><summary>How do accounts sync when I return home?</summary><p>A reusable Claude sign-in works on the Mac where you add it and syncs to your approved Macs when LAN or VPN connectivity returns. Renewals and removals also sync on reconnect. Ordinary local Claude sign-ins need the one-time Share Sign-In flow before they can sync.</p></details>
           <details><summary>What if two Macs have different AWS profiles, or the same profile name?</summary><p>TerminalDB detects each Mac's supported profiles. Shared identity includes the provider, account, and role or principal; a matching name alone is not enough. On a receiving Mac, keep a familiar name or choose an alias. Review conflicts before a local profile changes. Unrelated profiles stay untouched.</p></details>
-          <details><summary>Can AWS access work while the source Mac is offline?</summary><p>Yes, until its temporary credentials expire. Renewal needs a reachable Mac with a valid sign-in. Otherwise, use Sign In on This Mac. Receiving tools must support AWS's credential_process interface. A managed same-name profile uses TerminalDB's Sign In button; a separate alias preserves your original AWS login command.</p></details>
+          <details><summary>Can AWS access work while the source Mac is offline?</summary><p>Yes, until the temporary credentials expire. AWS requests still need a network connection to AWS. Choose Sync Now to request renewed access from a reachable signed-in Mac, or Sign In Here to sign in locally. Local sign-in is optional while shared access is valid. Receiving tools must support AWS's credential_process interface. A managed same-name profile uses TerminalDB's sign-in controls; a separate alias preserves your original AWS login command.</p></details>
           <details><summary>Does unpairing revoke every account credential?</summary><p>No. It blocks that Mac on this host and stops future transfers. It cannot erase an offline copy or revoke a token already held by another process. Revoke access with Claude or AWS when immediate invalidation is required. Pairing with one Mac does not authorize access to all of its peers.</p></details>
-          <details><summary>How does Claude account sharing work?</summary><p>TerminalDB shares explicitly enabled reusable tokens, stored in each approved Mac's device-only Keychain. Ordinary rotating Claude login and refresh credentials stay local. Claude.ai connectors require a normal local sign-in. Token renewal may require restarting Claude, and provider-side expiry or revocation applies.</p></details>
+          <details><summary>How does Claude account sharing work?</summary><p>TerminalDB shares explicitly enabled reusable tokens, stored in each approved Mac's device-only Keychain. Ordinary rotating Claude login and refresh credentials stay local. Claude.ai connectors require a normal local sign-in. Restart Claude after renewing a shared sign-in. Provider-side expiry or revocation applies.</p></details>
         </div>
       </div>
     </section>
