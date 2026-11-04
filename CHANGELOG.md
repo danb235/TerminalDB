@@ -7,11 +7,24 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.7] - 2026-11-03
+
+### Changed
+
+- Put Share Access and Use on This Mac directly in AWS profile rows. Add new
+  shared profiles in one click when their names are unused; review existing
+  profile migrations and name conflicts before changing their settings.
+- Show where shared AWS access comes from, when it expires, and whether it is
+  ready on this Mac. Offer Sync Now and a local sign-in fallback when needed.
+
 ### Fixed
 
 - Renew the shared AWS SSO session from any of its profiles using TerminalDB's
   Sign In action. Show SSO renewal status separately from cached account access,
   keep sign-in available, and update related profiles after browser sign-in.
+- Keep received AWS access ready when an original local SSO sign-in is expired,
+  missing, or unavailable. Refreshing shared access does not require signing in
+  again on the receiving Mac.
 
 
 ## [0.6.5] - 2026-11-03

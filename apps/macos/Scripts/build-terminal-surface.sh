@@ -49,7 +49,7 @@ for source in src/*.m; do
 done
 xcrun swiftc -target "${arch}-apple-macosx13.0" \
   "${object_files[@]}" "${package_bin}/libTerminalDBTerminal.a" \
-  -Xlinker -ObjC -framework AppKit -framework Foundation \
+  -Xlinker -ObjC -lc++ -framework AppKit -framework Foundation \
   -framework CoreImage -framework LocalAuthentication \
   -o "${destination}"
 # SPM's resource files are read-only. Both architecture slices use the same
