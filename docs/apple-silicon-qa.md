@@ -69,6 +69,8 @@ Intel build target before compilation; no Intel code is executed.
 Read-only pre-upgrade provider checks confirm the expected account and role for
 both existing sibling profiles on all three physical Macs: six successful STS
 checks without another browser sign-in. The inventory finds no recognized old
-TerminalDB QA app, LaunchAgent or background-item registration on any of them.
+TerminalDB QA app, LaunchAgent file or loaded launch label on any of them.
+Background-item database inspection passes on the MacBook Pro; macOS denies
+that read on the other two Macs, so their database inspection remains pending.
 Installed 0.6.8 About, normal terminal input, deployed-site and public-artifact
 checks remain part of the post-merge handoff and are reported separately.
