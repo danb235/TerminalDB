@@ -73,7 +73,7 @@ remove the old pairing on both Macs first.
 
 ## Shared AWS access
 
-For AWS CLI access across Macs, use TerminalDB → AWS Access. Enable AWS sync
+For AWS CLI access across Macs, click AWS in the terminal footer. Enable AWS sharing
 independently on both paired Macs, sign in with detected profiles or share a
 current login, and install each receiving profile mapping once. A receiving Mac can use cached temporary
 access while the source sleeps, until AWS's expiry. If no signed-in Mac is

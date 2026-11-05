@@ -18,7 +18,7 @@ public final class TDBSessionServer: NSObject {
     private var clients: [String: PeerHostClient] = [:]
     private var leases: [String: PeerControlLease] = [:]
     private let receipts = PeerReceipts()
-    private var inFlight: Set<String> = []
+    private let inFlight = PeerRequestFlights()
     private let readable: Set<String> = ["session.list", "session.attach", "session.snapshot", "host.state", "receipt", "ledger.query", "product.list", "project.files", "project.preview", "health.ping"]
 
     @objc public func start() throws {
@@ -75,18 +75,53 @@ public final class TDBSessionServer: NSObject {
         let receiptKey = client.principal + ":" + requestID
         guard !inFlight.contains(receiptKey) else { return }
         guard inFlight.count < 512 else { client.connection.close(); return }
-        inFlight.insert(receiptKey)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in self?.inFlight.remove(receiptKey) }
+        inFlight.insert(receiptKey, operation: operation)
+        if !SharedAWSRemotePolicy.receiptOperations.contains(operation) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in self?.inFlight.expire(receiptKey) }
+        }
         let session = message["sessionId"] as? String ?? ""
         if operation.hasPrefix("aws.") {
-            guard operation == "aws.catalog" || client.principal.hasPrefix("local:") else {
+            let local = client.principal.hasPrefix("local:")
+            let requestPrincipal = client.principal
+            guard local || SharedAWSRemotePolicy.readOperations.contains(operation) || SharedAWSRemotePolicy.remoteManagement.contains(operation) else {
                 inFlight.remove(receiptKey)
-                client.connection.send(["type": "reply", "requestId": requestID, "error": "Manage AWS access on this Mac."])
+                let denied: [String: Any] = ["type": "reply", "requestId": requestID, "error": "Manage AWS access on this Mac."]
+                if SharedAWSRemotePolicy.receiptOperations.contains(operation) { receipts.remember(principal: requestPrincipal, request: requestID, result: denied) }
+                client.connection.send(denied)
                 return
             }
-            aws.handle(operation, payload: message, audit: client.connection.peerAudit, authenticate: true) { [weak self, weak client] payload in
-                self?.inFlight.remove(receiptKey)
+            let generation = message["generation"] as? UInt64
+            let controls = controlsAWS(client, session: session, generation: generation)
+            guard local || SharedAWSRemotePolicy.readOperations.contains(operation) || controls else {
+                inFlight.remove(receiptKey)
+                let denied: [String: Any] = ["type": "reply", "requestId": requestID,
+                    "error": "This view no longer controls the session. Choose Take Control.", "code": "control-required"]
+                receipts.remember(principal: requestPrincipal, request: requestID, result: denied)
+                client.connection.send(denied)
+                return
+            }
+            if operation == "aws.status" {
+                inFlight.remove(receiptKey)
+                var result = aws.status()
+                result["capabilities"] = SharedAWSRemotePolicy.capabilities(local: local, controlling: controls)
+                result["type"] = "reply"; result["requestId"] = requestID
+                client.connection.send(result); return
+            }
+            let authorize: (() -> Bool)? = !local && SharedAWSRemotePolicy.remoteManagement.contains(operation) ? { [weak self, weak client] in
+                let validate = { [weak self, weak client] in
+                    guard let self, let client, self.clients[client.connection.id] === client, !client.superseded else { return false }
+                    return self.controlsAWS(client, session: session, generation: generation)
+                }
+                return Thread.isMainThread ? validate() : DispatchQueue.main.sync(execute: validate)
+            } : nil
+            aws.handle(operation, payload: message, audit: client.connection.peerAudit, authenticate: true,
+                       queuedAuthorization: authorize) { [weak self, weak client] payload in
+                guard let self else { return }
+                self.inFlight.remove(receiptKey)
                 var reply = payload; reply["type"] = "reply"; reply["requestId"] = requestID
+                if SharedAWSRemotePolicy.receiptOperations.contains(operation) {
+                    self.receipts.remember(principal: requestPrincipal, request: requestID, result: reply)
+                }
                 client?.connection.send(reply)
             }
             return
@@ -196,6 +231,11 @@ public final class TDBSessionServer: NSObject {
         }
     }
 
+    private func controlsAWS(_ client: PeerHostClient, session: String, generation: UInt64?) -> Bool {
+        SharedAWSRemotePolicy.controls(attached: client.sessions.contains(session), lease: leases[session],
+                                       principal: client.principal, generation: generation)
+    }
+
     private func publishControl(_ session: String) {
         for client in clients.values where client.sessions.contains(session) {
             client.connection.send(["type": "control", "sessionId": session,
@@ -220,6 +260,24 @@ public final class TDBSessionServer: NSObject {
             }
         }
         if message["type"] as? String == "ended", let session { leases.removeValue(forKey: session) }
+    }
+}
+
+// Pending AWS mutations can outlive an IPC deadline while the operating system
+// is waiting on Keychain. Their principal/request marker survives reconnects
+// until completion; forgetting it would allow the same action to queue twice.
+final class PeerRequestFlights {
+    private struct Entry { let deadline: Double? }
+    private var entries: [String: Entry] = [:]
+    var count: Int { entries.count }
+    func contains(_ key: String) -> Bool { entries[key] != nil }
+    func insert(_ key: String, operation: String, now: Double = PeerClock.now) {
+        entries[key] = Entry(deadline: SharedAWSRemotePolicy.receiptOperations.contains(operation) ? nil : now + 60)
+    }
+    func remove(_ key: String) { entries.removeValue(forKey: key) }
+    func expire(_ key: String, now: Double = PeerClock.now) {
+        guard let deadline = entries[key]?.deadline, now >= deadline else { return }
+        entries.removeValue(forKey: key)
     }
 }
 

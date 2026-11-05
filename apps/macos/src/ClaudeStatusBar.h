@@ -17,6 +17,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)claudeStatusBar:(ClaudeStatusBar *)statusBar
  didRequestRemoveProfile:(ClaudeProfile *)profile;
 - (void)claudeStatusBarDidRequestUsagePanel:(ClaudeStatusBar *)statusBar;
+- (void)claudeStatusBarDidRequestAWSAccounts:(ClaudeStatusBar *)statusBar;
 - (void)claudeStatusBar:(ClaudeStatusBar *)statusBar didRequestSharedSignIn:(nullable ClaudeProfile *)profile;
 - (void)claudeStatusBarDidRequestAccountSync:(ClaudeStatusBar *)statusBar;
 
@@ -35,6 +36,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, copy, nullable) void (^peerRefreshHandler)(void);
 - (NSDictionary *)peerUsagePresentation;
 - (void)applyPeerState:(NSDictionary *)state;
+- (void)applyAWSStatus:(NSDictionary *)snapshot;
 
 - (instancetype)initWithFrame:(NSRect)frame
              claudeExecutable:(nullable NSString *)claudeExecutable
@@ -48,6 +50,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)presentAccountPicker;
 - (void)accountSelectionDidComplete:(BOOL)accepted;
 - (NSView *)prepareUsagePanel;
+- (NSView *)prepareEmbeddedAccountsView;
 - (void)refreshUsageDashboard;
 - (void)dismissUsagePanel:(nullable id)sender;
 - (void)didDismissUsagePanel;

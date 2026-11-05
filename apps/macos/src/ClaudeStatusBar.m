@@ -203,19 +203,40 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
 }
 @end
 
+@interface ClaudeStatusBarInterfaceDelegate : NSObject <ClaudeStatusBarDelegate>
+@property(nonatomic) NSUInteger claudeRequests;
+@property(nonatomic) NSUInteger awsRequests;
+@end
+
+@implementation ClaudeStatusBarInterfaceDelegate
+- (void)claudeStatusBar:(ClaudeStatusBar *)bar didSelectProfile:(ClaudeProfile *)profile { (void)bar; (void)profile; }
+- (void)claudeStatusBarDidRequestAddProfile:(ClaudeStatusBar *)bar { (void)bar; }
+- (void)claudeStatusBar:(ClaudeStatusBar *)bar didRequestLoginProfile:(ClaudeProfile *)profile { (void)bar; (void)profile; }
+- (void)claudeStatusBar:(ClaudeStatusBar *)bar didRequestRemoveProfile:(ClaudeProfile *)profile { (void)bar; (void)profile; }
+- (void)claudeStatusBarDidRequestUsagePanel:(ClaudeStatusBar *)bar { (void)bar; self.claudeRequests++; }
+- (void)claudeStatusBarDidRequestAWSAccounts:(ClaudeStatusBar *)bar { (void)bar; self.awsRequests++; }
+- (void)claudeStatusBar:(ClaudeStatusBar *)bar didRequestSharedSignIn:(ClaudeProfile *)profile { (void)bar; (void)profile; }
+- (void)claudeStatusBarDidRequestAccountSync:(ClaudeStatusBar *)bar { (void)bar; }
+@end
+
 @interface ClaudeStatusBar ()
 @property(nonatomic, copy, nullable) NSString *claudeExecutable;
 @property(nonatomic, strong) ClaudeProfileManager *profileManager;
 @property(nonatomic, strong) TerminalTheme *theme;
 @property(nonatomic, strong, readwrite, nullable) ClaudeProfile *selectedProfile;
 @property(nonatomic, strong) NSTextField *profileLabel;
+@property(nonatomic, strong) NSTextField *awsLabel;
 @property(nonatomic, strong) NSTextField *directoryLabel;
 @property(nonatomic, strong) NSTextField *modelLabel;
 @property(nonatomic, strong) NSTextField *environmentLabel;
 @property(nonatomic, strong) NSTextField *usageLabel;
 @property(nonatomic, strong) NSTextField *pasteReceiptLabel;
 @property(nonatomic, strong) NSButton *profileButton;
+@property(nonatomic, strong) NSButton *awsButton;
 @property(nonatomic, strong) NSButton *usageButton;
+@property(nonatomic, copy) NSDictionary *awsStatus;
+@property(nonatomic) BOOL embeddedAccountsView;
+@property(nonatomic, strong) NSButton *usageDoneButton;
 @property(nonatomic) BOOL accountSelectionPending;
 @property(nonatomic, copy) NSString *pendingProfileIdentifier;
 @property(nonatomic, copy) void (^pendingUsagePanelDismissHandler)(void);
@@ -257,6 +278,7 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
 @property(nonatomic, strong) NSTextField *usageEmpty;
 @property(nonatomic, strong) NSButton *usageRefreshButton;
 @property(nonatomic, strong) NSLayoutConstraint *usageColumnWidth;
+@property(nonatomic, strong) NSLayoutConstraint *usageColumnTop;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, ClaudeAccountRow *> *usageAccountRows;
 @property(nonatomic, copy) NSArray *usagePresentation;
 + (nullable NSNumber *)nextResetTimestamp:(nullable NSNumber *)timestamp
@@ -286,6 +308,15 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
 
 @implementation ClaudeStatusBar
 @synthesize usagePanelDismissHandler = _usagePanelDismissHandler;
+@synthesize accountWorkstationName = _accountWorkstationName;
+
+- (void)setAccountWorkstationName:(NSString *)name {
+    if ([_accountWorkstationName isEqualToString:name]) return;
+    _accountWorkstationName = [name copy];
+    [self updateProfileLabel];
+    [self updateAWSLabel];
+    [self refreshUsageWindowContents];
+}
 
 - (void)setUsagePanelDismissHandler:(void (^)(void))handler {
     _usagePanelDismissHandler = [handler copy];
@@ -316,6 +347,14 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
     _profileLabel.maximumNumberOfLines = 1;
     _profileLabel.selectable = NO;
     [self addSubview:_profileLabel];
+
+    _awsLabel = [NSTextField labelWithString:@"AWS · Checking…"];
+    _awsLabel.textColor = theme.statusBarActiveForeground;
+    _awsLabel.font = _profileLabel.font;
+    _awsLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    _awsLabel.maximumNumberOfLines = 1;
+    _awsLabel.selectable = NO;
+    [self addSubview:_awsLabel];
 
     _directoryLabel = [NSTextField labelWithString:@"~"];
     _directoryLabel.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
@@ -367,19 +406,28 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
     _pasteReceiptLabel.hidden = YES;
     [_pasteReceiptLabel setAccessibilityLabel:@"Paste receipt"];
     [self addSubview:_pasteReceiptLabel];
-    _profileButton = [NSButton buttonWithTitle:@"" target:self action:@selector(showAccountPicker:)];
+    _profileButton = [NSButton buttonWithTitle:@"" target:self action:@selector(showUsageWindow:)];
     _profileButton.bordered = NO;
-    [_profileButton setAccessibilityLabel:@"Choose Claude account"];
+    _profileButton.identifier = @"accounts-claude";
+    [_profileButton setAccessibilityIdentifier:@"accounts-claude"];
+    [_profileButton setAccessibilityLabel:@"Open Claude accounts"];
     [self addSubview:_profileButton];
+    _awsButton = [NSButton buttonWithTitle:@"" target:self action:@selector(showAWSAccounts:)];
+    _awsButton.bordered = NO;
+    _awsButton.identifier = @"accounts-aws";
+    [_awsButton setAccessibilityIdentifier:@"accounts-aws"];
+    [self addSubview:_awsButton];
     _usageButton = [NSButton buttonWithTitle:@"" target:self action:@selector(showUsageWindow:)];
     _usageButton.bordered = NO;
     [_usageButton setAccessibilityLabel:@"Open Claude usage and account settings"];
     [self addSubview:_usageButton];
     [_profileLabel setAccessibilityElement:NO];
+    [_awsLabel setAccessibilityElement:NO];
     [_usageLabel setAccessibilityElement:NO];
     [self setAccessibilityElement:NO];
 
     [self updateProfileLabel];
+    [self applyAWSStatus:@{@"state": @"loading"}];
     [NSNotificationCenter.defaultCenter
         addObserver:self
            selector:@selector(profilesDidChange:)
@@ -402,10 +450,58 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
 - (void)resetCursorRects {
     [super resetCursorRects];
     [self addCursorRect:self.profileButton.frame cursor:NSCursor.pointingHandCursor];
+    [self addCursorRect:self.awsButton.frame cursor:NSCursor.pointingHandCursor];
     if (!self.usageButton.hidden) [self addCursorRect:self.usageButton.frame cursor:NSCursor.pointingHandCursor];
 }
 
 - (void)showAccountPicker:(id)sender { (void)sender; [self presentAccountPicker]; }
+
+- (void)showAWSAccounts:(id)sender {
+    (void)sender;
+    [self.delegate claudeStatusBarDidRequestAWSAccounts:self];
+}
+
+- (void)applyAWSStatus:(NSDictionary *)snapshot {
+    self.awsStatus = [snapshot copy] ?: @{};
+    [self updateAWSLabel];
+}
+
+- (void)updateAWSLabel {
+    NSDictionary *summary = [self.awsStatus[@"summary"] isKindOfClass:NSDictionary.class]
+        ? self.awsStatus[@"summary"] : @{};
+    NSString *state = [self.awsStatus[@"state"] isKindOfClass:NSString.class]
+        ? self.awsStatus[@"state"] : @"loading";
+    NSString *summaryState = [summary[@"state"] isKindOfClass:NSString.class] ? summary[@"state"] : @"";
+    NSString *title = [summary[@"title"] isKindOfClass:NSString.class] ? summary[@"title"] : @"";
+    NSString *detail = [summary[@"detail"] isKindOfClass:NSString.class] ? summary[@"detail"] : @"";
+    // A cache or connection override may provide its own honest status. An
+    // old Ready summary paired with a non-current envelope must not survive.
+    BOOL currentFallback = title.length > 0 && ([summaryState isEqualToString:state] || [summaryState isEqualToString:@"disconnected"]);
+    if (!currentFallback && [state isEqualToString:@"loading"]) {
+        title = @"AWS · Checking…";
+        detail = @"Waiting for AWS profile status.";
+    } else if (!currentFallback && [state isEqualToString:@"stale"]) {
+        title = @"AWS · Updating…";
+        detail = @"The previous AWS status is out of date. Waiting for a current update.";
+    } else if (!currentFallback && ![state isEqualToString:@"ready"]) {
+        title = @"AWS · Unavailable";
+        if (detail.length == 0) detail = @"AWS profile status is unavailable.";
+    }
+    if (title.length == 0) title = @"AWS";
+    if (![title hasPrefix:@"AWS"]) title = [@"AWS · " stringByAppendingString:title];
+    self.awsLabel.stringValue = title;
+    NSUInteger attention = [summary[@"attentionCount"] isKindOfClass:NSNumber.class] ? [summary[@"attentionCount"] unsignedIntegerValue] : 0;
+    self.awsLabel.textColor = attention > 0 && [state isEqualToString:@"ready"]
+        ? self.theme.ansiColors[3] : self.theme.statusBarActiveForeground;
+    NSString *scope = self.accountWorkstationName.length > 0 ? self.accountWorkstationName : @"This Mac";
+    NSString *tooltip = [NSString stringWithFormat:@"AWS profiles on %@. %@%@", scope, detail,
+        detail.length > 0 ? @" Open AWS accounts to manage profiles." : @"Open AWS accounts to manage profiles."];
+    self.awsLabel.toolTip = tooltip;
+    self.awsButton.toolTip = tooltip;
+    [self.awsButton setAccessibilityLabel:[NSString stringWithFormat:@"Open AWS profiles on %@", scope]];
+    [self.awsButton setAccessibilityValue:title];
+    [self setNeedsLayout:YES];
+}
 
 - (NSMenu *)accountPickerMenu {
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Claude accounts"];
@@ -494,6 +590,15 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
 }
 
 - (NSView *)prepareUsagePanel {
+    return [self prepareAccountsViewEmbedded:NO];
+}
+
+- (NSView *)prepareEmbeddedAccountsView {
+    return [self prepareAccountsViewEmbedded:YES];
+}
+
+- (NSView *)prepareAccountsViewEmbedded:(BOOL)embedded {
+    self.embeddedAccountsView = embedded;
     if (self.usagePanelView == nil) {
         ClaudeUsageDocumentView *content = [[ClaudeUsageDocumentView alloc]
             initWithFrame:NSMakeRect(0, 0, MAX(320, NSWidth(self.bounds)), 620)];
@@ -687,10 +792,10 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
     self.usageRefreshButton = [NSButton buttonWithTitle:@"Refresh Usage" target:self action:@selector(refreshUsageWindow:)];
     NSButton *add = [NSButton buttonWithTitle:@"Add Claude Account…" target:self action:@selector(addProfileFromStatusMenu:)];
     NSButton *sync = [NSButton buttonWithTitle:@"Sharing…" target:self action:@selector(showAccountSync:)];
-    NSButton *done = [NSButton buttonWithTitle:@"Done" target:self action:@selector(dismissUsagePanel:)];
-    done.keyEquivalent = @"\e"; done.keyEquivalentModifierMask = 0;
+    self.usageDoneButton = [NSButton buttonWithTitle:@"Done" target:self action:@selector(dismissUsagePanel:)];
+    self.usageDoneButton.keyEquivalent = @"\e"; self.usageDoneButton.keyEquivalentModifierMask = 0;
     self.usageFooterLeading = ClaudeStack(@[self.usageRefreshButton, add], NO, 12);
-    self.usageFooterTrailing = ClaudeStack(@[sync, done], NO, 12);
+    self.usageFooterTrailing = ClaudeStack(@[sync, self.usageDoneButton], NO, 12);
     self.usageFooter = ClaudeStack(@[self.usageFooterLeading, self.usageFooterTrailing], NO, 24);
     self.usageColumn = ClaudeStack(@[self.usageHeading, self.usageScope, self.usageCount,
         self.usageProgress, self.usageWarning, self.usageEmpty, self.usageRows, self.usageFooter], YES, 12);
@@ -698,10 +803,11 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
     self.usageColumn.translatesAutoresizingMaskIntoConstraints = NO;
     [self.usageWindowDocumentView addSubview:self.usageColumn];
     self.usageColumnWidth = [self.usageColumn.widthAnchor constraintEqualToConstant:592];
+    self.usageColumnTop = [self.usageColumn.topAnchor constraintEqualToAnchor:self.usageWindowDocumentView.topAnchor constant:24];
     [NSLayoutConstraint activateConstraints:@[
         self.usageColumnWidth,
         [self.usageColumn.centerXAnchor constraintEqualToAnchor:self.usageWindowDocumentView.centerXAnchor],
-        [self.usageColumn.topAnchor constraintEqualToAnchor:self.usageWindowDocumentView.topAnchor constant:24],
+        self.usageColumnTop,
     ]];
     for (NSView *view in self.usageColumn.arrangedSubviews) [view.widthAnchor constraintEqualToAnchor:self.usageColumn.widthAnchor].active = YES;
 }
@@ -751,15 +857,21 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
     if (!document) return;
     [self prepareUsageColumn];
     CGFloat viewportWidth = MAX(320, NSWidth(document.bounds));
-    CGFloat columnWidth = MIN(1040, MAX(0, viewportWidth - 48));
+    CGFloat columnWidth = self.embeddedAccountsView
+        ? MAX(0, viewportWidth - 32)
+        : MIN(1040, MAX(0, viewportWidth - 48));
     self.usageDashboardViewportWidth = NSWidth(document.bounds);
     self.usageColumnWidth.constant = columnWidth;
+    self.usageColumnTop.constant = self.embeddedAccountsView ? 12 : 24;
     self.usageFooter.orientation = columnWidth < 520 ? NSUserInterfaceLayoutOrientationVertical : NSUserInterfaceLayoutOrientationHorizontal;
     self.usageFooter.alignment = columnWidth < 520 ? NSLayoutAttributeLeading : NSLayoutAttributeCenterY;
     NSArray<ClaudeProfile *> *profiles = self.profileManager.profiles;
     NSString *count = [NSString stringWithFormat:@"%lu %@ available", (unsigned long)profiles.count, profiles.count == 1 ? @"account" : @"accounts"];
-    self.usageHeading.hidden = self.usagePanelDismissHandler != nil;
-    self.usageScope.stringValue = [NSString stringWithFormat:@"For this tab on %@ · %@", self.accountWorkstationName ?: @"This Mac", count];
+    self.usageHeading.hidden = self.embeddedAccountsView || self.usagePanelDismissHandler != nil;
+    self.usageDoneButton.hidden = self.embeddedAccountsView;
+    self.usageScope.stringValue = self.embeddedAccountsView
+        ? [NSString stringWithFormat:@"For this terminal tab · %@", count]
+        : [NSString stringWithFormat:@"For this tab on %@ · %@", self.accountWorkstationName ?: @"This Mac", count];
     self.usageCount.hidden = YES;
     self.usageEmpty.hidden = profiles.count > 0;
     self.usageProgress.hidden = !self.usageDashboardRefreshInFlight;
@@ -843,7 +955,7 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
         self.usageWarning.stringValue = eta <= 1 ? [NSString stringWithFormat:@"%@ has reached its %@ allowance.", urgentProfile.label, mostUrgent[@"label"]] : [NSString stringWithFormat:@"%@ may reach its %@ allowance in %@ at the current pace.", urgentProfile.label, mostUrgent[@"label"], [ClaudeStatusBar compactDurationFromSeconds:eta]];
     }
     [document layoutSubtreeIfNeeded];
-    CGFloat height = ceil(self.usageColumn.fittingSize.height) + 48;
+    CGFloat height = ceil(self.usageColumn.fittingSize.height) + (self.embeddedAccountsView ? 24 : 48);
     if (fabs(NSHeight(document.frame) - height) > 1) [document setFrameSize:NSMakeSize(viewportWidth, height)];
 }
 
@@ -905,18 +1017,29 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
     CGFloat inset = 12, gap = 12;
     CGFloat width = MAX(0, NSWidth(self.bounds) - inset * 2);
     CGFloat height = MAX(0, NSHeight(self.bounds) - 8);
-    CGFloat profileWidth = MIN(MAX(96, self.profileLabel.intrinsicContentSize.width + 8), MIN(260, width * 0.36));
+    // Keep both providers discoverable before allocating space to directory,
+    // usage, and model details. Their text can truncate; the provider names stay.
+    CGFloat providerMinimum = MIN(width, 148);
+    CGFloat connectionWidth = self.environmentLabel.stringValue.length > 0
+        ? MIN(self.environmentLabel.intrinsicContentSize.width + 6, MAX(0, width - providerMinimum - gap * 2)) : 0;
+    CGFloat providerBudget = MAX(0, width - (connectionWidth > 0 ? connectionWidth + gap : 0));
+    CGFloat profileWidth = MIN(MAX(72, self.profileLabel.intrinsicContentSize.width + 8), MIN(260, providerBudget * 0.40));
+    CGFloat awsWidth = MIN(MAX(72, self.awsLabel.intrinsicContentSize.width + 8), MIN(220, MAX(0, providerBudget - profileWidth - gap)));
+    if (providerBudget < 300) {
+        profileWidth = MAX(0, (providerBudget - gap) * 0.55);
+        awsWidth = MAX(0, providerBudget - profileWidth - gap);
+    }
     self.profileLabel.frame = NSMakeRect(inset, 4, profileWidth, height);
     self.profileButton.frame = self.profileLabel.frame;
-    CGFloat left = inset + profileWidth + gap;
+    self.awsLabel.frame = NSMakeRect(inset + profileWidth + gap, 4, awsWidth, height);
+    self.awsButton.frame = self.awsLabel.frame;
+    CGFloat left = NSMaxX(self.awsLabel.frame) + gap;
     CGFloat right = NSWidth(self.bounds) - inset;
-    CGFloat connectionWidth = self.environmentLabel.stringValue.length > 0
-        ? MIN(self.environmentLabel.intrinsicContentSize.width + 6, MAX(0, right - left - 64)) : 0;
     self.environmentLabel.hidden = connectionWidth <= 0;
     self.environmentLabel.frame = NSMakeRect(right - connectionWidth, 4, connectionWidth, height);
     if (connectionWidth > 0) right -= connectionWidth + gap;
     BOOL receipt = !self.pasteReceiptLabel.hidden;
-    BOOL showUsage = !receipt && width >= 430;
+    BOOL showUsage = !receipt && width >= 640;
     CGFloat usageWidth = showUsage ? (width < 880 ? 64 : MIN(300, self.usageLabel.intrinsicContentSize.width + 8)) : 0;
     usageWidth = MIN(usageWidth, MAX(0, right - left - 80));
     self.usageLabel.hidden = usageWidth == 0 || width < 880;
@@ -1132,11 +1255,12 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
 
 - (void)updateProfileLabel {
     self.profileLabel.stringValue = self.accountSelectionPending ? @"Claude · Switching…" : self.selectedProfile ? [self displayTitleForProfile:self.selectedProfile] : @"Claude · Choose Account ▾";
-    self.profileLabel.toolTip = [NSString stringWithFormat:@"Choose a Claude account for this tab on %@", self.accountWorkstationName ?: @"This Mac"];
+    self.profileLabel.toolTip = [NSString stringWithFormat:@"Open Claude accounts for this tab on %@. Right-click to switch accounts quickly.", self.accountWorkstationName ?: @"This Mac"];
     self.profileButton.toolTip = self.profileLabel.toolTip;
+    self.profileButton.menu = [self accountPickerMenu];
     [self.profileButton setAccessibilityLabel:self.selectedProfile
-        ? [NSString stringWithFormat:@"Choose Claude account. Current account: %@. For this tab on %@", self.selectedProfile.label, self.accountWorkstationName ?: @"This Mac"]
-        : @"Choose Claude account"];
+        ? [NSString stringWithFormat:@"Open Claude accounts. Current account: %@. For this tab on %@", self.selectedProfile.label, self.accountWorkstationName ?: @"This Mac"]
+        : [NSString stringWithFormat:@"Open Claude accounts for this tab on %@", self.accountWorkstationName ?: @"This Mac"]];
     [self setNeedsLayout:YES];
 }
 
@@ -2284,12 +2408,36 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
     NSDictionary *entries = @{first.identifier: @{@"account_state": @"signed_in", @"forecasts": @[]}, second.identifier: @{@"account_state": @"signed_in", @"forecasts": @[]}};
     NSDictionary *state = @{@"accountId": first.identifier, @"usageState": @{@"entries": entries, @"loggedIn": @YES, @"known": @YES, @"label": @"Usage  7d 34%"}};
     [bar applyPeerState:state];
+    NSDictionary *aws = @{@"state": @"ready", @"updatedAt": @(NSDate.date.timeIntervalSince1970),
+        @"summary": @{@"title": @"AWS · 12 ready", @"detail": @"Profiles are ready and renew automatically.",
+                       @"state": @"ready", @"readyCount": @12, @"attentionCount": @0, @"configuredCount": @12}};
+    [bar applyAWSStatus:aws];
+    BOOL awsSummary = [bar.awsLabel.stringValue isEqual:@"AWS · 12 ready"] &&
+        [bar.awsButton.toolTip containsString:@"Office Mac"] &&
+        [bar.awsButton.accessibilityLabel containsString:@"Office Mac"] &&
+        [bar.awsButton.accessibilityValue isEqual:bar.awsLabel.stringValue];
+    ClaudeStatusBarInterfaceDelegate *delegate = [[ClaudeStatusBarInterfaceDelegate alloc] init];
+    bar.delegate = delegate;
+    [bar.profileButton performClick:nil]; [bar.awsButton performClick:nil];
+    BOOL accountRouting = delegate.claudeRequests == 1 && delegate.awsRequests == 1 &&
+        bar.profileButton.menu.itemArray.count == 6 &&
+        [bar.profileButton.accessibilityLabel hasPrefix:@"Open Claude accounts"];
+    bar.delegate = nil;
+    [bar applyAWSStatus:@{@"state": @"loading", @"summary": aws[@"summary"]}];
+    BOOL noStaleReady = [bar.awsLabel.stringValue isEqual:@"AWS · Checking…"];
+    [bar applyAWSStatus:@{@"state": @"stale", @"summary": aws[@"summary"]}];
+    noStaleReady &= [bar.awsLabel.stringValue isEqual:@"AWS · Updating…"];
+    [bar applyAWSStatus:@{@"state": @"unavailable", @"summary": aws[@"summary"]}];
+    noStaleReady &= [bar.awsLabel.stringValue isEqual:@"AWS · Unavailable"];
+    [bar applyAWSStatus:@{@"state": @"unavailable", @"summary": @{@"title": @"AWS · Reconnecting", @"state": @"disconnected", @"detail": @"Waiting for the execution Mac."}}];
+    noStaleReady &= [bar.awsLabel.stringValue isEqual:@"AWS · Reconnecting"] && [bar.awsButton.toolTip containsString:@"execution Mac"];
+    [bar applyAWSStatus:aws];
     [bar showDirectory:@"/Projects/a/very/long/project/path" model:@"A long model name"];
     [bar showEnvironment:@"Reconnecting" host:@"Office Mac" detail:@"Check LAN or VPN"];
     BOOL geometry = YES;
-    for (NSNumber *width in @[@640, @900, @1280]) {
+    for (NSNumber *width in @[@320, @430, @640, @900, @1280]) {
         [bar setFrameSize:NSMakeSize(width.doubleValue, 30)]; [bar layoutSubtreeIfNeeded];
-        NSArray *labels = @[bar.profileLabel, bar.directoryLabel, bar.modelLabel, bar.environmentLabel, bar.usageLabel];
+        NSArray *labels = @[bar.profileLabel, bar.awsLabel, bar.directoryLabel, bar.modelLabel, bar.environmentLabel, bar.usageLabel];
         for (NSUInteger i = 0; i < labels.count; i++) {
             NSView *a = labels[i]; if (a.hidden) continue;
             geometry &= NSMinX(a.frame) >= 0 && NSMaxX(a.frame) <= width.doubleValue && NSWidth(a.frame) >= 0;
@@ -2298,6 +2446,9 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
             }
         }
         geometry &= NSWidth(bar.environmentLabel.frame) >= bar.environmentLabel.intrinsicContentSize.width;
+        geometry &= !bar.profileButton.hidden && !bar.awsButton.hidden && NSWidth(bar.profileButton.frame) >= 60 && NSWidth(bar.awsButton.frame) >= 48;
+        geometry &= !NSIntersectsRect(bar.profileButton.frame, bar.awsButton.frame) &&
+            !NSIntersectsRect(bar.awsButton.frame, bar.environmentLabel.frame);
     }
     [bar showPasteReceiptWithByteCount:8192 lineCount:12]; [bar layoutSubtreeIfNeeded];
     BOOL receipt = bar.directoryLabel.hidden && bar.modelLabel.hidden && bar.usageButton.hidden && !NSIntersectsRect(bar.pasteReceiptLabel.frame, bar.environmentLabel.frame);
@@ -2361,14 +2512,31 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
     BOOL standaloneHeader = !bar.usageHeading.hidden;
     bar.usagePanelDismissHandler = ^{ reopenedDismissed++; };
     embeddedHeader &= bar.usageHeading.hidden;
+    NSView *embeddedView = [bar prepareEmbeddedAccountsView];
+    BOOL commonAccountsHeader = embeddedView == bar.usagePanelView && bar.usageHeading.hidden && bar.usageDoneButton.hidden &&
+        [bar.usageScope.stringValue containsString:@"For this terminal tab"] &&
+        [bar.usageScope.stringValue containsString:@"2 accounts available"] &&
+        ![bar.usageScope.stringValue containsString:@"Office Mac"] && bar.usageAccountRows[first.identifier] == row;
+    for (NSNumber *width in @[@520, @900]) {
+        [embeddedView setFrameSize:NSMakeSize(width.doubleValue, 620)];
+        [bar refreshUsageWindowContents]; [embeddedView layoutSubtreeIfNeeded];
+        NSRect column = [bar.usageColumn convertRect:bar.usageColumn.bounds toView:embeddedView];
+        commonAccountsHeader &= fabs(NSMinX(column) - 16) < 1 &&
+            fabs(NSMaxX(column) - (width.doubleValue - 16)) < 1 && fabs(NSMinY(column) - 12) < 1;
+    }
+    [bar prepareUsagePanel];
+    commonAccountsHeader &= !bar.usageDoneButton.hidden && [bar.usageScope.stringValue containsString:@"Office Mac"];
+    [embeddedView layoutSubtreeIfNeeded];
+    NSRect standaloneColumn = [bar.usageColumn convertRect:bar.usageColumn.bounds toView:embeddedView];
+    commonAccountsHeader &= fabs(NSMinX(standaloneColumn) - 24) < 1 && fabs(NSMinY(standaloneColumn) - 24) < 1;
     NSMutableDictionary *updatedEntries = [entries mutableCopy];
     updatedEntries[first.identifier] = @{@"account_state": @"signed_out", @"forecasts": @[]};
     [bar applyPeerState:@{@"accountId":first.identifier, @"usageState":@{@"entries":updatedEntries}}];
     BOOL stableChangedRows = bar.usageAccountRows[first.identifier] == row && row.use == button && [row.use.title isEqual:@"Sign In…"];
-    BOOL separateHitAreas = [bar.profileButton isDescendantOf:bar] && [bar.usageButton isDescendantOf:bar] && !bar.accessibilityElement;
+    BOOL separateHitAreas = [bar.profileButton isDescendantOf:bar] && [bar.awsButton isDescendantOf:bar] && [bar.usageButton isDescendantOf:bar] && !bar.accessibilityElement;
     BOOL compactHeader = !ClaudeUsageViewContainsText(bar.usagePanelView, @"YOUR CLAUDE ACCOUNTS") && !ClaudeUsageViewContainsText(bar.usagePanelView, @"Active on This Tab");
-    BOOL result = geometry && receipt && noAmbiguousLocal && scope && noOptimisticSelection && rejectedSelection && acceptedDismissalOnly && preservesReopenedPanel && menuDoesNotDismissLaterPanel && stableRows && accountColumns && embeddedHeader && standaloneHeader && stableChangedRows && separateHitAreas && compactHeader;
-    if (!result) fprintf(stderr, "FAIL account interface checks geometry=%d receipt=%d local=%d scope=%d pending=%d rejected=%d dismiss=%d reopened=%d menu=%d rows=%d columns=%d embedded=%d standalone=%d updates=%d hit=%d compact=%d\n", geometry, receipt, noAmbiguousLocal, scope, noOptimisticSelection, rejectedSelection, acceptedDismissalOnly, preservesReopenedPanel, menuDoesNotDismissLaterPanel, stableRows, accountColumns, embeddedHeader, standaloneHeader, stableChangedRows, separateHitAreas, compactHeader);
+    BOOL result = geometry && awsSummary && accountRouting && noStaleReady && commonAccountsHeader && receipt && noAmbiguousLocal && scope && noOptimisticSelection && rejectedSelection && acceptedDismissalOnly && preservesReopenedPanel && menuDoesNotDismissLaterPanel && stableRows && accountColumns && embeddedHeader && standaloneHeader && stableChangedRows && separateHitAreas && compactHeader;
+    if (!result) fprintf(stderr, "FAIL account interface checks geometry=%d aws=%d routing=%d freshness=%d common=%d receipt=%d local=%d scope=%d pending=%d rejected=%d dismiss=%d reopened=%d menu=%d rows=%d columns=%d embedded=%d standalone=%d updates=%d hit=%d compact=%d\n", geometry, awsSummary, accountRouting, noStaleReady, commonAccountsHeader, receipt, noAmbiguousLocal, scope, noOptimisticSelection, rejectedSelection, acceptedDismissalOnly, preservesReopenedPanel, menuDoesNotDismissLaterPanel, stableRows, accountColumns, embeddedHeader, standaloneHeader, stableChangedRows, separateHitAreas, compactHeader);
     return result;
 }
 

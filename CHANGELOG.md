@@ -7,6 +7,33 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.10] - 2026-11-05
+
+### Added
+
+- Open Claude and AWS accounts directly from the main window's footer, with a
+  shared Accounts pane that keeps the execution Mac visible.
+- See AWS profile readiness at a glance and open profile details, access checks,
+  and sign-in actions without navigating the application menu.
+
+### Changed
+
+- Keep the terminal visible beside Accounts in wide windows. Use a compact
+  overlay in smaller windows, with consistent Claude and AWS navigation.
+- Complete AWS browser sign-in on the Mac you are using. Approved sharing
+  updates your other Macs while their account lists stay scoped to where the
+  current terminal runs.
+- Separate AWS credential validity from sign-in lifetime, show reconnection and
+  attention states clearly, and keep status updates responsive without running
+  credential checks just to draw the footer.
+
+### Fixed
+
+- Keep a required AWS sign-in and its retry action visible after an unsuccessful
+  attempt, while preserving still-valid cached access.
+- Offer an explicit switch to approved shared AWS access when a native sharing
+  source needs recovery, so profile status matches the provider commands use.
+
 ## [0.6.9] - 2026-11-04
 
 ### Changed

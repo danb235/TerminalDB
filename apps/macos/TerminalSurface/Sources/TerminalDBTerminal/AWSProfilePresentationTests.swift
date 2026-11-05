@@ -14,7 +14,7 @@ enum AWSProfilePresentationTests {
             accountID: "111111111111", roleName: "Reader", ssoSessionName: "company-sso")
         func row(local: Bool = false, installed: Bool = true, auth: String = "expired",
                  available: Bool = true, status: String = "Ready", expires: Double? = nil,
-                 checkState: String? = nil, checkedExpiry: Double? = nil, needsSharedRenewal: Bool = false) -> AWSProfilePresentation {
+                 checkState: String? = nil, checkedExpiry: Double? = nil, needsSharedRenewal: Bool = false, incoming: Bool = false, incomingExpiry: Double? = nil) -> AWSProfilePresentation {
             var check: [String: Any] = ["needsSharedRenewal": needsSharedRenewal]
             if let checkState { check["state"] = checkState }
             if let checkedExpiry { check["expiresAt"] = checkedExpiry }
@@ -23,7 +23,7 @@ enum AWSProfilePresentationTests {
                 sharedNames: [profile.name], sourceNames: ["Office Mac"], available: available,
                 expiration: expires ?? future, status: status,
                 authentication: AWSProfileAuthentication(["state": auth, "sessionName": "company-sso", "expiresAt": now.addingTimeInterval(-60).timeIntervalSince1970]),
-                sourceCheck: AWSSourceCheck(check))
+                sourceCheck: AWSSourceCheck(check), incomingAvailable: incoming, incomingSourceNames: incoming ? ["Viewing Mac"] : [], incomingExpiration: incoming ? (incomingExpiry ?? expires ?? future) : nil)
         }
         func state(_ row: AWSProfilePresentation, source: Bool = false) -> AWSProfileRowState {
             row.rowState(isSource: source, sourceStatus: nil, isSigningIn: false, now: now)
@@ -103,6 +103,35 @@ enum AWSProfilePresentationTests {
         try check(checking.primaryAction == .refreshing && checking.primaryAction?.title == "Checking…")
         let healthyChecking = state(row(local: true, checkState: "checking"), source: true)
         try check(healthyChecking.primaryAction == .ready)
+        // Viewer-local reauthentication only transfers a credential copy.
+        // Native CLI configuration stays explicit until Use Shared Access.
+        let unmappedSource = row(local: true, installed: false, checkState: "signInRequired")
+        try check(state(unmappedSource, source: true).primaryAction == .signIn)
+        try check(state(unmappedSource, source: true).primaryAction != .ready)
+        for failure in ["signInRequired", "networkUnavailable", "checkFailed", "accessDenied", "notChecked"] {
+            let incomingSource = row(local: true, installed: false, checkState: failure, incoming: true)
+            let recovery = state(incomingSource, source: true)
+            try check(recovery.primaryAction == .useSharedAccess && recovery.secondaryAction == nil && recovery.needsAttention)
+            try check(recovery.authenticationText == "From Viewing Mac" && recovery.availabilityText == "Use shared access to continue")
+        }
+        let expiredIncoming = row(local: true, installed: false, expires: now.timeIntervalSince1970 - 1, checkState: "signInRequired", incoming: true)
+        try check(state(expiredIncoming, source: true).primaryAction == .signIn)
+        let conflictedIncoming = row(local: true, installed: false, status: "Choose Account Again", checkState: "signInRequired", incoming: true)
+        try check(state(conflictedIncoming, source: true).primaryAction == .review)
+        let verifiedSource = row(local: true, installed: false, checkState: "ready", checkedExpiry: future, incoming: true)
+        try check(state(verifiedSource, source: true).primaryAction == .ready)
+        let verifiedRenewalNeeded = row(local: true, installed: false, checkState: "signInRequired", checkedExpiry: future, incoming: true)
+        try check(state(verifiedRenewalNeeded, source: true).primaryAction == .useSharedAccess)
+        let expiredShorterIncoming = row(local: true, installed: false, checkState: "signInRequired", incoming: true, incomingExpiry: now.timeIntervalSince1970 - 1)
+        try check(!expiredShorterIncoming.needsIncomingSourceRecovery(isSource: true, now: now) && state(expiredShorterIncoming, source: true).primaryAction == .signIn)
+        let invalidIncomingClock = row(local: true, installed: false, checkState: "signInRequired", incoming: true, incomingExpiry: .nan)
+        try check(!invalidIncomingClock.needsIncomingSourceRecovery(isSource: true, now: now))
+        var missingIncomingClock = row(local: true, installed: false, checkState: "signInRequired", incoming: true)
+        missingIncomingClock.incomingExpiration = nil
+        try check(!missingIncomingClock.needsIncomingSourceRecovery(isSource: true, now: now))
+        let mappedIncoming = row(local: true, installed: true, checkState: "ready", incoming: true)
+        try check(state(mappedIncoming).primaryAction == .ready && !mappedIncoming.needsIncomingSourceRecovery(isSource: false, now: now))
+
         try check(AWSSourceCheck(["state": "arbitrary"]).state == "notChecked")
         try check(AWSSourceCheck(["state": "accessDenied"]).guidance != AWSSourceCheck(["state": "networkUnavailable"]).guidance)
         return checks
