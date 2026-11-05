@@ -11,8 +11,8 @@ manages commands run on **This Mac**; each workstation keeps its own mappings.
    Claude sharing and is off by default.
 2. On the Mac with your AWS profiles, open **Profiles**. TerminalDB detects
    supported SSO and console-login profiles in `~/.aws/config`.
-3. Choose **Sign In** when the SSO session needs renewal, or **Share Access**
-   to reuse a valid existing login. One completed official browser sign-in
+3. Choose **Sign In** when AWS requires authentication, or **Share Access**
+   to share usable existing access. One completed official browser sign-in
    renews the session for all its local profiles. Access is published only for
    the selected profile and profiles already selected for sharing.
 4. On the receiving Mac, the shared profile appears in **Profiles**. Choose
@@ -20,19 +20,21 @@ manages commands run on **This Mac**; each workstation keeps its own mappings.
    the name is occupied, review the proposed alias or explicitly confirm
    replacing the matching local profile. Unrelated profiles are preserved.
 5. Use the configured name in normal AWS commands or an SDK's profile
-   selection. **Ready on This Mac** means the shared access is usable without
+   selection. **Ready** means the shared access is usable without
    signing in again here. **From …** identifies the Mac providing the access.
 
-**Share Access**, **Use on This Mac**, and the sign-in action are visible on the
-profile row. The overflow menu contains additional management actions.
+**Share Access**, **Use on This Mac**, and a required sign-in action are visible
+on the profile row. Every row has **Details**, where expiry information and the
+optional **Check Access** action live. The overflow menu contains additional
+management actions.
 
 Each workstation keeps its own profile mappings. A new name does not require a
 second confirmation form. A same-name migration preserves the original profile
 in a private backup before installing the managed mapping; a separate alias
 keeps the existing profile and its original AWS login command available.
 
-Use **Sync Now** on a receiving Mac to request current shared access. It needs
-a reachable, approved source with access to share. **Sign In Here** is an
+Received profiles synchronize automatically with reachable, approved sources.
+The optional check in **Details** can request current access. **Sign In Here** is an
 optional local login when you want this Mac to provide renewed access itself;
 it is not required to consume valid shared credentials. The official AWS CLI
 owns the browser authentication. Any approved Mac can provide renewed access.
@@ -42,29 +44,34 @@ been edited independently. Stopping sharing prevents additional publication
 from this Mac. These actions do not run the global `aws sso logout` command or
 sign unrelated profiles out.
 
-## Sign-in status
+## Ready and automatic renewal
 
-A profile using this Mac's own AWS login shows its SSO session's cached
-authentication status separately from its temporary account/role access. **SSO needs renewal**
-or **SSO sign-in needed** can appear while cached profile access is still usable.
-**Sign In** stays visible; **Sign In Again** renews a current session without a
-terminal command. Profiles sharing that session show the same browser sign-in
-progress. A cancelled or failed sign-in keeps existing cached access but does not
-claim a renewed SSO login.
+Working profiles show **Ready**. TerminalDB renews selected access in the
+background through the official AWS CLI and sends updates to approved Macs.
+Routine use requires no manual renewal. The source Mac must remain awake,
+logged in, and able to reach AWS; receiving Macs need LAN or VPN connectivity
+to a source when fresh credentials are needed.
 
-Status reflects the local AWS CLI token cache, not a guarantee that AWS has not
-revoked access. An unreadable or unsafe cache shows **SSO status unavailable**.
-A receiving Mac with valid shared access shows **Ready on This Mac** and its
-providing Mac. An
-expired or missing local SSO cache does not produce a mandatory renewal warning
-for that shared access, including when the receiving profile replaces an
-original native SSO profile. Its shared credential expiry remains visible.
-**Sign In Here** remains optional; **Sync Now** requests renewal from the
-approved source.
+An expired cached SSO access token does not by itself require another browser
+sign-in: the AWS CLI can refresh it silently. TerminalDB asks for **Sign In**
+when the CLI confirms authentication is needed. Connection, permission, and
+other access-check failures have their own recovery guidance. Existing
+credentials remain usable until their actual expiry, subject to AWS revocation.
+Profiles sharing an SSO session show the same browser sign-in progress, and a
+cancelled sign-in does not discard still-valid access.
 
-On a Mac providing access, **Refresh Access** requests renewed role credentials
-using its existing login. **Sign In Again** is available separately when a new
-browser sign-in is needed.
+Open **Details** for the current credential expiry, provider information, and
+**Check Access**. A check uses the existing AWS login or shared access; it does
+not promise a fresh eight-hour session, extend an existing credential, or enable
+sharing for an unselected profile. AWS controls the lifetime. A valid cached
+credential can keep the same expiry after a successful check.
+
+A receiving Mac shows **Ready** and the Mac providing its shared access. Its
+original local SSO cache does not determine whether that shared access works,
+including when a managed mapping replaces an original native SSO profile.
+**Sign In Here** remains optional in profile actions and appears in Details
+when a receiving Mac needs new access. Healthy profiles and connection or
+permission errors do not present it as the required recovery.
 
 Renewing SSO authentication does not enable sharing for every account or role.
 Only profiles explicitly selected for sharing are published. Already-enabled

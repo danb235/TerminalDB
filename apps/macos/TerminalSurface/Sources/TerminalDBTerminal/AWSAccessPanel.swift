@@ -34,6 +34,15 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
     private var lastPhase: String?
     private var profileRows: [AWSProfilePresentation] = []
     private var trackingMenu = false
+    private var detailsPanel: NSPanel?
+    private var detailsBody: NSStackView?
+    private var detailsID: String?
+    private var detailsSignature = ""
+    private var detailsActions: [ObjectIdentifier: () -> Void] = [:]
+    private var automaticChecks: Set<String> = []
+    private var automaticChecksInFlight: Set<String> = []
+    private var automaticCheckForTesting: ((String, @escaping (Bool) -> Void) -> Void)?
+    private var suppressDetailsPresentationForTesting = false
 
     @objc public static func present() {
         if let current { current.panel.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
@@ -77,13 +86,14 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
                                   account(offline, available: false, status: "Expired"), account(conflict, available: false, status: "Choose Account Again"), account(collision)],
                 "installed": [["profileId": migrated.id, "descriptor": try object(migrated), "targetName": "migrated"],
                               ["profileId": offline.id, "descriptor": try object(offline), "targetName": "offline"]],
-                "sourceStatus": [:], "signInProfile": "", "signInProfiles": [],
+                "sourceStatus": [:], "sourceChecks": [production.id: ["state": "signInRequired", "checkedAt": expiration - 3600]], "signInProfile": "", "signInProfiles": [],
                 "authentication": [engineering.id: ["state": "current", "sessionName": "workspace-sso", "expiresAt": expiration],
                                    production.id: ["state": "expired", "sessionName": "workspace-sso", "expiresAt": expiration - 7200],
                                    matchingNative.id: ["state": "expired", "sessionName": "workspace-sso"],
                                    migrated.id: ["state": "expired", "sessionName": "workspace-sso"]]
             ]
             let view = TDBAWSAccessPanel(); defer { view.panel.close() }
+            view.suppressDetailsPresentationForTesting = true
             view.catalog = base; view.peerState = ["awsPeers": ["fixture-peer"]]
             view.panel.contentView?.layoutSubtreeIfNeeded(); view.render()
             func descendant(_ root: NSView, _ identifier: String) -> NSView? {
@@ -124,14 +134,14 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
                     guard let title = descendant(row, "aws-profile-name") as? NSTextField,
                           let identity = descendant(row, "aws-profile-identity") as? NSTextField,
                           let state = descendant(row, "aws-profile-state") as? NSTextField,
-                          let primary = descendant(row, "aws-profile-primary"), let more = descendant(row, "aws-profile-actions") else { return false }
+                          let primary = descendant(row, "aws-profile-primary"), let more = descendant(row, "aws-profile-actions"), let details = descendant(row, "aws-profile-details") else { return false }
                     func rect(_ item: NSView) -> NSRect { item.superview!.convert(item.alignmentRect(forFrame: item.frame), to: content) }
-                    let nameRect = rect(title), identityRect = rect(identity), stateRect = rect(state), actionRect = rect(primary), moreRect = rect(more)
+                    let nameRect = rect(title), identityRect = rect(identity), stateRect = rect(state), actionRect = rect(primary), moreRect = rect(more), detailsRect = rect(details)
                     for condition in [nameRect.width >= 150, nameRect.height >= 16,
                                       identityRect.width >= 150, identityRect.height >= 14, stateRect.height >= 14,
                                       !nameRect.intersects(identityRect), !identityRect.intersects(stateRect),
                                       nameRect.maxX <= actionRect.minX - 8, stateRect.maxX <= actionRect.minX - 8,
-                                      actionRect.maxX <= moreRect.minX - 8, moreRect.maxX <= clip.maxX + 1,
+                                      actionRect.maxX <= detailsRect.minX - 8, detailsRect.maxX <= moreRect.minX - 8, detailsRect.width >= 70, moreRect.maxX <= clip.maxX + 1,
                                       nameRect.minX >= clip.minX - 1, moreRect.maxX <= document.maxX + 1,
                                       title.font?.pointSize == 14, identity.maximumNumberOfLines == 1, state.maximumNumberOfLines == 1,
                                       identity.toolTip == identity.stringValue, !title.isHidden,
@@ -164,15 +174,28 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
             try check((try control("engineering", "aws-profile-actions") as? NSButton)?.menu?.items.contains { $0.title == "Share This Mac’s Access" } == false, "visible share is not duplicated in the menu")
             try click("engineering")
             try check(requested.last?.0 == "aws.source.enable" && requested.last?.1["profileId"] as? String == engineering.id, "share routing")
-            try click("engineering", secondary: true)
-            try check(requested.last?.0 == "aws.signIn.start" && requested.last?.1["profileId"] as? String == engineering.id, "secondary sign-in routing")
-            try check((try control("production") as? NSButton)?.title == "Sign In", "expired source sign-in")
-            try check(try field("production", "aws-profile-authentication").stringValue == "SSO needs renewal", "short session status")
-            try check(try field("production", "aws-profile-authentication").toolTip?.contains("workspace-sso") == true, "session stays in tooltip")
-            try click("production")
-            try check(requested.last?.0 == "aws.signIn.start" && requested.last?.1["profileId"] as? String == production.id, "source sign-in routing")
+            guard let localDetails = try control("engineering", "aws-profile-details") as? NSButton else { return false }
+            localDetails.performClick(nil)
+            guard let localCheck = descendant(view.detailsPanel!.contentView!, "aws-details-check") as? NSButton else { return false }
+            localCheck.performClick(nil)
+            try check(requested.last?.0 == "aws.check" && requested.last?.1["profileId"] as? String == engineering.id && requested.last?.1["manual"] as? Bool == true, "local Details check is nonpublishing")
+            try check((try control("production") as? NSTextField)?.stringValue == "Ready", "cached access remains ready with confirmed renewal failure")
+            try check((try control("production", "aws-profile-secondary") as? NSButton)?.title == "Sign In", "confirmed renewal sign-in is direct")
+            try check(!((try field("production", "aws-profile-state")).stringValue.contains("until")), "main row hides credential expiry")
             try click("production", secondary: true)
-            try check(requested.last?.0 == "aws.refresh" && requested.last?.1["profileId"] as? String == production.id, "secondary refresh routing")
+            try check(requested.last?.0 == "aws.signIn.start" && requested.last?.1["profileId"] as? String == production.id, "confirmed source sign-in routing")
+            (try control("production", "aws-profile-details") as? NSButton)?.performClick(nil)
+            guard let sourceCheck = descendant(view.detailsPanel!.contentView!, "aws-details-check") as? NSButton else { return false }
+            sourceCheck.performClick(nil)
+            try check(requested.last?.0 == "aws.refresh" && requested.last?.1["profileId"] as? String == production.id, "source Details check routing")
+            try check(descendant(view.detailsPanel!.contentView!, "aws-details-expiry") != nil, "expiry belongs in Details")
+            try check((descendant(view.detailsPanel!.contentView!, "aws-details-expiry-help") as? NSTextField)?.stringValue == "Check Access does not reset expiry.", "Details explains the credential clock")
+            try check(descendant(view.detailsPanel!.contentView!, "aws-details-sign-in") != nil, "confirmed authentication failure offers sign-in")
+            try check(view.detailsBody!.arrangedSubviews.compactMap { ($0 as? NSTextField)?.stringValue }.allSatisfy { !$0.contains("SSO") && !$0.contains("token") }, "Details has no cached-token sign-in clock")
+            view.applyActionResult("aws.check", result: ["accepted": false]); view.renderDetails()
+            try check((descendant(view.detailsPanel!.contentView!, "aws-details-action-error") as? NSTextField)?.stringValue.contains("busy") == true, "manual capacity error is visible inside open Details")
+            view.applyActionResult("aws.check", result: ["accepted": true]); view.renderDetails()
+            try check(descendant(view.detailsPanel!.contentView!, "aws-details-action-error") == nil && view.status.stringValue.isEmpty, "accepted check clears error without Saved or a permanent checking footer")
             try check((try control(incoming.name) as? NSButton)?.title == "Use on This Mac", "one-click import label")
             try check((try control("native-match") as? NSButton)?.title == "Use on This Mac…", "native migration label indicates confirmation")
             try check((try control("occupied") as? NSButton)?.title == "Use on This Mac…", "collision label indicates confirmation")
@@ -187,9 +210,14 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
             try check((try control("offline") as? NSButton)?.title == "Sync Now", "unavailable receiver sync action")
             try click("offline")
             try check(syncRequests == 1, "sync routing")
-            try check((try control("offline", "aws-profile-secondary") as? NSButton)?.title == "Sign In Here", "visible local fallback")
-            try click("offline", secondary: true)
-            try check(requested.last?.0 == "aws.signIn.start" && requested.last?.1["profileId"] as? String == offline.id, "fallback sign-in routing")
+            try check(descendant(try row("offline"), "aws-profile-secondary") == nil, "receiver never requires a local sign-in")
+            (try control("offline", "aws-profile-details") as? NSButton)?.performClick(nil)
+            guard let receiverCheck = descendant(view.detailsPanel!.contentView!, "aws-details-check") as? NSButton,
+                  let optionalLogin = descendant(view.detailsPanel!.contentView!, "aws-details-sign-in") as? NSButton else { return false }
+            receiverCheck.performClick(nil)
+            try check(requested.last?.0 == "aws.check" && requested.last?.1["profileId"] as? String == offline.id, "receiver Details performs a real access check")
+            optionalLogin.performClick(nil)
+            try check(requested.last?.0 == "aws.signIn.start" && requested.last?.1["profileId"] as? String == offline.id, "optional local sign-in stays in Details")
             try check((try control("conflict") as? NSButton)?.title == "Review…", "conflict review action")
 
             // An installed receiver remains ready even when retained native
@@ -200,26 +228,79 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
                 view.render()
                 let ready = try control("migrated")
                 try check(!(ready is NSButton), "ready is not a sign-in button")
-                try check((ready as? NSTextField)?.stringValue == "Ready on This Mac", "receiver ready label")
+                try check((ready as? NSTextField)?.stringValue == "Ready", "receiver ready label")
                 try check(try field("migrated", "aws-profile-authentication").stringValue == "From Fixture Mac", "receiver origin")
                 try check(try field("migrated", "aws-profile-authentication").textColor == .secondaryLabelColor, "receiver has no SSO warning")
                 let more = try control("migrated", "aws-profile-actions") as? NSButton
-                try check(more?.menu?.items.contains { $0.title == "Sign In Here…" } == true, "optional sign-in remains available")
+                try check(more?.menu?.items.contains { $0.title == "Sign In Here…" } == true && more?.menu?.items.contains { $0.title.contains("Refresh") } == false, "optional sign-in remains an advanced menu action")
             }
             guard let readyMenu = (try control("migrated", "aws-profile-actions") as? NSButton)?.menu,
                   let shareIndex = readyMenu.items.firstIndex(where: { $0.title == "Share This Mac’s Access" }) else { return false }
             let beforeReuse = requested.count
             readyMenu.performActionForItem(at: shareIndex)
             try check(requested.count == beforeReuse + 1 && requested.last?.0 == "aws.source.enable" && requested.last?.1["profileId"] as? String == migrated.id, "ready receiver can share its native sign-in through the advanced menu")
+            view.catalog = base
+            view.catalog["sourceChecks"] = [migrated.id: ["state": "checkFailed", "needsSharedRenewal": true]]
+            var missingAccounts = base["accounts"] as! [[String: Any]]
+            for index in missingAccounts.indices where missingAccounts[index]["profileId"] as? String == migrated.id { missingAccounts[index]["available"] = false }
+            view.catalog["accounts"] = missingAccounts; view.render()
+            try check((try control("migrated") as? NSButton)?.title == "Sync Now", "missing receiver credentials retain sync recovery")
+            let beforeFreshImport = requested.count
+            view.catalog["accounts"] = base["accounts"]; view.render()
+            try check((try control("migrated") as? NSTextField)?.stringValue == "Ready" && requested.count == beforeFreshImport, "fresh shared credentials restore Ready without Check Access")
             view.catalog = base; view.catalog["signInProfile"] = production.id
             view.catalog["signInProfiles"] = [engineering.id, production.id]; view.render()
             for name in ["engineering", "production"] {
                 let signingIn = try control(name)
                 try check(!(signingIn is NSButton) && (signingIn as? NSTextField)?.stringValue == "Signing In…", "shared sign-in progress")
             }
-            view.catalog = base; view.catalog["sourceStatus"] = [production.id: "Renewing…"]; view.render()
-            let refreshing = try control("production")
-            try check(!(refreshing is NSButton) && (refreshing as? NSTextField)?.stringValue == "Refreshing…", "source refresh progress")
+            view.catalog = base; view.catalog["sourceChecks"] = [production.id: ["state": "checking"]]; view.render()
+            try check((try control("production") as? NSTextField)?.stringValue == "Ready", "automatic renewal keeps healthy access ready")
+            (try control("production", "aws-profile-details") as? NSButton)?.performClick(nil)
+            let checkingButton = descendant(view.detailsPanel!.contentView!, "aws-details-check") as? NSButton
+            try check(checkingButton?.title == "Checking…" && checkingButton?.isEnabled == false, "Details shows active checking")
+            view.catalog["sourceChecks"] = [production.id: ["state": "ready", "checkedAt": expiration - 3500]]
+            view.tabs.selectedSegment = 1; view.render(); view.renderDetails()
+            try check((descendant(view.detailsPanel!.contentView!, "aws-details-status") as? NSTextField)?.stringValue == "Access is ready.", "open Details updates after an asynchronous check")
+            try check((descendant(view.detailsPanel!.contentView!, "aws-details-check") as? NSButton)?.title == "Check Access", "completed check restores Details action")
+            try check(descendant(view.detailsPanel!.contentView!, "aws-details-sign-in") == nil, "healthy Details does not invite another login")
+            for (name, id) in [("production", production.id), ("engineering", engineering.id)] {
+                for failure in ["networkUnavailable", "accessDenied", "checkFailed", "notChecked"] {
+                    view.catalog = base; view.catalog["sourceChecks"] = [id: ["state": failure]]
+                    view.tabs.selectedSegment = 0; view.render()
+                    (try control(name, "aws-profile-details") as? NSButton)?.performClick(nil)
+                    try check(descendant(view.detailsPanel!.contentView!, "aws-details-sign-in") == nil, "non-authentication failures do not invite sign-in")
+                }
+            }
+            for width in [420.0, 600.0] {
+                view.detailsPanel!.setContentSize(NSSize(width: width, height: 700)); view.detailsPanel!.contentView!.layoutSubtreeIfNeeded()
+                guard let detailsBody = view.detailsBody else { return false }
+                try check(detailsBody.frame.minX >= 19 && detailsBody.frame.maxX <= width - 19, "Details fits narrow window")
+            }
+            view.tabs.selectedSegment = 0; view.catalog = base
+            var automatic: [String] = []
+            view.automaticCheckForTesting = { id, completed in automatic.append(id); completed(true) }
+            view.checkLocalProfilesOnce(); view.checkLocalProfilesOnce()
+            try check(Set(automatic) == Set([engineering.id, matchingNative.id]) && automatic.count == 2, "one-time local checks exclude sources and mapped receiver originals")
+            let extra = (0..<8).map { profile("extra-\($0)", String(900000000000 + $0)) }
+            view.catalog["profiles"] = try ([engineering, matchingNative] + extra).map(object)
+            view.catalog["configuredProfileIDs"] = ([engineering, matchingNative] + extra).map(\.id)
+            view.automaticChecks.removeAll(); view.automaticChecksInFlight.removeAll()
+            var admissions: [(String, (Bool) -> Void)] = [], submitted: [String] = []
+            view.automaticCheckForTesting = { id, completed in submitted.append(id); admissions.append((id, completed)) }
+            view.checkLocalProfilesOnce(); view.checkLocalProfilesOnce()
+            try check(admissions.count == 4 && Set(submitted).count == 4, "four in-flight checks admit no duplicates")
+            let first = admissions; admissions.removeAll()
+            for (index, value) in first.enumerated() { value.1(index != 0) }
+            view.checkLocalProfilesOnce()
+            try check(admissions.count == 4 && admissions.contains { $0.0 == first[0].0 }, "capacity refusal retries on the next normal poll")
+            let second = admissions; admissions.removeAll(); for value in second { value.1(true) }
+            view.checkLocalProfilesOnce()
+            try check(admissions.count == 3, "remaining profiles are checked without reopening")
+            let third = admissions; admissions.removeAll(); for value in third { value.1(true) }
+            view.checkLocalProfilesOnce()
+            try check(admissions.isEmpty && view.automaticChecks.count == 10 && submitted.count == 11, "accepted checks run only once per opening")
+            view.automaticCheckForTesting = nil
             view.catalog = base; view.peerState = ["awsPeers": []]; view.render()
             func allSubviews(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(allSubviews) }
             guard let choose = allSubviews(view.list).compactMap({ $0 as? NSButton }).first(where: { $0.title == "Choose Macs" }) else { return false }
@@ -344,12 +425,12 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
                 self.catalog = result as? [String: Any] ?? [:]
                 self.cancel.isHidden = (result["signInProfile"] as? String ?? "").isEmpty
                 self.applyCatalogStatus(self.catalog)
-                self.render()
+                self.render(); self.renderDetails(); self.checkLocalProfilesOnce()
             }
         } else { status.stringValue = "Waiting for this Mac’s background service…" }
         if agent.connected {
             agent.request("peers.state", payload: [:]) { [weak self] result in
-                self?.peerState = result as? [String: Any] ?? [:]; self?.render()
+                self?.peerState = result as? [String: Any] ?? [:]; self?.render(); self?.renderDetails()
             }
         }
     }
@@ -397,7 +478,8 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
                     "connected": agent.connected, "states": peerState["awsStatus"] ?? [:]]
         } else {
             body = ["profiles": catalog["profiles"] ?? [], "configuredProfileIDs": catalog["configuredProfileIDs"] ?? [], "localProfileNames": catalog["localProfileNames"] ?? [], "accounts": catalog["accounts"] ?? [],
-                    "installed": catalog["installed"] ?? [], "sourceStatus": catalog["sourceStatus"] ?? [:],
+                    "installed": catalog["installed"] ?? [], "sourceStatus": catalog["sourceStatus"] ?? [:], "sourceChecks": catalog["sourceChecks"] ?? [:],
+                    "usable": AWSProfilePresentation.rows(catalog: catalog).filter { $0.usableExpiration() != nil }.map(\.id),
                     "sources": catalog["sources"] ?? [], "signIn": catalog["signInProfile"] ?? "",
                     "signInProfiles": catalog["signInProfiles"] ?? [], "authentication": catalog["authentication"] ?? [:],
                     "awsPeers": peerState["awsPeers"] ?? []]
@@ -441,19 +523,19 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
 
     private func profileActionView(_ action: AWSProfileRowAction, item: AWSProfilePresentation, secondary: Bool) -> NSView {
         switch action {
-        case .ready, .signingIn, .refreshing:
+        case .ready, .signingIn, .refreshing, .accessDenied, .checkFailed, .networkUnavailable:
             let value = NSTextField(labelWithString: action.title)
             value.font = .systemFont(ofSize: 12, weight: action == .ready ? .semibold : .regular)
             value.textColor = action == .ready ? .labelColor : .secondaryLabelColor
             value.alignment = .center
-            value.setAccessibilityLabel(action == .ready ? "Ready on This Mac" : action.title)
+            value.setAccessibilityLabel(action.title)
             return value
         default:
             let title: String
             if action == .useSharedAccess {
                 title = action.title + (canInstallImmediately(item) ? "" : "…")
             } else {
-                title = secondary && action == .signIn ? "Sign In Here" : action.title
+                title = action.title
             }
             let value = button(title) { [weak self] in self?.performProfileAction(action, item: item) }
             value.setAccessibilityLabel(title + " for " + item.name)
@@ -472,7 +554,7 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
         case .syncNow: syncNow()
         case .refreshAccess: request("aws.refresh", ["profileId": item.id])
         case .review: showDetails(item)
-        case .ready, .signingIn, .refreshing: break
+        case .ready, .signingIn, .refreshing, .accessDenied, .checkFailed, .networkUnavailable: break
         }
     }
 
@@ -513,7 +595,7 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
             let authentication = NSTextField(labelWithString: presentation.authenticationText)
             authentication.identifier = .init("aws-profile-authentication"); authentication.setAccessibilityIdentifier("aws-profile-authentication")
             authentication.font = .systemFont(ofSize: 12)
-            authentication.textColor = presentation.needsAttention ? .systemOrange : .secondaryLabelColor
+            authentication.textColor = .secondaryLabelColor
             let state = NSTextField(labelWithString: presentation.availabilityText)
             identity.identifier = .init("aws-profile-identity"); state.identifier = .init("aws-profile-state")
             for field in [title, identity, authentication, state] {
@@ -522,6 +604,7 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
                 field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             }
             for field in [identity, state] { field.font = .systemFont(ofSize: 12); field.textColor = .secondaryLabelColor }
+            state.textColor = presentation.needsAttention ? .systemOrange : .secondaryLabelColor
             authentication.lineBreakMode = .byTruncatingTail
             authentication.toolTip = presentation.authenticationTooltip
             let actionColumn = NSStackView(); actionColumn.orientation = .vertical; actionColumn.alignment = .centerX; actionColumn.spacing = 4
@@ -537,14 +620,12 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
                 view.heightAnchor.constraint(equalToConstant: view is NSButton ? 28 : 16).isActive = true
             }
             let menu = NSMenu(); menu.autoenablesItems = false; menu.delegate = self
-            if !visibleActions.contains(.signIn) && !visibleActions.contains(.signInAgain) && (item.isInstalled || item.hasLocalProfile || source) {
+            if !visibleActions.contains(.signIn) && (item.hasLocalProfile || item.isInstalled || source) {
                 addMenuItem("Sign In Here…", to: menu, enabled: (catalog["signInProfile"] as? String ?? "").isEmpty) { [weak self] in self?.request("aws.signIn.start", ["profileId": id]) }
             }
             if !source && item.hasLocalProfile && !visibleActions.contains(.shareAccess) {
                 addMenuItem("Share This Mac’s Access", to: menu) { [weak self] in self?.request("aws.source.enable", ["profileId": id]) }
             }
-            if source && !visibleActions.contains(.refreshAccess) { addMenuItem("Refresh Access", to: menu) { [weak self] in self?.request("aws.refresh", ["profileId": id]) } }
-            else if !source && !visibleActions.contains(.syncNow) { addMenuItem("Sync Now", to: menu) { [weak self] in self?.syncNow() } }
             if item.isInstalled {
                 addMenuItem("Use Another Profile Name…", to: menu) { [weak self] in
                     guard let self else { return }
@@ -554,18 +635,19 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
                     self.install(current, suggestedName: suggested)
                 }
             }
-            addMenuItem("Profile Details…", to: menu) { [weak self] in self?.showDetails(item) }
             if source || item.isInstalled {
                 menu.addItem(.separator())
                 addMenuItem("Remove from This Mac…", to: menu) { [weak self] in self?.remove(id: id, name: item.name) }
             }
             let more = NSButton(image: NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "Profile actions") ?? NSImage(), target: self, action: #selector(showActions(_:)))
-            more.isBordered = false; more.menu = menu; more.isEnabled = !pending
+            more.isBordered = false; more.menu = menu; more.isEnabled = !pending && !menu.items.isEmpty; more.isHidden = menu.items.isEmpty
             more.identifier = .init("aws-profile-actions"); more.setAccessibilityLabel("Actions for \(item.name)")
             more.toolTip = "Profile actions"
+            let details = button("Details") { [weak self] in self?.showDetails(item) }
+            details.identifier = .init("aws-profile-details"); details.setAccessibilityLabel("Details for " + item.name)
             let row = NSView(); row.identifier = .init("aws-profile-row"); row.translatesAutoresizingMaskIntoConstraints = false
             let divider = NSBox(); divider.boxType = .separator
-            let children: [NSView] = [title, identity] + (presentation.showsAuthentication ? [authentication] : []) + [state, actionColumn, more, divider]
+            let children: [NSView] = [title, identity] + (presentation.showsAuthentication ? [authentication] : []) + [state, actionColumn, details, more, divider]
             for child in children { child.translatesAutoresizingMaskIntoConstraints = false; row.addSubview(child) }
             list.addArrangedSubview(row)
             NSLayoutConstraint.activate([
@@ -573,7 +655,9 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
                 row.heightAnchor.constraint(equalToConstant: presentation.showsAuthentication || presentation.secondaryAction != nil ? 100 : 80),
                 more.trailingAnchor.constraint(equalTo: row.trailingAnchor), more.widthAnchor.constraint(equalToConstant: 32),
                 more.heightAnchor.constraint(equalToConstant: 28), more.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-                actionColumn.trailingAnchor.constraint(equalTo: more.leadingAnchor, constant: -12), actionColumn.widthAnchor.constraint(equalToConstant: 140),
+                details.trailingAnchor.constraint(equalTo: more.leadingAnchor, constant: -8), details.widthAnchor.constraint(equalToConstant: 72),
+                details.heightAnchor.constraint(equalToConstant: 28), details.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+                actionColumn.trailingAnchor.constraint(equalTo: details.leadingAnchor, constant: -8), actionColumn.widthAnchor.constraint(equalToConstant: 140),
                 actionColumn.centerYAnchor.constraint(equalTo: row.centerYAnchor),
                 title.leadingAnchor.constraint(equalTo: row.leadingAnchor), title.trailingAnchor.constraint(equalTo: actionColumn.leadingAnchor, constant: -12),
                 title.topAnchor.constraint(equalTo: row.topAnchor, constant: 12), title.heightAnchor.constraint(equalToConstant: 18),
@@ -591,7 +675,7 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
                 ])
             }
         }
-        addRow(NSStackView(views: [label("Profiles in the same SSO session share one sign-in.")]))
+        addRow(NSStackView(views: [label("Access renews automatically. Details has checks and sign-in options.")]))
     }
 
     private func addMenuItem(_ title: String, to menu: NSMenu, enabled: Bool = true, action: @escaping () -> Void) {
@@ -607,22 +691,126 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
         guard let id = sender.representedObject as? String else { return }; actions[id]?()
     }
     private func showDetails(_ item: AWSProfilePresentation) {
-        let alert = NSAlert(); alert.messageText = item.name
-        var lines = [item.identitySummary]
-        if item.descriptor.kind == "sso" {
-            let isSource = (catalog["sources"] as? [String] ?? []).contains(item.id)
-            let prefix = !isSource && (item.isInstalled || item.available) ? "Local sign-in (optional): " : "Local sign-in: "
-            lines.append(prefix + item.authentication.label)
+        detailsID = item.id; detailsSignature = ""
+        if detailsPanel == nil {
+            let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 480, height: 440),
+                styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            window.title = "AWS Profile Details"; window.isReleasedWhenClosed = false; window.delegate = self
+            window.minSize = NSSize(width: 420, height: 360)
+            let body = NSStackView(); body.orientation = .vertical; body.alignment = .leading; body.spacing = 12
+            body.translatesAutoresizingMaskIntoConstraints = false
+            window.contentView!.addSubview(body)
+            NSLayoutConstraint.activate([
+                body.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor, constant: 20),
+                body.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -20),
+                body.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 20),
+                body.bottomAnchor.constraint(lessThanOrEqualTo: window.contentView!.bottomAnchor, constant: -20)
+            ])
+            detailsPanel = window; detailsBody = body
+            if !suppressDetailsPresentationForTesting { panel.addChildWindow(window, ordered: .above) }
+            window.setFrameOrigin(NSPoint(x: panel.frame.midX - window.frame.width / 2, y: panel.frame.midY - window.frame.height / 2))
         }
-        if !item.localNames.isEmpty { lines.append("Local names: " + item.localNames.joined(separator: ", ")) }
-        if !item.installedNames.isEmpty { lines.append("Managed names: " + item.installedNames.joined(separator: ", ")) }
-        let otherNames = item.sharedNames.filter { !item.localNames.contains($0) && !item.installedNames.contains($0) }
-        if !otherNames.isEmpty { lines.append("Names on other Macs: " + otherNames.joined(separator: ", ")) }
-        if !item.sourceNames.isEmpty { lines.append("Provided by: " + item.sourceNames.joined(separator: ", ")) }
-        if item.status == "Choose Account Again" { lines.append("Different sign-ins are providing conflicting identities. Sign in with the intended account and stop sharing the older identity before using this profile. TerminalDB will not choose credentials silently.") }
-        lines.append("Matching AWS identities share one row. Local profile names are preserved; identical names alone do not identify an account.")
-        alert.informativeText = lines.joined(separator: "\n\n"); alert.addButton(withTitle: "Done")
-        alert.beginSheetModal(for: panel)
+        renderDetails(); if !suppressDetailsPresentationForTesting { detailsPanel?.makeKeyAndOrderFront(nil) }
+    }
+    private func detailsButton(_ title: String, action: @escaping () -> Void) -> NSButton {
+        let value = NSButton(title: title, target: self, action: #selector(invokeDetailsAction(_:)))
+        detailsActions[ObjectIdentifier(value)] = action; value.isEnabled = !pending
+        return value
+    }
+    @objc private func invokeDetailsAction(_ sender: NSButton) { detailsActions[ObjectIdentifier(sender)]?() }
+    private func renderDetails() {
+        guard let id = detailsID, let body = detailsBody else { return }
+        let rows = AWSProfilePresentation.rows(catalog: catalog)
+        let item = rows.first { $0.id == id }
+        let sources = Set(catalog["sources"] as? [String] ?? [])
+        let detailState: [String: Any] = ["catalog": catalog, "id": id, "pending": pending, "error": actionError ?? "",
+            "width": detailsPanel?.contentView?.frame.width ?? 0,
+            "usable": item?.usableExpiration() != nil, "network": peerState["awsStatus"] ?? [:]]
+        guard let stateData = try? JSONSerialization.data(withJSONObject: detailState, options: [.sortedKeys]) else { return }
+        let signature = String(decoding: stateData, as: UTF8.self)
+        guard signature != detailsSignature else { return }; detailsSignature = signature
+        for view in body.arrangedSubviews { body.removeArrangedSubview(view); view.removeFromSuperview() }
+        detailsActions.removeAll()
+        func line(_ text: String, identifier: String? = nil) {
+            let field = label(text); field.maximumNumberOfLines = 0
+            if let identifier { field.identifier = .init(identifier); field.setAccessibilityIdentifier(identifier) }
+            body.addArrangedSubview(field); field.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
+        }
+        guard let item else { line("This profile is no longer available."); return }
+        let source = sources.contains(id), receiver = item.isInstalled && !source
+        let presentation = item.rowState(isSource: source, sourceStatus: nil, isSigningIn: false)
+        let name = NSTextField(labelWithString: item.name); name.font = .systemFont(ofSize: 17, weight: .semibold)
+        name.lineBreakMode = .byTruncatingMiddle; name.maximumNumberOfLines = 1; name.toolTip = item.name
+        body.addArrangedSubview(name); name.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
+        line(item.identitySummary)
+        line(presentation.authenticationText)
+        let guidance: String
+        if item.status == "Choose Account Again" { guidance = "Different sign-ins provide conflicting identities. Choose the intended account before using this profile." }
+        else if receiver && item.sourceCheck.needsSharedRenewal { guidance = item.usableExpiration() == nil ? "Shared credentials are unavailable. Reconnect a providing Mac, then sync access." : "Shared access is available. Check Access verifies it with AWS." }
+        else if receiver && item.sourceCheck.state == "signInRequired" { guidance = "Shared access renews on its providing Mac. A local sign-in is optional." }
+        else if item.sourceCheck.state == "notChecked" && receiver { guidance = item.usableExpiration() != nil ? "Shared access is ready. Check Access verifies it with AWS." : "Reconnect a providing Mac, then sync access." }
+        else if item.sourceCheck.state == "ready" && item.usableExpiration() == nil { guidance = "Access needs another check." }
+        else { guidance = item.sourceCheck.guidance }
+        line(guidance, identifier: "aws-details-status")
+        if let actionError { line(actionError, identifier: "aws-details-action-error") }
+        let expiry = item.available ? item.expiration : (!receiver ? item.sourceCheck.expiration : item.expiration)
+        if let expiry, expiry.isFinite {
+            line("Credentials expire " + DateFormatter.localizedString(from: Date(timeIntervalSince1970: expiry), dateStyle: .medium, timeStyle: .short), identifier: "aws-details-expiry")
+            line("Check Access does not reset expiry.", identifier: "aws-details-expiry-help")
+            line(source || receiver ? "AWS sets credential duration. TerminalDB renews managed access automatically when connected." : "AWS sets credential duration. The AWS CLI manages this local profile’s access.")
+        }
+        if let checked = item.sourceCheck.checkedAt, checked.isFinite {
+            line("Last checked " + DateFormatter.localizedString(from: Date(timeIntervalSince1970: checked), dateStyle: .short, timeStyle: .short))
+        }
+        if !item.installedNames.isEmpty {
+            let aliases = label("Profile names: " + item.installedNames.joined(separator: ", "))
+            aliases.maximumNumberOfLines = 3; aliases.lineBreakMode = .byTruncatingMiddle; aliases.toolTip = aliases.stringValue
+            body.addArrangedSubview(aliases); aliases.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
+        }
+        let check = detailsButton(item.sourceCheck.state == "checking" ? "Checking…" : "Check Access") { [weak self] in self?.checkAccess(id) }
+        check.identifier = .init("aws-details-check"); check.setAccessibilityIdentifier("aws-details-check")
+        check.isEnabled = check.isEnabled && item.sourceCheck.state != "checking"
+        var actions: [NSView] = [check]
+        let needsSignIn = !receiver && item.sourceCheck.state == "signInRequired"
+        if needsSignIn || (receiver && item.usableExpiration() == nil) {
+            let signIn = detailsButton("Sign In Here…") { [weak self] in self?.request("aws.signIn.start", ["profileId": id]) }
+            signIn.identifier = .init("aws-details-sign-in"); signIn.isEnabled = signIn.isEnabled && (catalog["signInProfile"] as? String ?? "").isEmpty
+            actions.append(signIn)
+        }
+        let done = detailsButton("Done") { [weak self] in self?.detailsPanel?.close() }
+        let controls = NSStackView(views: actions + [NSView(), done]); controls.orientation = .horizontal; controls.spacing = 8
+        body.addArrangedSubview(controls); controls.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
+        if receiver && item.usableExpiration() == nil {
+            let sync = detailsButton("Sync Access") { [weak self] in self?.syncNow() }
+            body.addArrangedSubview(sync)
+        }
+        body.layoutSubtreeIfNeeded()
+        if let window = detailsPanel { window.setContentSize(NSSize(width: window.contentView!.frame.width, height: max(360, body.fittingSize.height + 40))) }
+    }
+    private func checkAccess(_ id: String) {
+        guard AWSProfilePresentation.rows(catalog: catalog).contains(where: { $0.id == id }) else { return }
+        let source = (catalog["sources"] as? [String] ?? []).contains(id)
+        request(source ? "aws.refresh" : "aws.check", ["profileId": id, "manual": true])
+    }
+    private func checkLocalProfilesOnce() {
+        guard (host.connected || automaticCheckForTesting != nil), (panel.isVisible || automaticCheckForTesting != nil), tabs.selectedSegment == 0, !pending else { return }
+        let sources = Set(catalog["sources"] as? [String] ?? [])
+        let candidates = AWSProfilePresentation.rows(catalog: catalog).filter {
+            $0.hasLocalProfile && !$0.isInstalled && !sources.contains($0.id) &&
+                !automaticChecks.contains($0.id) && !automaticChecksInFlight.contains($0.id)
+        }
+        for item in candidates.prefix(max(0, 4 - automaticChecksInFlight.count)) {
+            automaticChecksInFlight.insert(item.id)
+            let finished: (Bool) -> Void = { [weak self] accepted in
+                guard let self else { return }
+                self.automaticChecksInFlight.remove(item.id)
+                if accepted { self.automaticChecks.insert(item.id) }
+                // Capacity refusals are retried by the existing normal poll;
+                // callbacks never schedule another refresh or provider job.
+            }
+            if let automaticCheckForTesting { automaticCheckForTesting(item.id, finished) }
+            else { host.request("aws.check", payload: ["profileId": item.id, "manual": false]) { result in finished(result["accepted"] as? Bool == true) } }
+        }
     }
     @objc private func showHelp() {
         let alert = NSAlert(); alert.messageText = "Shared AWS Access"
@@ -674,16 +862,21 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
 
     private func request(_ operation: String, _ payload: [String: Any]) {
         if let requestForTesting { requestForTesting(operation, payload); return }
-        guard !pending else { return }; pending = true; rowsSignature = ""; render()
-        actionError = nil
+        guard !pending else { return }; pending = true; rowsSignature = ""; actionError = nil; render(); renderDetails()
         status.stringValue = operation == "aws.signIn.start" ? "Starting AWS sign-in in your browser on This Mac…" : "Updating AWS access…"
         host.request(operation, payload: payload as NSDictionary) { [weak self] result in
             guard let self else { return }; self.pending = false; self.rowsSignature = ""
-            self.actionError = result["error"] as? String
-            self.status.stringValue = self.actionError ?? "Saved. Approved Macs sync automatically over your LAN or VPN."
-            self.agent.request("aws.sync.now", payload: [:]) { _ in }
+            self.applyActionResult(operation, result: result)
+            self.render(); self.renderDetails()
+            if operation != "aws.check" && operation != "aws.refresh" { self.agent.request("aws.sync.now", payload: [:]) { _ in } }
             self.refresh()
         }
+    }
+    private func applyActionResult(_ operation: String, result: NSDictionary) {
+        let checking = operation == "aws.check" || operation == "aws.refresh"
+        actionError = result["error"] as? String
+        if actionError == nil && checking && result["accepted"] as? Bool == false { actionError = "Access checks are busy. Try Check Access again in a moment." }
+        status.stringValue = actionError ?? (checking ? "" : "Saved. Approved Macs sync automatically over your LAN or VPN.")
     }
 
     @objc private func syncMacChanged(_ sender: NSButton) {
@@ -731,9 +924,16 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
         }
         return true
     }
-    public func windowShouldClose(_ sender: NSWindow) -> Bool { prepareClose() }
+    public func windowShouldClose(_ sender: NSWindow) -> Bool { sender === detailsPanel ? true : prepareClose() }
+    public func windowDidResize(_ notification: Notification) {
+        if let window = notification.object as? NSWindow, window === detailsPanel { renderDetails() }
+    }
     @objc private func closePanel() { if prepareClose() { panel.close() } }
     public func windowWillClose(_ notification: Notification) {
+        if let window = notification.object as? NSWindow, window === detailsPanel {
+            detailsPanel = nil; detailsBody = nil; detailsID = nil; detailsActions.removeAll(); return
+        }
+        detailsPanel?.close()
         timer?.invalidate(); timer = nil; host.close(); agent.close(); Self.current = nil
     }
 }

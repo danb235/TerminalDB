@@ -7,6 +7,29 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.9] - 2026-11-04
+
+### Changed
+
+- Show **Ready** for usable AWS profiles and renew selected access in the
+  background. Keep expiry information and the optional **Check Access** action
+  in each profile's **Details**.
+- Clarify AWS sharing, automatic renewal, Claude sign-in renewal, and provider
+  network activity on the marketing site.
+
+### Fixed
+
+- Ask for AWS sign-in only when the AWS CLI confirms authentication is needed.
+  An expired cached SSO access token alone no longer prompts another browser
+  sign-in when the CLI can refresh it silently.
+- Distinguish AWS connection, permission, and access-check failures from an
+  expired login. Preserve still-valid credentials during recovery and keep
+  account sharing explicitly selected.
+
+**Updating from 0.6.7 or earlier:** finish and save active terminal work, quit
+TerminalDB, and replace the app in Applications using the latest ZIP. This
+one-time manual update enables subsequent in-app updates.
+
 ## [0.6.8] - 2026-11-03
 
 ### Changed
