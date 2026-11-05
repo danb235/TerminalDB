@@ -1,12 +1,17 @@
 # Shared AWS access
 
-Open **TerminalDB → AWS Access** to make selected AWS SSO and console-login
-profiles available on your approved Macs over the LAN or VPN. This panel
-manages commands run on **This Mac**; each workstation keeps its own mappings.
+Click **AWS** in the window's footer to open **Accounts → AWS**. The footer
+summarizes configured profiles on the current tab's execution Mac; AWS can have
+several ready profiles at once. **Claude** opens the same pane for the tab's
+Claude account. **TerminalDB → Accounts** is also available.
+
+The pane names its execution Mac. Each workstation keeps its own AWS profile
+mappings. Viewing profiles never selects `AWS_PROFILE` or changes a command's
+profile. New tabs continue to open on This Mac.
 
 ## Setup
 
-1. Pair the Macs. Open **TerminalDB → AWS Access → Sharing** on each Mac and
+1. Pair the Macs. Open **Accounts → AWS → Sharing** on each Mac and
    enable AWS sharing with the other paired Mac. AWS sharing is separate from
    Claude sharing and is off by default.
 2. On the Mac with your AWS profiles, open **Profiles**. TerminalDB detects
@@ -52,6 +57,26 @@ Routine use requires no manual renewal. The source Mac must remain awake,
 logged in, and able to reach AWS; receiving Macs need LAN or VPN connectivity
 to a source when fresh credentials are needed.
 
+The footer summarizes readiness and calls out sign-in or other attention when
+needed. Reconnecting and stale status are shown explicitly; they never silently
+fall back to the viewing Mac's profiles. Opening Accounts and drawing its footer
+use cached, nonsecret status metadata rather than invoking AWS or Keychain reads.
+
+For a remote tab, **Sign In on This Mac** completes the official browser flow
+on the Mac you are using. Temporary access reaches other Macs only through
+approved AWS sharing. Sharing stays a separate choice on both Macs; the sign-in
+action does not grant another device permission. Remote profile changes and
+checks require the current terminal controller. Browser sign-in, credential
+export, and sync management remain local operations.
+
+If the execution Mac originally shared a native profile, received credentials
+alone do not change the provider its AWS commands use. When that native login
+needs recovery and usable access arrives from an approved Mac, choose **Use
+Shared Access…** and confirm the settings change. TerminalDB keeps a private
+backup, uses the received provider for that profile, and stops renewing its old
+local source. The app does not perform this migration silently or label the
+native provider Ready merely because a received copy exists.
+
 An expired cached SSO access token does not by itself require another browser
 sign-in: the AWS CLI can refresh it silently. TerminalDB asks for **Sign In**
 when the CLI confirms authentication is needed. Connection, permission, and
@@ -65,6 +90,11 @@ Open **Details** for the current credential expiry, provider information, and
 not promise a fresh eight-hour session, extend an existing credential, or enable
 sharing for an unselected profile. AWS controls the lifetime. A valid cached
 credential can keep the same expiry after a successful check.
+
+The credential timestamp is not a promise about the next interactive sign-in.
+AWS does not expose that authorization deadline reliably in the CLI's cached
+SSO metadata. Details says when sign-in expiry is unavailable rather than
+displaying a token's refreshable expiry as an eight-hour login countdown.
 
 A receiving Mac shows **Ready** and the Mac providing its shared access. Its
 original local SSO cache does not determine whether that shared access works,

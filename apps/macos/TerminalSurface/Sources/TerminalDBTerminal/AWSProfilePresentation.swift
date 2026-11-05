@@ -95,6 +95,9 @@ struct AWSProfilePresentation {
     var status: String
     var authentication: AWSProfileAuthentication
     var sourceCheck = AWSSourceCheck()
+    var incomingAvailable = false
+    var incomingSourceNames: [String] = []
+    var incomingExpiration: Double? = nil
 
     var name: String { installedNames.first ?? localNames.first ?? descriptor.name }
     var hasLocalProfile: Bool { !localNames.isEmpty }
@@ -110,11 +113,27 @@ struct AWSProfilePresentation {
         return candidates.filter { $0.isFinite && $0 > now.timeIntervalSince1970 }.max()
     }
 
+    // An unmapped native profile still uses the AWS CLI's own provider. A
+    // usable received credential does not change that configuration by itself.
+    func verifiedNativeExpiration(now: Date = Date()) -> Double? {
+        guard hasLocalProfile, !isInstalled,
+              ["ready", "checking", "networkUnavailable", "signInRequired"].contains(sourceCheck.state),
+              let expiry = sourceCheck.expiration, expiry.isFinite, expiry > now.timeIntervalSince1970 else { return nil }
+        return expiry
+    }
+
+    func needsIncomingSourceRecovery(isSource: Bool, now: Date = Date()) -> Bool {
+        guard isSource, !isInstalled, incomingAvailable, available, status != "Choose Account Again",
+              let expiry = incomingExpiration, expiry.isFinite, expiry > now.timeIntervalSince1970 else { return false }
+        return sourceCheck.state == "signInRequired" || verifiedNativeExpiration(now: now) == nil
+    }
+
     // Only a provider-confirmed authentication failure requires another login.
     // OAuth token-cache timestamps do not establish whether renewal can work.
     func rowState(isSource: Bool, sourceStatus: String?, isSigningIn: Bool,
                   now: Date = Date()) -> AWSProfileRowState {
-        let usable = usableExpiration(now: now) != nil
+        let nativeSource = isSource && hasLocalProfile && !isInstalled
+        let usable = nativeSource ? verifiedNativeExpiration(now: now) != nil : usableExpiration(now: now) != nil
         let receiver = isInstalled && !isSource
         let shared = !isSource && (!hasLocalProfile || receiver || available)
         let providers = sourceNames.joined(separator: ", ")
@@ -129,6 +148,13 @@ struct AWSProfilePresentation {
             return state
         }
         if isSigningIn { state.primaryAction = .signingIn; state.availabilityText = ""; return state }
+        if needsIncomingSourceRecovery(isSource: isSource, now: now) {
+            state.primaryAction = .useSharedAccess; state.secondaryAction = nil
+            state.authenticationText = incomingSourceNames.isEmpty ? "From an approved Mac" : "From " + incomingSourceNames.joined(separator: ", ")
+            state.authenticationTooltip = "Received access is available. Confirm Use Shared Access to switch this profile from its native sign-in to the approved copy."
+            state.availabilityText = "Use shared access to continue"; state.needsAttention = true
+            return state
+        }
         if shared && sourceCheck.needsSharedRenewal && !usable {
             state.primaryAction = .syncNow; state.availabilityText = "Waiting for shared access"; state.needsAttention = true
             return state
@@ -218,7 +244,10 @@ struct AWSProfilePresentation {
                         available: account?["available"] as? Bool == true,
                         expiration: account?["expires"] as? Double,
                         status: account?["status"] as? String ?? "Not shared",
-                        authentication: AWSProfileAuthentication(authentication[id]), sourceCheck: AWSSourceCheck(checks[id]))
+                        authentication: AWSProfileAuthentication(authentication[id]), sourceCheck: AWSSourceCheck(checks[id]),
+                        incomingAvailable: account?["incomingAvailable"] as? Bool == true,
+                        incomingSourceNames: unique(account?["incomingSourceNames"] as? [String] ?? []),
+                        incomingExpiration: account?["incomingExpires"] as? Double)
         }.sorted { a, b in a.name == b.name ? before(a.identitySummary, b.identitySummary) : before(a.name, b.name) }
     }
 

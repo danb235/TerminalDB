@@ -65,7 +65,14 @@ exports only selected profiles' short-lived credentials; SSO access/refresh
 tokens, client registrations and console-login device keys remain local. AWS
 expiry is authoritative, profile/principal binding is checked, snapshots reject
 replay, and the credential launcher returns secrets only through the documented
-AWS process-provider channel. See [shared AWS access](shared-aws-access.md).
+AWS process-provider channel. Footer and Accounts status reads use bounded,
+nonsecret metadata independently of the credential service queue. Paired remote
+viewers can read status; profile checks and mapping changes require an attached
+session's current controller generation, checked again before queued work runs.
+Remote browser authentication, credential export, and sync management are denied.
+For a remote tab, browser sign-in runs locally on the viewing Mac and transfers
+temporary access only through existing two-sided AWS sharing approvals. See
+[shared AWS access](shared-aws-access.md).
 Entering a new API key through settings sends it only to the selected host over
 the authenticated connection. Appearance and keyboard preferences remain local.
 Terminal output, repository text and AI suggestions are untrusted content.

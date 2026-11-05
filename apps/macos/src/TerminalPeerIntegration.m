@@ -420,6 +420,12 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
 }
 
 - (void)connectToWorkstation {
+    [self.awsAccountsPanel stop];
+    self.awsAccountsPanel = nil;
+    self.awsAccountsWorkstationName = nil;
+    self.awsStatusSnapshot = nil;
+    self.awsStatusGeneration++;
+    self.awsStatusRequestInFlight = NO;
     self.sessionClient = [[TDBSessionClient alloc] init];
     self.sessionClient.workstationID = self.peerTarget ?: @"";
     NSString *workstationName = self.peerTarget.length > 0 ? @"Saved Mac" : @"This Mac";
@@ -510,6 +516,14 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
             [self.terminalView resizeGridWithColumns:[self.peerState[@"columns"] integerValue] rows:[self.peerState[@"rows"] integerValue]];
         }
         if ([type isEqualToString:@"attached"]) {
+            self.awsStatusGeneration++;
+            self.awsStatusRequestInFlight = NO;
+            [self refreshAWSStatus];
+            AppDelegate *accountsHost = self;
+            while (accountsHost.embeddedSplitOwner) accountsHost = accountsHost.embeddedSplitOwner;
+            if (accountsHost.accountsExecutionPane == self && !accountsHost.utilityPanelView.hidden &&
+                accountsHost.utilityPanelScrollView.documentView == accountsHost.accountsSurface)
+                [self showAccountsProvider:accountsHost.accountsProviderIndex];
             [self.sessionClient request:@"session.snapshot" payload:@{} completion:^(NSDictionary *result) {}];
             if (self.sessionClient.controlling) {
                 [self.sessionClient request:@"terminal.resize" payload:@{@"rows": @(self.terminalView.terminalRows), @"columns": @(self.terminalView.terminalColumns)} completion:^(NSDictionary *result) {}];
@@ -518,7 +532,10 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
             void (^action)(void) = self.peerAfterAttach; self.peerAfterAttach = nil;
             if (action) action();
         }
+    } else if ([type isEqualToString:@"aws.changed"]) {
+        [self refreshAWSStatus];
     } else if ([type isEqualToString:@"connection-error"]) {
+        [self invalidateAWSStatus];
         [self showPeerError:event[@"detail"] ?: @"The workstation is unreachable."];
     } else if ([type isEqualToString:@"operation-error"]) {
         if (![event[@"operation"] isEqual:@"account.select"]) [self showPeerError:event[@"detail"] ?: @"The workstation could not complete that action."];
@@ -555,10 +572,14 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
             self.peerSnapshot = nil; self.peerSnapshotIdentifier = nil;
         }
     } else if ([type isEqualToString:@"disconnected"] || [type isEqualToString:@"input-uncertain"]) {
+        if ([type isEqualToString:@"disconnected"]) [self invalidateAWSStatus];
         [self showPeerError:[type isEqualToString:@"input-uncertain"]
             ? event[@"detail"] ?: @"Input delivery is uncertain. Review the terminal before reconnecting; input was not repeated."
             : event[@"detail"] ?: @"Reconnecting to the workstation…"];
     } else if ([type isEqualToString:@"control"]) {
+        self.awsStatusGeneration++;
+        self.awsStatusRequestInFlight = NO;
+        [self refreshAWSStatus];
         if (self.sessionClient.controlling && self.sessionClient.sessionID.length > 0 && !self.sessionClient.synchronizing) {
             [self.terminalView useLocalGrid];
             [self updatePTYWindowSize];
@@ -566,6 +587,7 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
             [self.sessionClient request:@"session.snapshot" payload:@{} completion:^(NSDictionary *result) {}];
         }
     } else if ([type isEqualToString:@"ended"]) {
+        [self invalidateAWSStatus];
         [self showPeerError:@"This session has ended. Open a new terminal to continue."];
     }
     self.terminalView.inputEnabled = self.sessionClient.connected && self.sessionClient.controlling && !self.sessionClient.synchronizing && !self.sessionClient.snapshotFailed && !self.sessionClient.inputUncertain;

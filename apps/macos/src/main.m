@@ -40,6 +40,77 @@ static CGFloat TerminalDBCommandBarHeight(BOOL focusMode, BOOL commandBarHidden,
     return recovery ? contentHeight : (focusMode || commandBarHidden) ? 0.0 : contentHeight;
 }
 
+@interface TerminalAccountsSurface : NSView
+@property(nonatomic, strong) NSSegmentedControl *providerPicker;
+@property(nonatomic, strong) NSScrollView *body;
+@property(nonatomic, strong) NSView *providerView;
+@property(nonatomic) BOOL documentSized;
+@property(nonatomic) BOOL arranging;
+@property(nonatomic, copy) void (^providerChanged)(NSInteger);
+- (void)showProviderView:(NSView *)view documentSized:(BOOL)documentSized;
+@end
+
+@implementation TerminalAccountsSurface
+- (BOOL)isFlipped { return YES; }
+- (instancetype)initWithFrame:(NSRect)frame {
+    self = [super initWithFrame:frame];
+    if (!self) return nil;
+    _providerPicker = [NSSegmentedControl segmentedControlWithLabels:@[@"Claude", @"AWS"]
+        trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(changeProvider:)];
+    _providerPicker.selectedSegment = 0;
+    _providerPicker.accessibilityLabel = @"Account service";
+    _providerPicker.identifier = @"accounts-provider";
+    [self addSubview:_providerPicker];
+    _body = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+    _body.borderType = NSNoBorder;
+    _body.drawsBackground = NO;
+    _body.autohidesScrollers = YES;
+    [self addSubview:_body];
+    return self;
+}
+- (void)changeProvider:(id)sender {
+    (void)sender;
+    if (self.providerChanged) self.providerChanged(self.providerPicker.selectedSegment);
+}
+- (void)showProviderView:(NSView *)view documentSized:(BOOL)documentSized {
+    if (self.providerView != view) {
+        [NSNotificationCenter.defaultCenter removeObserver:self name:NSViewFrameDidChangeNotification object:self.providerView];
+        self.providerView = view;
+        view.postsFrameChangedNotifications = YES;
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(providerResized:)
+            name:NSViewFrameDidChangeNotification object:view];
+        self.body.documentView = view;
+    }
+    self.documentSized = documentSized;
+    self.body.hasVerticalScroller = documentSized;
+    self.needsLayout = YES;
+    [self layoutSubtreeIfNeeded];
+    CGFloat y = view.isFlipped ? 0 : MAX(0, NSHeight(view.frame) - NSHeight(self.body.contentView.bounds));
+    [self.body.contentView scrollToPoint:NSMakePoint(0, y)];
+    [self.body reflectScrolledClipView:self.body.contentView];
+}
+- (void)providerResized:(NSNotification *)note {
+    (void)note;
+    if (!self.arranging) self.needsLayout = YES;
+}
+- (void)layout {
+    [super layout];
+    if (self.arranging) return;
+    self.arranging = YES;
+    CGFloat width = MAX(1, NSWidth(self.bounds) - 32);
+    self.providerPicker.frame = NSMakeRect(16, 12, width, 28);
+    self.body.frame = NSMakeRect(0, 52, NSWidth(self.bounds), MAX(1, NSHeight(self.bounds) - 52));
+    if (self.providerView) {
+        NSSize viewport = self.body.contentSize;
+        CGFloat height = self.documentSized ? MAX(NSHeight(self.providerView.frame), viewport.height) : viewport.height;
+        self.providerView.frame = NSMakeRect(0, 0, MAX(1, viewport.width), MAX(1, height));
+        [self.providerView layoutSubtreeIfNeeded];
+    }
+    self.arranging = NO;
+}
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+@end
+
 static NSWindow *TerminalDBSelectedTabWindow(NSWindow *window) {
     return window.tabGroup.selectedWindow ?: window;
 }
@@ -50,6 +121,23 @@ static AppDelegate *TerminalDBSelectedTabController(NSWindow *window, NSArray<Ap
     if (!controller) for (AppDelegate *candidate in controllers) if (candidate.window == selected) { controller = candidate; break; }
     AppDelegate *pane = controller.peerFocusedPane;
     return pane.terminalView.window == selected && pane != nil ? pane : controller;
+}
+
+static AppDelegate *TerminalDBControllerForFocusedView(NSView *focusedView, NSArray<AppDelegate *> *controllers) {
+    for (AppDelegate *controller in controllers) {
+        if (controller.utilityPanelView && !controller.utilityPanelView.hidden &&
+            [focusedView isDescendantOf:controller.utilityPanelView])
+            return controller.peerFocusedPane ?: controller;
+    }
+    // Inspect nearest ancestors first: a split's workspace is also inside its
+    // parent's workspace, so controller-array order cannot decide focus.
+    for (NSView *candidate = focusedView; candidate; candidate = candidate.superview) {
+        for (AppDelegate *controller in controllers) {
+            if (candidate == controller.workspaceView || candidate == controller.terminalView ||
+                candidate == controller.assistantView) return controller;
+        }
+    }
+    return nil;
 }
 
 static BOOL TerminalDBCanRestartTrackedClaudeLogin(
@@ -749,11 +837,11 @@ static BOOL TerminalDBReapShell(pid_t pid) {
                                    action:@selector(showPairedWorkstations:)
                             keyEquivalent:@""];
     workstations.target = self;
-    NSMenuItem *awsAccess =
-        [applicationMenu addItemWithTitle:@"AWS Access…"
-                                   action:@selector(showAWSAccess:)
+    NSMenuItem *accounts =
+        [applicationMenu addItemWithTitle:@"Accounts…"
+                                   action:@selector(showAccounts:)
                             keyEquivalent:@""];
-    awsAccess.target = self;
+    accounts.target = self;
     [applicationMenu addItem:NSMenuItem.separatorItem];
 
     NSMenuItem *services =
@@ -1178,23 +1266,8 @@ static BOOL TerminalDBReapShell(pid_t pid) {
         [focusedWindow.firstResponder isKindOfClass:NSView.class]
             ? (NSView *)focusedWindow.firstResponder : nil;
     if (focusedView != nil && focusedView.window == focusedWindow) {
-        for (AppDelegate *controller in root.windowControllers) {
-            if (!controller.utilityPanelView.hidden &&
-                [focusedView isDescendantOf:controller.utilityPanelView]) {
-                return controller.peerFocusedPane ?: controller;
-            }
-        }
-        for (AppDelegate *controller in root.windowControllers) {
-            NSView *candidate = focusedView;
-            while (candidate != nil) {
-                if (candidate == controller.workspaceView ||
-                    candidate == controller.terminalView ||
-                    candidate == controller.assistantView) {
-                    return controller;
-                }
-                candidate = candidate.superview;
-            }
-        }
+        AppDelegate *controller = TerminalDBControllerForFocusedView(focusedView, root.windowControllers);
+        if (controller) return controller;
     }
     for (NSWindow *candidate in @[NSApp.keyWindow ?: NSNull.null,
                                   NSApp.mainWindow ?: NSNull.null]) {
@@ -1699,7 +1772,144 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 
 - (void)showAWSAccess:(id)sender {
     (void)sender;
-    [TDBAWSAccessPanel present];
+    [[[self rootController] activeTerminalController] showAccountsProvider:1];
+}
+
+- (void)showAccounts:(id)sender {
+    (void)sender;
+    AppDelegate *pane = [[self rootController] activeTerminalController];
+    AppDelegate *host = pane;
+    while (host.embeddedSplitOwner) host = host.embeddedSplitOwner;
+    [pane showAccountsProvider:host.accountsProviderIndex];
+}
+
+- (void)showAccountsProvider:(NSInteger)provider {
+    AppDelegate *host = self;
+    while (host.embeddedSplitOwner) host = host.embeddedSplitOwner;
+    AppDelegate *previousPane = host.accountsExecutionPane;
+    if (previousPane && previousPane != self) {
+        [previousPane.awsAccountsPanel stop];
+        [previousPane.claudeStatusBar didDismissUsagePanel];
+    }
+    host.peerFocusedPane = self;
+    host.accountsExecutionPane = self;
+    host.accountsProviderIndex = provider == 1 ? 1 : 0;
+    NSString *name = self.sessionClient ? self.sessionClient.workstationName : @"This Mac";
+    if (name.length == 0) name = @"This Mac";
+    self.claudeStatusBar.accountWorkstationName = name;
+    TerminalAccountsSurface *surface = (TerminalAccountsSurface *)host.accountsSurface;
+    if (!surface) {
+        surface = [[TerminalAccountsSurface alloc] initWithFrame:NSMakeRect(0, 0, 560, 420)];
+        surface.identifier = @"accounts-surface";
+        host.accountsSurface = surface;
+        __weak AppDelegate *weakHost = host;
+        surface.providerChanged = ^(NSInteger selected) {
+            AppDelegate *strongHost = weakHost;
+            [strongHost.accountsExecutionPane showAccountsProvider:selected];
+        };
+    }
+    surface.providerPicker.selectedSegment = host.accountsProviderIndex;
+    __weak AppDelegate *weakPane = self;
+    if (host.accountsProviderIndex == 0) {
+        [self.awsAccountsPanel stop];
+        if (![NSProcessInfo.processInfo.arguments containsObject:@"--visual-qa"])
+            [self.claudeStatusBar refreshUsageDashboard];
+        self.claudeStatusBar.usagePanelDismissHandler = ^{ [weakPane hideUtilityPanel:nil]; };
+        [surface showProviderView:[self.claudeStatusBar prepareEmbeddedAccountsView] documentSized:YES];
+    } else {
+        [self.claudeStatusBar didDismissUsagePanel];
+        if (self.awsAccountsPanel && ![self.awsAccountsWorkstationName isEqual:name]) {
+            [self.awsAccountsPanel stop];
+            self.awsAccountsPanel = nil;
+        }
+        if (!self.awsAccountsPanel && self.sessionClient) {
+            self.awsAccountsPanel = [[TDBAWSAccessPanel alloc] initWithClient:self.sessionClient
+                workstationName:name local:self.sessionClient.workstationID.length == 0];
+            self.awsAccountsWorkstationName = name;
+            __weak TDBAWSAccessPanel *weakPanel = self.awsAccountsPanel;
+            self.awsAccountsPanel.localSignInHandler = ^(NSDictionary *profile) {
+                [weakPanel beginLocalSignIn:profile];
+            };
+            self.awsAccountsPanel.statusDidChange = ^(NSDictionary *snapshot) {
+                AppDelegate *pane = weakPane;
+                if (!pane) return;
+                pane.awsStatusSnapshot = snapshot;
+                [pane.claudeStatusBar applyAWSStatus:snapshot];
+            };
+        }
+        if (self.awsAccountsPanel) {
+            [self.awsAccountsPanel applyStatusSnapshot:self.awsStatusSnapshot ?: @{@"state": @"loading"}];
+            [surface showProviderView:self.awsAccountsPanel.view documentSized:NO];
+            [self.awsAccountsPanel start];
+        } else {
+            NSTextField *waiting = [NSTextField wrappingLabelWithString:@"AWS accounts appear when the workstation connects."];
+            waiting.font = [NSFont systemFontOfSize:13];
+            waiting.textColor = self.theme.statusBarActiveForeground;
+            waiting.frame = NSMakeRect(0, 0, 520, 100);
+            [surface showProviderView:waiting documentSized:NO];
+        }
+    }
+    __weak AppDelegate *weakHost = host;
+    [host showUtilityPanelView:surface title:[@"Accounts · " stringByAppendingString:name]
+        fullWidth:NO dismissHandler:^{
+            AppDelegate *pane = weakPane;
+            [pane.awsAccountsPanel stop];
+            [pane.claudeStatusBar didDismissUsagePanel];
+            weakHost.accountsExecutionPane = nil;
+        }];
+    [self refreshAWSStatus];
+}
+
+- (void)invalidateAWSStatus {
+    self.awsStatusGeneration++;
+    self.awsStatusRequestInFlight = NO;
+    NSString *name = self.sessionClient.workstationName ?: @"This Mac";
+    NSString *detail = [NSString stringWithFormat:@"Reconnect to %@ to check AWS access. Last-known accounts stay on that Mac.", name];
+    NSMutableDictionary *snapshot = [self.awsStatusSnapshot mutableCopy] ?: [NSMutableDictionary dictionary];
+    snapshot[@"state"] = @"unavailable";
+    snapshot[@"stale"] = @YES;
+    snapshot[@"message"] = detail;
+    snapshot[@"summary"] = @{@"state": @"disconnected", @"title": @"AWS · Reconnecting", @"detail": detail};
+    self.awsStatusSnapshot = snapshot;
+    [self.claudeStatusBar applyAWSStatus:snapshot];
+    [self.awsAccountsPanel applyStatusSnapshot:snapshot];
+}
+
+- (void)refreshAWSStatus {
+    if (TerminalDBRunsSessionHost()) return;
+    TDBSessionClient *client = self.sessionClient;
+    if (!client) {
+        [self.claudeStatusBar applyAWSStatus:@{@"state": @"loading"}];
+        return;
+    }
+    self.claudeStatusBar.accountWorkstationName = client.workstationName ?: @"This Mac";
+    if (!client.connected || client.ended) { [self invalidateAWSStatus]; return; }
+    if (self.awsStatusRequestInFlight) return;
+    self.awsStatusRequestInFlight = YES;
+    NSUInteger generation = self.awsStatusGeneration;
+    NSString *workstation = [client.workstationID copy];
+    NSString *session = [client.sessionID copy];
+    __weak AppDelegate *weakSelf = self;
+    [client request:@"aws.status" payload:@{} completion:^(NSDictionary *result) {
+        AppDelegate *pane = weakSelf;
+        if (!pane || pane.sessionClient != client || pane.awsStatusGeneration != generation ||
+            ![client.workstationID isEqual:workstation] || ![client.sessionID isEqual:session]) return;
+        pane.awsStatusRequestInFlight = NO;
+        if (!client.connected || client.ended) { [pane invalidateAWSStatus]; return; }
+        NSDictionary *snapshot = result;
+        if ([result[@"error"] isKindOfClass:NSString.class]) {
+            BOOL oldHost = [result[@"error"] isEqual:@"This AWS operation is unsupported."] ||
+                [result[@"error"] isEqual:@"Manage AWS access on this Mac."];
+            NSString *detail = oldHost
+                ? [NSString stringWithFormat:@"Update TerminalDB on %@ to show AWS accounts here.", client.workstationName]
+                : [NSString stringWithFormat:@"AWS status is unavailable on %@. Open Accounts to retry.", client.workstationName];
+            snapshot = @{@"state": @"unavailable", @"stale": @YES, @"message": detail,
+                @"summary": @{@"state": @"unavailable", @"title": oldHost ? @"AWS · Update needed" : @"AWS · Unavailable", @"detail": detail}};
+        }
+        pane.awsStatusSnapshot = snapshot;
+        [pane.claudeStatusBar applyAWSStatus:snapshot];
+        [pane.awsAccountsPanel applyStatusSnapshot:snapshot];
+    }];
 }
 
 - (NSDictionary *)remoteUsageForProfile:(ClaudeProfile *)profile {
@@ -3907,6 +4117,14 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     [self configureTabActivityIndicator];
     [self.claudeStatusBar startMonitoring];
     [self startShell];
+    if (TerminalDBUsesPeerSessions()) {
+        self.awsStatusTimer = [NSTimer scheduledTimerWithTimeInterval:10 repeats:YES block:^(NSTimer *timer) {
+            (void)timer;
+            AppDelegate *pane = weakSelf;
+            if ([pane terminalWindowIsOnScreen]) [pane refreshAWSStatus];
+        }];
+        [self refreshAWSStatus];
+    }
     [self startTabActivityMonitoring];
     [self updateWindowTitle];
 }
@@ -4069,6 +4287,11 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     while (host.embeddedSplitOwner != nil) {
         host = host.embeddedSplitOwner;
     }
+    NSResponder *responder = host.window.firstResponder;
+    BOOL preserveAccountsFocus = view == host.accountsSurface &&
+        !host.utilityPanelView.hidden && host.utilityPanelScrollView.documentView == view &&
+        [responder isKindOfClass:NSView.class] &&
+        [(NSView *)responder isDescendantOf:host.accountsExecutionPane.terminalView];
     if (host.focusMode) host.focusMode = NO;
     if (host.utilityPanelView.hidden) {
         host.utilityPanelRestoresAssistant = !host.assistantView.hidden;
@@ -4082,7 +4305,8 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     host.utilityPanelUsesFullWidth = fullWidth;
     // Tool panels adapt their internal scrolling regions to the viewport.
     // Do not retain their original standalone-window height when embedded.
-    host.utilityPanelMinimumContentHeight = view == [host rootController].productWindowController.panelView ? 380 : MAX(1, view.frame.size.height);
+    host.utilityPanelMinimumContentHeight = view == host.accountsSurface ||
+        view == [host rootController].productWindowController.panelView ? 380 : MAX(1, view.frame.size.height);
     host.utilityPanelDismissHandler = dismissHandler;
     host.utilityPanelTitleLabel.stringValue = title.length > 0
         ? title : @"Control Panel";
@@ -4111,7 +4335,7 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     // dismiss control should not look permanently selected when a panel opens.
     // Clearing the previous terminal responder also prevents keystrokes from
     // reaching the terminal behind the panel.
-    [host.window makeFirstResponder:nil];
+    if (!preserveAccountsFocus) [host.window makeFirstResponder:nil];
 }
 
 - (void)hideUtilityPanel:(id)sender {
@@ -4210,9 +4434,15 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 
 - (void)configureClaudeIntegration {
     if (TerminalDBUsesPeerSessions()) return;
+    NSDictionary *environment = NSProcessInfo.processInfo.environment;
+    NSString *fixtureRoot = environment[@"TERMINALDB_PEER_STATE_DIR"];
+    BOOL isolatedFixture = [environment[@"TERMINALDB_PEER_QA"] isEqual:@"1"] &&
+        [environment[@"TERMINALDB_PEER_EPHEMERAL_IDENTITY"] isEqual:@"1"] &&
+        [fixtureRoot isAbsolutePath];
     NSString *cacheRoot = [NSHomeDirectory()
         stringByAppendingPathComponent:
             @"Library/Caches/com.terminaldb.app"];
+    if (isolatedFixture) cacheRoot = [fixtureRoot stringByAppendingPathComponent:@"runtime-cache"];
     NSFileManager *files = NSFileManager.defaultManager;
     NSString *windowsRoot =
         [cacheRoot stringByAppendingPathComponent:@"windows"];
@@ -5896,31 +6126,13 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 }
 
 - (void)claudeStatusBarDidRequestUsagePanel:(ClaudeStatusBar *)statusBar {
-    AppDelegate *host = self;
-    while (host.embeddedSplitOwner != nil) {
-        host = host.embeddedSplitOwner;
-    }
-    host.peerFocusedPane = self;
-    BOOL visualQA = [NSProcessInfo.processInfo.arguments
-        containsObject:@"--visual-qa"];
-    if (!visualQA) {
-        // Initialize the refresh before the panel's first render so stale
-        // snapshots are immediately labeled as waiting or refreshing.
-        [statusBar refreshUsageDashboard];
-    }
-    NSView *usageView = [statusBar prepareUsagePanel];
-    __weak AppDelegate *weakHost = host;
-    __weak ClaudeStatusBar *weakStatusBar = statusBar;
-    statusBar.usagePanelDismissHandler = ^{
-        [weakHost hideUtilityPanel:nil];
-    };
-    [host showUtilityPanelView:usageView
-                         title:@"Claude Accounts"
-                     fullWidth:YES
-    dismissHandler:^{
-        [weakStatusBar didDismissUsagePanel];
-    }];
-    if (visualQA) [weakStatusBar prepareUsagePanel];
+    (void)statusBar;
+    [self showAccountsProvider:0];
+}
+
+- (void)claudeStatusBarDidRequestAWSAccounts:(ClaudeStatusBar *)statusBar {
+    (void)statusBar;
+    [self showAccountsProvider:1];
 }
 
 - (void)claudeStatusBar:(ClaudeStatusBar *)statusBar
@@ -6485,6 +6697,19 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 - (void)windowDidBecomeKey:(NSNotification *)notification {
     (void)notification;
     [self restoreDesktopTerminalGeometry];
+    [(self.peerFocusedPane ?: self) refreshAWSStatus];
+
+    if (!self.utilityPanelView.hidden) {
+        NSResponder *responder = self.window.firstResponder;
+        if (![responder isKindOfClass:NSView.class] ||
+            ![(NSView *)responder isDescendantOf:self.utilityPanelView]) {
+            NSView *control = self.accountsExecutionPane
+                ? ((TerminalAccountsSurface *)self.accountsSurface).providerPicker
+                : nil;
+            [self.window makeFirstResponder:control];
+        }
+        return;
+    }
 
     AppDelegate *focus = self.peerFocusedPane ?: self;
     if (!focus.assistantView.hidden) {
@@ -6496,10 +6721,14 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 
 - (void)windowDidUpdate:(NSNotification *)notification {
     (void)notification;
-    if (!self.sessionClient || !self.window.isKeyWindow || !self.utilityPanelView.hidden) return;
+    if (!self.sessionClient || !self.window.isKeyWindow) return;
+    BOOL accountsOpen = !self.utilityPanelView.hidden && self.accountsExecutionPane &&
+        self.utilityPanelScrollView.documentView == self.accountsSurface;
+    if (!self.utilityPanelView.hidden && !accountsOpen) return;
     AppDelegate *active = [[self rootController] activeTerminalController];
     if (active && active.terminalView.window == self.window && self.peerFocusedPane != active) {
         self.peerFocusedPane = active;
+        if (accountsOpen) [active showAccountsProvider:self.accountsProviderIndex];
         [self updateWindowTitle];
     }
 }
@@ -6604,6 +6833,10 @@ static BOOL TerminalDBReapShell(pid_t pid) {
 - (void)windowWillClose:(NSNotification *)notification {
     if (TerminalDBRunsSessionHost()) [[self rootController].sessionServer publish:@{@"type": @"ended", @"sessionId": self.terminalSessionIdentifier}];
     [self.sessionClient close];
+    [self.awsStatusTimer invalidate];
+    self.awsStatusTimer = nil;
+    self.awsStatusGeneration++;
+    [self.awsAccountsPanel stop];
     (void)notification;
     NSArray<AppDelegate *> *embedded = [self.splitControllers copy];
     [self.splitControllers removeAllObjects];
@@ -6697,6 +6930,70 @@ static BOOL TerminalDBReapShell(pid_t pid) {
             [terminal consumeTerminalData:
                 [NSData dataWithBytes:bytes length:length]];
         };
+
+    for (NSNumber *width in @[@520, @900]) {
+        TerminalAccountsSurface *surface = [[TerminalAccountsSurface alloc]
+            initWithFrame:NSMakeRect(0, 0, width.doubleValue, 600)];
+        NSView *claude = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 500, 1200)];
+        [surface showProviderView:claude documentSized:YES];
+        [surface layoutSubtreeIfNeeded];
+        BOOL documentScrolls = surface.body.hasVerticalScroller &&
+            NSHeight(claude.frame) > NSHeight(surface.body.frame) &&
+            NSMaxY(surface.providerPicker.frame) < NSMinY(surface.body.frame);
+        NSView *aws = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 500, 800)];
+        [surface showProviderView:aws documentSized:NO];
+        [surface layoutSubtreeIfNeeded];
+        BOOL fillsViewport = !surface.body.hasVerticalScroller &&
+            fabs(NSHeight(aws.frame) - surface.body.contentSize.height) < 1 &&
+            NSWidth(aws.frame) <= width.doubleValue;
+        __block NSInteger selected = -1;
+        surface.providerChanged = ^(NSInteger provider) { selected = provider; };
+        surface.providerPicker.selectedSegment = 1;
+        [surface.providerPicker sendAction:surface.providerPicker.action to:surface.providerPicker.target];
+        if (!documentScrolls || !fillsViewport || selected != 1 || surface.body.documentView != aws) {
+            fprintf(stderr, "FAIL Accounts navigation and scrolling at %ld points\n", width.longValue);
+            failures++;
+        }
+    }
+
+    AppDelegate *outerPane = newTerminal();
+    AppDelegate *innerPane = newTerminal();
+    outerPane.workspaceView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 900, 600)];
+    innerPane.workspaceView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 600)];
+    NSView *focusedLeaf = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 100, 100)];
+    [outerPane.workspaceView addSubview:innerPane.workspaceView];
+    [innerPane.workspaceView addSubview:focusedLeaf];
+    if (TerminalDBControllerForFocusedView(focusedLeaf, @[outerPane, innerPane]) != innerPane) {
+        fprintf(stderr, "FAIL Accounts follows nearest focused split without terminal focus reporting\n");
+        failures++;
+    }
+
+    NSString *accountsTestRoot = [NSTemporaryDirectory() stringByAppendingPathComponent:
+        [@"terminaldb-accounts-navigation-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+    AppDelegate *accountsHost = newTerminal();
+    accountsHost.profileManager = [ClaudeProfileManager managerForTestingAtRoot:accountsTestRoot];
+    accountsHost.workspaceView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 900, 600)];
+    accountsHost.utilityPanelView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 520, 500)];
+    accountsHost.utilityPanelView.hidden = YES;
+    accountsHost.utilityPanelScrollView = [[NSScrollView alloc] initWithFrame:accountsHost.utilityPanelView.bounds];
+    accountsHost.utilityPanelTitleLabel = [NSTextField labelWithString:@""];
+    accountsHost.utilityPanelCloseButton = [NSButton buttonWithTitle:@"" target:nil action:nil];
+    accountsHost.claudeStatusBar = [[ClaudeStatusBar alloc] initWithFrame:NSMakeRect(0, 0, 900, 28)
+        claudeExecutable:nil profileManager:accountsHost.profileManager selectedProfile:nil theme:theme];
+    accountsHost.claudeStatusBar.peerMode = YES;
+    [accountsHost showAccountsProvider:0];
+    [accountsHost.claudeStatusBar setValue:accountsHost.claudeStatusBar.usagePanelDismissHandler
+        forKey:@"pendingUsagePanelDismissHandler"];
+    [accountsHost.claudeStatusBar setValue:@YES forKey:@"accountSelectionPending"];
+    [accountsHost showAccountsProvider:1];
+    [accountsHost.claudeStatusBar accountSelectionDidComplete:YES];
+    if (accountsHost.utilityPanelView.hidden || accountsHost.accountsProviderIndex != 1 ||
+        accountsHost.utilityPanelScrollView.documentView != accountsHost.accountsSurface) {
+        fprintf(stderr, "FAIL delayed Claude selection must not dismiss the AWS presentation\n");
+        failures++;
+    }
+    [accountsHost hideUtilityPanel:nil];
+    [NSFileManager.defaultManager removeItemAtPath:accountsTestRoot error:nil];
 
     if (TerminalDBCommandBarHeight(NO, NO, 44, NO) != 44 ||
         TerminalDBCommandBarHeight(NO, YES, 44, NO) != 0 ||

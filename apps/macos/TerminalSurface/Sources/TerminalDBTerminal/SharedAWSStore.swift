@@ -408,6 +408,14 @@ final class SharedAWSStore {
         throw PeerFailure("No usable credentials are available for this AWS profile. Connect to an approved Mac or sign in here.")
     }
     func credentials(forProfile id: String) throws -> AWSRoleCredentials { try credentials(for: id) }
+    // Native profiles cannot consume a received copy until the user explicitly
+    // installs the shared provider. This proof never exports credential bytes.
+    func hasIncomingCredentials(forProfile id: String) throws -> Bool {
+        let doc = try load()
+        let matches = ranked(doc, matching: id)
+        guard Set(matches.filter { $0.role.expiration > now() }.map { $0.role.id }).count <= 1 else { return false }
+        return matches.contains { $0.source != doc.writer && (try? credential($0.role)) != nil }
+    }
     func profiles() throws -> [AWSProfileDescriptor] {
         let doc = try load()
         let ids = Set(doc.sources.values.flatMap { $0.roles.values.map { $0.profile.id } })
@@ -420,18 +428,31 @@ final class SharedAWSStore {
             let matches = ranked(doc, matching: id)
             guard let first = matches.first else { return nil }
             let ambiguous = Set(matches.filter { $0.role.expiration > now() }.map { $0.role.id }).count > 1
-            let usable = ambiguous ? nil : matches.first { (try? credential($0.role)) != nil }
+            var usable: (source: String, snapshot: SharedAWSSnapshot, role: SharedAWSRoleVersion)?
+            var incomingNames: [String] = []
+            var incomingExpires: Double?
+            if !ambiguous {
+                for match in matches where (try? credential(match.role)) != nil {
+                    if usable == nil { usable = match }
+                    if match.source != doc.writer {
+                        incomingNames = [match.snapshot.sourceName]; incomingExpires = match.role.expiration; break
+                    }
+                }
+            }
             let selected = usable ?? first
             let profileData = try JSONEncoder().encode(selected.role.profile)
             let descriptor = try JSONSerialization.jsonObject(with: profileData) as! [String: Any]
             let sourceNames = Array(Set(matches.map { $0.snapshot.sourceName })).sorted()
             let profileNames = Array(Set(matches.map { $0.role.profile.name })).sorted()
             let status = ambiguous ? "Choose Account Again" : usable != nil ? "Ready" : selected.role.expiration <= now() ? "Expired" : "Waiting for Sync"
-            return ["id": id, "profileId": id, "roleId": selected.role.id, "descriptor": descriptor,
+            var result: [String: Any] = ["id": id, "profileId": id, "roleId": selected.role.id, "descriptor": descriptor,
                     "sourceName": selected.snapshot.sourceName, "sourceNames": sourceNames, "profileNames": profileNames,
                     "expires": selected.role.expiration, "local": matches.contains { $0.source == doc.writer },
-                    "available": usable != nil, "status": status,
+                    "available": usable != nil, "incomingAvailable": !incomingNames.isEmpty,
+                    "incomingSourceNames": incomingNames, "status": status,
                     "accountID": selected.role.accountID, "principalARN": selected.role.principalARN]
+            if let incomingExpires { result["incomingExpires"] = incomingExpires }
+            return result
         }
     }
 
