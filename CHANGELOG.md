@@ -7,6 +7,21 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.11] - 2026-11-06
+
+### Fixed
+
+- Keep typing responsive when several terminal sessions are open. Claude usage
+  history and forecasts update in the background, with one result shared across
+  sessions for each account.
+
+Finish active terminal work before installing. Updating the session host ends
+its running shells.
+
+**Updating from 0.6.7 or earlier:** Quit TerminalDB and replace the app in
+Applications using the latest ZIP. This one-time manual update enables
+subsequent in-app updates.
+
 ## [0.6.10] - 2026-11-05
 
 ### Added
