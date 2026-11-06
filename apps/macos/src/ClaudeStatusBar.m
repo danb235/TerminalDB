@@ -9,6 +9,32 @@
 static NSTimeInterval const ClaudeUsageRefreshInterval = 5.0 * 60.0;
 static NSTimeInterval const ClaudeUsageFreshnessInterval = 10.0 * 60.0;
 static NSTimeInterval const ClaudeAccountRefreshInterval = 5.0 * 60.0;
+static NSTimeInterval const ClaudeUsageSnapshotInterval = 5.0;
+static NSNotificationName const ClaudeUsageSnapshotDidChange = @"ClaudeUsageSnapshotDidChange";
+
+// The main thread owns these snapshots. Disk reads and history updates run on
+// a separate serial queue so all panes can share one result per profile.
+static NSCache<NSString *, NSDictionary *> *ClaudeUsageSnapshots(void) {
+    static NSCache<NSString *, NSDictionary *> *cache;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        cache = [[NSCache alloc] init];
+        cache.countLimit = 128;
+    });
+    return cache;
+}
+
+static dispatch_queue_t ClaudeUsageSnapshotQueue(void) {
+    static dispatch_queue_t queue;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        dispatch_queue_attr_t attributes = dispatch_queue_attr_make_with_autorelease_frequency(
+            DISPATCH_QUEUE_SERIAL, DISPATCH_AUTORELEASE_FREQUENCY_WORK_ITEM);
+        queue = dispatch_queue_create("com.terminaldb.app.claude-usage-snapshots",
+            dispatch_queue_attr_make_with_qos_class(attributes, QOS_CLASS_UTILITY, 0));
+    });
+    return queue;
+}
 
 static void ClaudeConfigureSharedTask(NSTask *task, NSString *executable, NSArray *arguments, NSDictionary *environment) {
     NSString *shared = environment[@"TERMINALDB_SHARED_ACCOUNT_ID"];
@@ -258,10 +284,6 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
 @property(nonatomic) NSUInteger usageDashboardRefreshTotalCount;
 @property(nonatomic, copy) NSDictionary<NSString *, NSDictionary *> *usageDashboardResults;
 @property(nonatomic, copy) NSDictionary *peerUsageEntries;
-@property(nonatomic, copy) NSDictionary *cachedHostUsageEntries;
-@property(nonatomic, copy) NSArray *cachedHostUsageProfiles;
-@property(nonatomic, copy) NSDictionary *cachedHostUsageResults;
-@property(nonatomic) NSTimeInterval cachedHostUsageAt;
 @property(nonatomic) CGFloat usageDashboardViewportWidth;
 @property(nonatomic) BOOL usageDashboardResizeScheduled;
 @property(nonatomic, strong) NSMutableSet<NSString *> *expandedUsageAccounts;
@@ -289,15 +311,15 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
                                      currentWindow:(NSDictionary *)currentWindow
                                                now:(NSTimeInterval)now;
 + (NSString *)compactDurationFromSeconds:(NSTimeInterval)seconds;
-- (void)recordUsageSampleForStatus:(NSDictionary *)status
-                  sourceModifiedAt:(nullable NSDate *)sourceModifiedAt
-                           profile:(ClaudeProfile *)profile;
-- (NSArray<NSDictionary *> *)usageHistoryForProfile:(ClaudeProfile *)profile;
-- (NSArray<NSDictionary *> *)forecastsForStatus:(NSDictionary *)status
++ (NSArray<NSDictionary *> *)usageHistoryAtPath:(NSString *)path
+                                 recordingStatus:(NSDictionary *)status
+                                 sourceModifiedAt:(nullable NSDate *)sourceModifiedAt;
++ (NSArray<NSDictionary *> *)forecastsForStatus:(NSDictionary *)status
                                         history:(NSArray *)history
                                             now:(NSTimeInterval)now;
-- (nullable NSDictionary *)usageStatusForProfile:(ClaudeProfile *)profile
-                                 sourceModifiedAt:(NSDate *_Nullable *_Nullable)sourceModifiedAt;
++ (nullable NSDictionary *)usageStatusAtPaths:(NSArray<NSString *> *)paths
+                              sourceModifiedAt:(NSDate *_Nullable *_Nullable)sourceModifiedAt;
++ (nullable NSDictionary *)usageSnapshotForProfile:(ClaudeProfile *)profile reload:(BOOL)reload;
 - (NSDictionary *)usageDashboardEntryForProfile:(ClaudeProfile *)profile;
 + (nullable NSString *)refreshUsageCacheWithExecutable:(NSString *)executable
                                             environment:(NSDictionary *)environment
@@ -433,6 +455,8 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
            selector:@selector(profilesDidChange:)
                name:ClaudeProfilesDidChangeNotification
              object:profileManager];
+    [NSNotificationCenter.defaultCenter addObserver:self
+        selector:@selector(usageSnapshotDidChange:) name:ClaudeUsageSnapshotDidChange object:nil];
     return self;
 }
 
@@ -729,6 +753,9 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
                 dashboardResults[profile.identifier] = [result copy];
                 strongSelf.usageDashboardResults = [dashboardResults copy];
                 strongSelf.usageDashboardRefreshCompletedCount += 1;
+                if ([result[@"account_state"] isEqual:@"signed_in"] && result[@"refresh_error"] == nil) {
+                    [ClaudeStatusBar usageSnapshotForProfile:profile reload:YES];
+                }
                 if ([result[@"account_state"] isEqual:@"signed_in"] || [result[@"account_state"] isEqual:@"signed_out"]) {
                     [strongSelf.profileManager recordSignInState:[result[@"account_state"] isEqual:@"signed_in"] forProfile:profile];
                 }
@@ -1105,29 +1132,15 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
 }
 
 - (NSDictionary *)peerUsagePresentation {
-    // Terminal state is polled five times a second and also published during
-    // shell activity. Usage forecasts read/parse history and belong on their
-    // own cadence, not on every keystroke or terminal-state publication.
-    NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
-    if (self.cachedHostUsageEntries == nil ||
-        now - self.cachedHostUsageAt >= 1.0 ||
-        self.cachedHostUsageProfiles != self.profileManager.profiles ||
-        self.cachedHostUsageResults != self.usageDashboardResults) {
-        NSMutableDictionary *entries = [NSMutableDictionary dictionary];
-        for (ClaudeProfile *profile in self.profileManager.profiles) {
-            NSMutableDictionary *entry = [[self usageDashboardEntryForProfile:profile] mutableCopy];
-            [entry removeObjectForKey:@"profile"];
-            NSDate *date = entry[@"modified_at"];
-            if ([date isKindOfClass:NSDate.class]) entry[@"modified_at"] = @(date.timeIntervalSince1970);
-            entries[profile.catalogIdentifier] = entry;
-        }
-        self.cachedHostUsageEntries = entries;
-        self.cachedHostUsageProfiles = self.profileManager.profiles;
-        self.cachedHostUsageResults = self.usageDashboardResults;
-        self.cachedHostUsageAt = now;
+    NSMutableDictionary *entries = [NSMutableDictionary dictionary];
+    for (ClaudeProfile *profile in self.profileManager.profiles) {
+        NSMutableDictionary *entry = [[self usageDashboardEntryForProfile:profile] mutableCopy];
+        [entry removeObjectForKey:@"profile"];
+        NSDate *date = entry[@"modified_at"];
+        if ([date isKindOfClass:NSDate.class]) entry[@"modified_at"] = @(date.timeIntervalSince1970);
+        entries[profile.catalogIdentifier] = entry;
     }
-    // Selected-account labels and sign-in state must remain immediate.
-    return @{@"entries": self.cachedHostUsageEntries, @"label": self.usageLabel.stringValue ?: @"",
+    return @{@"entries": entries, @"label": self.usageLabel.stringValue ?: @"",
         @"loggedIn": @(self.accountIsLoggedIn), @"known": @(self.accountStatusKnown)};
 }
 - (void)applyPeerState:(NSDictionary *)state {
@@ -1151,16 +1164,14 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
     [self refreshAccountIfNeeded:YES];
     [self refreshUsage];
     [self refreshUsageIfNeeded:YES];
-    self.timer = [NSTimer scheduledTimerWithTimeInterval:5.0
-                                                  target:self
-                                                selector:@selector(timerFired:)
-                                                userInfo:nil
-                                                 repeats:YES];
+    __weak typeof(self) weakSelf = self;
+    self.timer = [NSTimer scheduledTimerWithTimeInterval:5.0 repeats:YES block:^(NSTimer *timer) {
+        [weakSelf timerFired:timer];
+    }];
 }
 
 - (void)refreshNow {
     if (self.peerMode) { if (self.peerRefreshHandler) self.peerRefreshHandler(); return; }
-    self.cachedHostUsageEntries = nil;
     self.lastAccountRefresh = nil;
     self.lastUsageRefreshAttempt = nil;
     [self refreshAccountIfNeeded:YES];
@@ -1405,12 +1416,13 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
     [self refreshUsageIfNeeded:self.lastUsageRefreshAttempt == nil];
 }
 
-- (NSArray<NSDictionary *> *)usageHistoryForProfile:(ClaudeProfile *)profile {
-    NSData *data = [NSData dataWithContentsOfFile:profile.usageHistoryPath];
-    NSDictionary *document = data.length > 0
++ (NSArray<NSDictionary *> *)usageHistoryAtPath:(NSString *)path {
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    id document = data.length > 0
         ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil]
         : nil;
-    NSArray *samples = [document[@"samples"] isKindOfClass:NSArray.class]
+    NSArray *samples = [document isKindOfClass:NSDictionary.class] &&
+        [document[@"samples"] isKindOfClass:NSArray.class]
         ? document[@"samples"] : @[];
     NSMutableArray<NSDictionary *> *valid = [NSMutableArray array];
     for (id sample in samples) {
@@ -1423,12 +1435,13 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
     return valid;
 }
 
-- (void)recordUsageSampleForStatus:(NSDictionary *)status
-                  sourceModifiedAt:(NSDate *)sourceModifiedAt
-                           profile:(ClaudeProfile *)profile {
++ (NSArray<NSDictionary *> *)usageHistoryAtPath:(NSString *)path
+                                 recordingStatus:(NSDictionary *)status
+                                 sourceModifiedAt:(NSDate *)sourceModifiedAt {
+    NSArray<NSDictionary *> *history = [self usageHistoryAtPath:path];
     NSDictionary *limits = [status[@"rate_limits"]
         isKindOfClass:NSDictionary.class] ? status[@"rate_limits"] : nil;
-    if (limits == nil) return;
+    if (limits == nil) return history;
 
     NSMutableDictionary *recordedLimits = [NSMutableDictionary dictionary];
     for (NSString *key in @[@"five_hour", @"seven_day", @"fable_five"]) {
@@ -1446,7 +1459,7 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
         if (reset != nil) recordedWindow[@"resets_at"] = reset;
         recordedLimits[key] = recordedWindow;
     }
-    if (recordedLimits.count == 0) return;
+    if (recordedLimits.count == 0) return history;
 
     NSDictionary *metadata = [status[@"terminaldb"]
         isKindOfClass:NSDictionary.class] ? status[@"terminaldb"] : nil;
@@ -1457,7 +1470,7 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
         : (sourceModifiedAt != nil
             ? sourceModifiedAt.timeIntervalSince1970
             : NSDate.date.timeIntervalSince1970);
-    if (!isfinite(recordedAt) || recordedAt <= 0) return;
+    if (!isfinite(recordedAt) || recordedAt <= 0) return history;
 
     NSDictionary *sample = @{
         @"recorded_at" : @(recordedAt),
@@ -1466,7 +1479,7 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
     NSTimeInterval cutoff = NSDate.date.timeIntervalSince1970 -
         ClaudeUsageHistoryRetention;
     NSMutableArray<NSDictionary *> *samples = [NSMutableArray array];
-    for (NSDictionary *existing in [self usageHistoryForProfile:profile]) {
+    for (NSDictionary *existing in history) {
         NSNumber *timestamp = existing[@"recorded_at"];
         if (timestamp.doubleValue >= cutoff) [samples addObject:existing];
     }
@@ -1477,7 +1490,7 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
     NSDictionary *last = samples.lastObject;
     NSTimeInterval lastTime = [last[@"recorded_at"] doubleValue];
     if (last != nil && fabs(lastTime - recordedAt) < 1.0) {
-        if ([last[@"rate_limits"] isEqual:recordedLimits]) return;
+        if ([last[@"rate_limits"] isEqual:recordedLimits]) return history;
         [samples removeLastObject];
     }
     [samples addObject:sample];
@@ -1489,12 +1502,14 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
         @"version" : @1,
         @"samples" : samples,
     } options:0 error:nil];
-    if ([historyData writeToFile:profile.usageHistoryPath atomically:YES]) {
+    if ([historyData writeToFile:path atomically:YES]) {
         [NSFileManager.defaultManager
             setAttributes:@{NSFilePosixPermissions : @0600}
-            ofItemAtPath:profile.usageHistoryPath
+            ofItemAtPath:path
             error:nil];
+        return samples;
     }
+    return history;
 }
 
 + (NSDictionary *)usageForecastForSamples:(NSArray *)samples
@@ -1636,7 +1651,7 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
     return result;
 }
 
-- (NSArray<NSDictionary *> *)forecastsForStatus:(NSDictionary *)status
++ (NSArray<NSDictionary *> *)forecastsForStatus:(NSDictionary *)status
                                         history:(NSArray *)history
                                             now:(NSTimeInterval)now {
     NSDictionary *limits = [status[@"rate_limits"]
@@ -1669,17 +1684,17 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
     return forecasts;
 }
 
-- (nullable NSDictionary *)usageStatusForProfile:(ClaudeProfile *)profile
-                                 sourceModifiedAt:(NSDate **)sourceModifiedAt {
++ (nullable NSDictionary *)usageStatusAtPaths:(NSArray<NSString *> *)paths
+                              sourceModifiedAt:(NSDate **)sourceModifiedAt {
     NSMutableArray<NSDictionary *> *candidates = [NSMutableArray array];
-    for (NSString *candidate in
-            @[profile.statusCachePath, profile.statusLineCachePath]) {
+    for (NSString *candidate in paths) {
         NSData *candidateData = [NSData dataWithContentsOfFile:candidate];
-        NSDictionary *candidateStatus = candidateData.length > 0
+        id candidateStatus = candidateData.length > 0
             ? [NSJSONSerialization JSONObjectWithData:candidateData
                                                options:0
                                                  error:nil]
             : nil;
+        if (![candidateStatus isKindOfClass:NSDictionary.class]) continue;
         NSDictionary *candidateLimits =
             [candidateStatus[@"rate_limits"] isKindOfClass:NSDictionary.class]
                 ? candidateStatus[@"rate_limits"] : nil;
@@ -1757,6 +1772,60 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
     return status;
 }
 
++ (nullable NSDictionary *)usageSnapshotForProfile:(ClaudeProfile *)profile reload:(BOOL)reload {
+    if (profile.catalogOnly) return nil;
+    // All callers and completions are on the main thread. Keep one outstanding
+    // read per profile, even when several terminal sessions publish together.
+    static NSMutableDictionary<NSString *, NSNumber *> *inFlight;
+    if (inFlight == nil) inFlight = [NSMutableDictionary dictionary];
+    NSString *key = profile.usageHistoryPath;
+    NSDictionary *cached = [ClaudeUsageSnapshots() objectForKey:key];
+    if (inFlight[key] != nil) {
+        if (reload) inFlight[key] = @YES;
+    } else if (reload || cached == nil ||
+               NSProcessInfo.processInfo.systemUptime - [cached[@"checked_at"] doubleValue] >= ClaudeUsageSnapshotInterval) {
+        inFlight[key] = @NO;
+        NSArray *paths = @[profile.statusCachePath, profile.statusLineCachePath];
+        dispatch_async(ClaudeUsageSnapshotQueue(), ^{
+            NSDate *modifiedAt = nil;
+            NSDictionary *status = [self usageStatusAtPaths:paths sourceModifiedAt:&modifiedAt];
+            NSArray *forecasts = @[];
+            if (status != nil && modifiedAt != nil && -modifiedAt.timeIntervalSinceNow <= ClaudeUsageFreshnessInterval) {
+                NSArray *history = [self usageHistoryAtPath:key recordingStatus:status sourceModifiedAt:modifiedAt];
+                forecasts = [self forecastsForStatus:status history:history now:NSDate.date.timeIntervalSince1970];
+            }
+            NSMutableDictionary *result = [@{@"forecasts": forecasts} mutableCopy];
+            if (status != nil) result[@"status"] = status;
+            if (modifiedAt != nil) result[@"modified_at"] = modifiedAt;
+            NSDictionary *snapshot = [result copy];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                BOOL needsReload = [inFlight[key] boolValue];
+                [inFlight removeObjectForKey:key];
+                if (needsReload) {
+                    // A CLI refresh finished after this read was queued.
+                    [self usageSnapshotForProfile:profile reload:YES];
+                    return;
+                }
+                NSDictionary *previous = [ClaudeUsageSnapshots() objectForKey:key][@"snapshot"];
+                [ClaudeUsageSnapshots() setObject:@{
+                    @"checked_at": @(NSProcessInfo.processInfo.systemUptime),
+                    @"snapshot": snapshot,
+                } forKey:key];
+                if (![previous isEqual:snapshot]) {
+                    [NSNotificationCenter.defaultCenter postNotificationName:ClaudeUsageSnapshotDidChange object:key];
+                }
+            });
+        });
+    }
+    return cached[@"snapshot"];
+}
+
+- (void)usageSnapshotDidChange:(NSNotification *)notification {
+    if (self.peerMode) return;
+    if ([self.selectedProfile.usageHistoryPath isEqual:notification.object]) [self refreshUsage];
+    if (self.usagePanelView.window != nil) [self refreshUsageWindowContents];
+}
+
 - (NSDictionary *)usageDashboardEntryForProfile:(ClaudeProfile *)profile {
     if (profile.catalogOnly) return @{@"profile": profile, @"forecasts": @[], @"account_state": @"available_elsewhere", @"suppress_metrics": @YES};
     if (self.peerMode) {
@@ -1765,9 +1834,6 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
         if ([entry[@"modified_at"] isKindOfClass:NSNumber.class]) entry[@"modified_at"] = [NSDate dateWithTimeIntervalSince1970:[entry[@"modified_at"] doubleValue]];
         return entry;
     }
-    NSDate *modifiedAt = nil;
-    NSDictionary *status = [self usageStatusForProfile:profile
-                                      sourceModifiedAt:&modifiedAt];
     NSDictionary *refreshResult =
         self.usageDashboardResults[profile.identifier];
     NSString *accountState = [refreshResult[@"account_state"]
@@ -1777,27 +1843,19 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
         isKindOfClass:NSString.class] ? refreshResult[@"refresh_error"] : nil;
     NSString *statusError = [refreshResult[@"status_error"]
         isKindOfClass:NSString.class] ? refreshResult[@"status_error"] : nil;
-    BOOL sourceStale = status != nil &&
-        (modifiedAt == nil ||
-         -modifiedAt.timeIntervalSinceNow > ClaudeUsageFreshnessInterval);
     BOOL signedOut = [accountState isEqualToString:@"signed_out"];
     BOOL accountCheckFailed = refreshResult != nil &&
         [accountState isEqualToString:@"unknown"] &&
         statusError.length > 0;
-    BOOL suppressMetrics = status == nil || sourceStale || signedOut ||
-        accountCheckFailed;
-    NSArray<NSDictionary *> *forecasts = @[];
-    if (!suppressMetrics) {
-        [self recordUsageSampleForStatus:status
-                        sourceModifiedAt:modifiedAt
-                                 profile:profile];
-        forecasts = [self forecastsForStatus:status
-                                     history:[self usageHistoryForProfile:profile]
-                                         now:NSDate.date.timeIntervalSince1970];
-    }
+    NSDictionary *snapshot = signedOut || accountCheckFailed ? nil
+        : [ClaudeStatusBar usageSnapshotForProfile:profile reload:NO];
+    NSDate *modifiedAt = snapshot[@"modified_at"];
+    BOOL sourceStale = snapshot[@"status"] != nil &&
+        (modifiedAt == nil || -modifiedAt.timeIntervalSinceNow > ClaudeUsageFreshnessInterval);
+    BOOL suppressMetrics = snapshot[@"status"] == nil || sourceStale;
     NSMutableDictionary *entry = [@{
         @"profile" : profile,
-        @"forecasts" : forecasts,
+        @"forecasts" : suppressMetrics ? @[] : snapshot[@"forecasts"],
         @"account_state" : accountState,
         @"source_stale" : @(sourceStale),
         @"suppress_metrics" : @(suppressMetrics),
@@ -1833,13 +1891,7 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
         return;
     }
 
-    NSDate *sourceModifiedAt = nil;
-    NSDictionary *status = [self usageStatusForProfile:profile
-                                      sourceModifiedAt:&sourceModifiedAt];
-    BOOL signedOut = self.accountStatusKnown && !self.accountIsLoggedIn;
-    BOOL sourceIsStale = sourceModifiedAt == nil ||
-        -sourceModifiedAt.timeIntervalSinceNow > ClaudeUsageFreshnessInterval;
-    if (signedOut) {
+    if (!self.accountIsLoggedIn) {
         self.currentUsageForecasts = @[];
         self.usageLabel.stringValue = @"Usage  Sign in required";
         self.usageLabel.textColor = self.theme.statusBarForeground;
@@ -1847,6 +1899,11 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
             @"Sign in to this Claude account to refresh its usage. Cached percentages are hidden.";
         return;
     }
+    NSDictionary *snapshot = [ClaudeStatusBar usageSnapshotForProfile:profile reload:NO];
+    NSDate *sourceModifiedAt = snapshot[@"modified_at"];
+    NSDictionary *status = snapshot[@"status"];
+    BOOL sourceIsStale = sourceModifiedAt == nil ||
+        -sourceModifiedAt.timeIntervalSinceNow > ClaudeUsageFreshnessInterval;
     if (status != nil && sourceIsStale) {
         self.currentUsageForecasts = @[];
         self.usageLabel.stringValue = self.usageRefreshInFlight
@@ -1861,11 +1918,8 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
     }
     if (status == nil) {
         self.currentUsageForecasts = @[];
-        self.usageLabel.stringValue = self.usageRefreshInFlight
-            ? @"Usage  Refreshing…"
-            : (self.accountIsLoggedIn
-                ? @"Usage  Unavailable"
-                : @"Usage  Sign in required");
+        self.usageLabel.stringValue = self.usageRefreshInFlight || (snapshot == nil && !profile.catalogOnly)
+            ? @"Usage  Refreshing…" : @"Usage  Unavailable";
         self.usageLabel.textColor = self.theme.statusBarForeground;
         self.usageLabel.toolTip = self.usageRefreshError.length > 0
             ? self.usageRefreshError
@@ -1873,13 +1927,7 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
         return;
     }
 
-    [self recordUsageSampleForStatus:status
-                    sourceModifiedAt:sourceModifiedAt
-                             profile:profile];
-    NSArray<NSDictionary *> *history = [self usageHistoryForProfile:profile];
-    self.currentUsageForecasts = [self forecastsForStatus:status
-                                                  history:history
-                                                      now:NSDate.date.timeIntervalSince1970];
+    self.currentUsageForecasts = snapshot[@"forecasts"];
 
     NSDictionary *limits = [status[@"rate_limits"] isKindOfClass:NSDictionary.class]
         ? status[@"rate_limits"] : nil;
@@ -2197,6 +2245,7 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
             }
             strongSelf.usageRefreshInFlight = NO;
             strongSelf.usageRefreshError = refreshError;
+            if (refreshError == nil) [ClaudeStatusBar usageSnapshotForProfile:profile reload:YES];
             [strongSelf refreshUsage];
             [strongSelf refreshUsageWindowContents];
         });
@@ -2643,6 +2692,27 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
     [fixtureBar setValue:@YES forKey:@"accountStatusKnown"];
     [fixtureBar setValue:@YES forKey:@"accountIsLoggedIn"];
     [fixtureBar setValue:@{fixtureProfile.identifier: @{@"account_state": @"signed_in"}, secondProfile.identifier: @{@"account_state": @"signed_in"}} forKey:@"usageDashboardResults"];
+    BOOL (^awaitUsageSnapshot)(BOOL) = ^BOOL(BOOL reload) {
+        NSString *path = fixtureProfile.usageHistoryPath;
+        NSDictionary *previous = [ClaudeUsageSnapshots() objectForKey:path];
+        [self usageSnapshotForProfile:fixtureProfile reload:reload];
+        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:5];
+        while ([ClaudeUsageSnapshots() objectForKey:path] == previous && deadline.timeIntervalSinceNow > 0) {
+            [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+        }
+        return [ClaudeUsageSnapshots() objectForKey:path] != previous;
+    };
+    ClaudeStatusBar *otherBar = [[ClaudeStatusBar alloc]
+        initWithFrame:NSZeroRect claudeExecutable:nil profileManager:fixtureManager
+        selectedProfile:nil theme:fixtureBar.theme];
+    NSString *catalogID = fixtureProfile.catalogIdentifier;
+    NSDictionary *firstRead = [fixtureBar peerUsagePresentation][@"entries"][catalogID];
+    NSDictionary *parallelRead = [otherBar peerUsagePresentation][@"entries"][catalogID];
+    BOOL snapshotLoaded = awaitUsageSnapshot(NO);
+    NSArray *forecasts = [fixtureBar peerUsagePresentation][@"entries"][catalogID][@"forecasts"];
+    BOOL sharesBackgroundSnapshot = [firstRead[@"suppress_metrics"] boolValue] &&
+        [parallelRead[@"suppress_metrics"] boolValue] && snapshotLoaded && forecasts.count == 3 &&
+        forecasts == [otherBar peerUsagePresentation][@"entries"][catalogID][@"forecasts"];
     [fixtureBar refreshUsage];
     NSString *compactSummary = fixtureBar.usageLabel.stringValue;
     BOOL showsEveryWindow =
@@ -2675,8 +2745,8 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
             [partialNow dateByAddingTimeInterval:-5.0],
     } ofItemAtPath:fixtureProfile.statusLineCachePath error:nil];
     NSDictionary *mergedPartialStatus =
-        [fixtureBar usageStatusForProfile:fixtureProfile
-                         sourceModifiedAt:nil];
+        [self usageStatusAtPaths:@[fixtureProfile.statusCachePath, fixtureProfile.statusLineCachePath]
+                 sourceModifiedAt:nil];
     NSDictionary *mergedPartialLimits = mergedPartialStatus[@"rate_limits"];
     BOOL mergesFreshPartialWindows =
         [mergedPartialLimits[@"five_hour"][@"used_percentage"] isEqual:@7] &&
@@ -2688,8 +2758,8 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
             -(ClaudeUsageFreshnessInterval + 60.0)],
     } ofItemAtPath:fixtureProfile.statusLineCachePath error:nil];
     NSDictionary *withoutStaleFallback =
-        [fixtureBar usageStatusForProfile:fixtureProfile
-                         sourceModifiedAt:nil];
+        [self usageStatusAtPaths:@[fixtureProfile.statusCachePath, fixtureProfile.statusLineCachePath]
+                 sourceModifiedAt:nil];
     NSDictionary *withoutStaleLimits = withoutStaleFallback[@"rate_limits"];
     BOOL ignoresStalePartialFallback =
         withoutStaleLimits[@"five_hour"] == nil &&
@@ -2814,9 +2884,10 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
         setAttributes:@{NSFilePosixPermissions : @0600}
         ofItemAtPath:fixtureProfile.usageHistoryPath
         error:nil];
+    BOOL riskSnapshotLoaded = awaitUsageSnapshot(YES);
     [fixtureBar refreshUsage];
     BOOL showsRiskOnlyWhenForecasted =
-        [fixtureBar.usageLabel.stringValue containsString:@"⚠ Fable"];
+        riskSnapshotLoaded && [fixtureBar.usageLabel.stringValue containsString:@"⚠ Fable"];
     NSView *dashboard = [fixtureBar prepareUsagePanel];
     BOOL compactAccountPicker = !ClaudeUsageViewContainsText(dashboard, @"Burn") && ClaudeUsageViewContainsText(dashboard, @"Details");
     for (ClaudeProfile *profile in fixtureManager.profiles) {
@@ -2887,9 +2958,10 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
             [NSDate dateWithTimeIntervalSinceNow:
                 -(ClaudeUsageFreshnessInterval + 60.0)],
     } ofItemAtPath:fixtureProfile.statusCachePath error:nil];
+    BOOL staleSnapshotLoaded = awaitUsageSnapshot(YES);
     [fixtureBar refreshUsage];
     NSView *staleDashboard = [fixtureBar prepareUsagePanel];
-    BOOL hidesStaleUsage =
+    BOOL hidesStaleUsage = staleSnapshotLoaded &&
         [fixtureBar.usageLabel.stringValue isEqualToString:
             @"Usage  Refresh required"] &&
         ClaudeUsageViewContainsText(staleDashboard,
@@ -2954,6 +3026,7 @@ static NSTextField *ClaudeAccountLabel(CGFloat size, NSFontWeight weight, NSColo
         [clamped[@"rate_limits"][@"seven_day"][@"used_percentage"]
             isEqual:@0] &&
         showsEveryWindow &&
+        sharesBackgroundSnapshot &&
         mergesFreshPartialWindows &&
         ignoresStalePartialFallback &&
         [fastForecast[@"ready"] boolValue] &&

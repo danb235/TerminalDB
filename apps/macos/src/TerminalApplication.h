@@ -220,7 +220,6 @@ BOOL TerminalDBUsesPeerSessions(void);
 - (void)beginLedgerCommand;
 - (void)finishLedgerCommand;
 - (NSString *)terminalANSISnapshot;
-- (NSDictionary *)remoteUsageForProfile:(ClaudeProfile *)profile;
 - (void)requestExecutionForCommand:(NSString *)command;
 - (void)startShell;
 - (void)refreshAWSStatus;

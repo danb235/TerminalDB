@@ -1912,50 +1912,6 @@ static BOOL TerminalDBReapShell(pid_t pid) {
     }];
 }
 
-- (NSDictionary *)remoteUsageForProfile:(ClaudeProfile *)profile {
-    NSData *data = [NSData dataWithContentsOfFile:profile.statusCachePath];
-    NSDictionary *document = data.length > 0
-        ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil]
-        : nil;
-    NSDictionary *limits =
-        [document[@"rate_limits"] isKindOfClass:NSDictionary.class]
-            ? document[@"rate_limits"] : @{};
-    NSArray<NSDictionary *> *definitions = @[
-        @{@"key" : @"five_hour", @"label" : @"5h"},
-        @{@"key" : @"seven_day", @"label" : @"7d"},
-        @{@"key" : @"fable_five", @"label" : @"Fable"},
-    ];
-    NSMutableArray *usage = [NSMutableArray array];
-    for (NSDictionary *definition in definitions) {
-        NSDictionary *window =
-            [limits[definition[@"key"]] isKindOfClass:NSDictionary.class]
-                ? limits[definition[@"key"]] : @{};
-        NSMutableDictionary *value = [@{
-            @"label" : definition[@"label"],
-            @"utilization" : @([window[@"used_percentage"] doubleValue]),
-        } mutableCopy];
-        NSTimeInterval reset = [window[@"resets_at"] doubleValue];
-        if (reset > NSDate.date.timeIntervalSince1970) {
-            value[@"resetsAt"] = [[NSDate dateWithTimeIntervalSince1970:reset]
-                descriptionWithLocale:nil];
-        }
-        [usage addObject:value];
-    }
-    return @{
-        @"id" : profile.catalogIdentifier,
-        @"sharedID" : profile.sharedAccountIdentifier ?: @"",
-        @"sharedExpires" : @(profile.sharedExpiresAt),
-        @"catalogOnly" : @(profile.catalogOnly),
-        @"locations" : profile.catalogLocations ?: @[],
-        @"organization" : profile.accountOrganization ?: @"",
-        @"label" : profile.label,
-        @"email" : profile.email ?: @"",
-        @"plan" : profile.subscriptionType ?: @"",
-        @"signedIn" : @(profile.email.length > 0),
-        @"usage" : usage,
-    };
-}
-
 - (AppDelegate *)terminalControllerForSessionIdentifier:
     (NSString *)tabIdentifier {
     AppDelegate *root = [self rootController];

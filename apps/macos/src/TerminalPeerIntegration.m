@@ -28,9 +28,21 @@ static NSString *PeerBoundedText(NSString *text, NSUInteger limit) {
     NSMutableArray *accounts = [NSMutableArray array];
     NSMutableSet *accountIDs = [NSMutableSet set];
     for (ClaudeProfile *profile in self.profileManager.profiles) {
-        if ([accountIDs containsObject:profile.catalogIdentifier]) continue;
-        [accountIDs addObject:profile.catalogIdentifier];
-        [accounts addObject:[[self rootController] remoteUsageForProfile:profile]];
+        NSString *identifier = profile.catalogIdentifier;
+        if ([accountIDs containsObject:identifier]) continue;
+        [accountIDs addObject:identifier];
+        [accounts addObject:@{
+            @"id" : identifier,
+            @"sharedID" : profile.sharedAccountIdentifier ?: @"",
+            @"sharedExpires" : @(profile.sharedExpiresAt),
+            @"catalogOnly" : @(profile.catalogOnly),
+            @"locations" : profile.catalogLocations ?: @[],
+            @"organization" : profile.accountOrganization ?: @"",
+            @"label" : profile.label,
+            @"email" : profile.email ?: @"",
+            @"plan" : profile.subscriptionType ?: @"",
+            @"signedIn" : @(profile.email.length > 0),
+        }];
     }
     NSMutableArray *records = [NSMutableArray array];
     NSArray *allRecords = self.ledgerStore.records;
