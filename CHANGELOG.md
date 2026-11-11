@@ -7,6 +7,8 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.12] - 2026-11-11
+
 ### Changed
 
 - Group AWS profiles by SSO session. Each session header shows when the
@@ -24,6 +26,9 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Show an ended AWS SSO session as **Signed out** with **Sign In**, instead of
   **Check failed** with no way to sign in.
+
+Finish active terminal work before installing. Updating the session host ends
+its running shells.
 
 ## [0.6.11] - 2026-11-06
 
