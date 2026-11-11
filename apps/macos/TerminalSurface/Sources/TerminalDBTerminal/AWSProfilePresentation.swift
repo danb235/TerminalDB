@@ -295,3 +295,124 @@ struct AWSProfilePresentation {
         return descriptor
     }
 }
+
+// One browser sign-in belongs to an SSO session and renews every profile that
+// uses it. AWS does not publish when a session ends, so the end time is an
+// estimate: the recorded sign-in time plus the expected session length.
+enum AWSSessionAction: Equatable {
+    case signIn, extend, signInAgain, cancel
+    var title: String {
+        switch self {
+        case .signIn: return "Sign In"
+        case .extend: return "Extend…"
+        case .signInAgain: return "Sign In Again…"
+        case .cancel: return "Cancel"
+        }
+    }
+}
+
+struct AWSSessionSummary: Equatable {
+    var status: String
+    var detail: String
+    var needsAttention: Bool
+    var action: AWSSessionAction?
+}
+
+struct AWSSessionPresentation {
+    static let defaultDuration: Double = 8 * 3600
+    static let lengthChoices: [Double] = [3600, 4 * 3600, 8 * 3600, 12 * 3600, 24 * 3600, 7 * 86400, 30 * 86400, 90 * 86400]
+
+    var id: String
+    var name: String
+    var startURL: String
+    var profileIDs: [String]
+    var state: String
+    var signedInAt: Double?
+    var expectedEnd: Double?
+    var duration: Double
+    var durationSource: String
+    var endedAt: Double?
+    var canRestart: Bool
+
+    var title: String { name.isEmpty ? (URL(string: startURL)?.host ?? "AWS sign-in") : name }
+    var portal: String { URL(string: startURL)?.host ?? startURL }
+
+    static func sessions(catalog: [String: Any]) -> [Self] {
+        (catalog["ssoSessions"] as? [[String: Any]] ?? []).compactMap { value in
+            guard let id = value["id"] as? String, !id.isEmpty else { return nil }
+            func time(_ key: String) -> Double? { (value[key] as? Double).flatMap { $0.isFinite && $0 > 0 ? $0 : nil } }
+            let duration = (value["duration"] as? Double).flatMap { $0.isFinite && $0 >= 900 ? $0 : nil } ?? defaultDuration
+            let state = value["state"] as? String ?? "unknown"
+            return Self(id: id, name: value["name"] as? String ?? "", startURL: value["startURL"] as? String ?? "",
+                        profileIDs: value["profileIds"] as? [String] ?? [],
+                        state: ["signingIn", "signedOut", "signedIn", "unknown"].contains(state) ? state : "unknown",
+                        signedInAt: time("signedInAt"), expectedEnd: time("expectedEnd") ?? time("signedInAt").map { $0 + duration },
+                        duration: duration, durationSource: value["durationSource"] as? String ?? "default",
+                        endedAt: time("endedAt"), canRestart: value["canRestart"] as? Bool == true)
+        }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+
+    func summary(profileCount: Int, now: Date = Date()) -> AWSSessionSummary {
+        let count = profileCount == 1 ? "1 profile" : "\(profileCount) profiles"
+        switch state {
+        case "signingIn":
+            return .init(status: "Signing in…", detail: "Finish signing in in your browser.", needsAttention: false, action: .cancel)
+        case "signedOut":
+            let ended = endedAt.map { "Ended " + Self.moment($0, now: now) + ". " } ?? ""
+            return .init(status: "Signed out", detail: ended + "Sign in to renew " + count + ".", needsAttention: true, action: .signIn)
+        case "signedIn":
+            let again: AWSSessionAction = canRestart ? .extend : .signInAgain
+            guard let end = expectedEnd else {
+                return .init(status: "Signed in", detail: "Renews " + count + ". End time is shown after your next sign-in.", needsAttention: false, action: again)
+            }
+            let remaining = end - now.timeIntervalSince1970
+            if remaining <= 0 {
+                return .init(status: "Session may have ended", detail: "Expected to end " + Self.moment(end, now: now) + ". Sign in to keep " + count + " renewing.",
+                             needsAttention: true, action: .signIn)
+            }
+            return .init(status: "Signed in until " + Self.moment(end, now: now),
+                         detail: Self.remaining(remaining) + " left · renews " + count,
+                         needsAttention: remaining < 30 * 60, action: again)
+        default:
+            return .init(status: "Sign-in status unknown", detail: "Sign in to renew " + count + ".", needsAttention: true, action: .signIn)
+        }
+    }
+
+    var lengthDescription: String {
+        let length = Self.length(duration)
+        switch durationSource {
+        case "custom": return length + " (set by you)"
+        case "learned": return length + " (measured)"
+        default: return length + " (AWS default)"
+        }
+    }
+
+    static func length(_ seconds: Double) -> String {
+        if seconds >= 86400, seconds.truncatingRemainder(dividingBy: 86400) == 0 {
+            let days = Int(seconds / 86400); return days == 1 ? "1 day" : "\(days) days"
+        }
+        let minutes = Int((seconds / 60).rounded())
+        let hours = minutes / 60, rest = minutes % 60
+        if hours == 0 { return "\(rest) minutes" }
+        let hourText = hours == 1 ? "1 hour" : "\(hours) hours"
+        return rest == 0 ? hourText : hourText + " \(rest) min"
+    }
+
+    static func remaining(_ seconds: Double) -> String {
+        let minutes = max(1, Int((seconds / 60).rounded(.up)))
+        if minutes < 60 { return "\(minutes) min" }
+        let hours = minutes / 60, rest = minutes % 60
+        if hours >= 48 { return "\(hours / 24) days" }
+        return rest == 0 ? "\(hours) h" : "\(hours) h \(rest) min"
+    }
+
+    static func moment(_ time: Double, now: Date = Date()) -> String {
+        let date = Date(timeIntervalSince1970: time), calendar = Calendar.current
+        let clock = DateFormatter.localizedString(from: date, dateStyle: .none, timeStyle: .short)
+        if calendar.isDate(date, inSameDayAs: now) { return clock }
+        if let tomorrow = calendar.date(byAdding: .day, value: 1, to: now), calendar.isDate(date, inSameDayAs: tomorrow) { return "tomorrow " + clock }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(date, inSameDayAs: yesterday) { return "yesterday " + clock }
+        let formatter = DateFormatter(); formatter.setLocalizedDateFormatFromTemplate("MMM d")
+        return formatter.string(from: date) + ", " + clock
+    }
+}

@@ -7,6 +7,24 @@ and TerminalDB uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Group AWS profiles by SSO session. Each session header shows when the
+  sign-in ends, how many profiles it renews, and a visible **Sign In** button.
+- Estimate when an AWS SSO session ends from your last sign-in. Set its length
+  in the session's actions menu to match your AWS administrator's setting, or
+  let TerminalDB measure it automatically.
+- Start a new full-length AWS session with **Extend…**, which ends only that
+  SSO session and opens the browser for a full sign-in.
+- Show each AWS profile's status on one line, with a button only when there is
+  something to do. Access checks and other actions move from Details to the
+  profile's actions menu, and Sharing opens as its own page with **Back**.
+
+### Fixed
+
+- Show an ended AWS SSO session as **Signed out** with **Sign In**, instead of
+  **Check failed** with no way to sign in.
+
 ## [0.6.11] - 2026-11-06
 
 ### Fixed
