@@ -887,7 +887,10 @@ final class SharedAWSService {
         guard !record.ended else { return }
         let now = Date().timeIntervalSince1970
         record.endedAt = now
-        if record.fresh, let start = record.signedInAt, record.durationSource != "custom", now - start < record.duration - 60 {
+        // A missing token cache means someone signed out deliberately (for
+        // example `aws sso logout`). That says nothing about session length.
+        let rejectedByAWS = configuration.ssoSessionCacheStatus(for: profile).present
+        if rejectedByAWS, record.fresh, let start = record.signedInAt, record.durationSource != "custom", now - start < record.duration - 60 {
             let minimum = SharedAWSSessionRecord.minimumDuration
             record.duration = max(minimum, floor((now - start) / minimum) * minimum)
             record.durationSource = "learned"
@@ -2326,7 +2329,7 @@ enum SharedAWSServiceTests {
         let beforeSignIn = Date().timeIntervalSince1970
         try check(try request("aws.signIn.start", ["profileId": beta])["accepted"] as? Bool == true)
         let fresh = try waitFor { $0["signInProfile"] as? String == "" && state($0, alpha) == "ready" && state($0, beta) == "ready" }
-        let firstStart = team(fresh)["signedInAt"] as? Double ?? 0
+        var firstStart = team(fresh)["signedInAt"] as? Double ?? 0
         try check(firstStart >= beforeSignIn && team(fresh)["expectedEnd"] as? Double == firstStart + SharedAWSSessionRecord.defaultDuration)
         try check(team(fresh)["endedAt"] == nil && team(fresh)["state"] as? String == "signedIn")
         // Signing in while that session is active reuses it, so its start
@@ -2335,6 +2338,18 @@ enum SharedAWSServiceTests {
         try check(try request("aws.signIn.start", ["profileId": beta])["accepted"] as? Bool == true)
         let reused = try waitFor { $0["signInProfile"] as? String == "" && state($0, alpha) == "ready" && state($0, beta) == "ready" }
         try check(team(reused)["signedInAt"] as? Double == firstStart && team(reused)["state"] as? String == "signedIn")
+        // A deliberate sign-out removes the token cache. Ending that way says
+        // nothing about the session length, so nothing is learned.
+        try files.removeItem(at: cacheFile("team"))
+        try Data("auth".utf8).write(to: failure)
+        try check(try request("aws.refresh", ["profileId": beta])["accepted"] as? Bool == true)
+        let signedOutByUser = try waitFor { state($0, beta) == "signInRequired" }
+        try check(team(signedOutByUser)["durationSource"] as? String == "default" && team(signedOutByUser)["duration"] as? Double == SharedAWSSessionRecord.defaultDuration && team(signedOutByUser)["state"] as? String == "signedOut")
+        try files.removeItem(at: failure)
+        try check(try request("aws.signIn.start", ["profileId": beta])["accepted"] as? Bool == true)
+        let resumed = try waitFor { $0["signInProfile"] as? String == "" && state($0, alpha) == "ready" && state($0, beta) == "ready" && team($0)["state"] as? String == "signedIn" }
+        firstStart = team(resumed)["signedInAt"] as? Double ?? 0
+        try check(firstStart > 0 && team(resumed)["endedAt"] == nil)
 
         // A confirmed end of a fresh session shortens the expected duration
         // to the observed upper bound, in whole 15 minute steps.

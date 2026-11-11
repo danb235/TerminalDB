@@ -191,6 +191,21 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
                 header(panel).flatMap { descendant($0, identifier) as? NSTextField }?.stringValue ?? ""
             }
             func headerButton(_ panel: TDBAWSAccessPanel? = nil) -> NSButton? { header(panel).flatMap { descendant($0, "aws-session-primary") as? NSButton } }
+            // Optional review images of the real panel. Fixture data only.
+            let snapshotDirectory = ProcessInfo.processInfo.environment["TERMINALDB_AWS_UI_SNAPSHOTS"]
+            if snapshotDirectory != nil { view.panel.appearance = NSAppearance(named: .darkAqua) }
+            func snapshot(_ name: String) {
+                guard let snapshotDirectory, let content = view.panel.contentView else { return }
+                view.panel.setContentSize(NSSize(width: 700, height: 760)); content.layoutSubtreeIfNeeded(); view.list.layoutSubtreeIfNeeded()
+                guard let image = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { return }
+                content.cacheDisplay(in: content.bounds, to: image)
+                guard let output = content.bitmapImageRepForCachingDisplay(in: content.bounds), let context = NSGraphicsContext(bitmapImageRep: output) else { return }
+                NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = context
+                NSColor(calibratedWhite: 0.11, alpha: 1).setFill(); content.bounds.fill()
+                image.draw(in: content.bounds, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+                NSGraphicsContext.restoreGraphicsState()
+                try? output.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: snapshotDirectory).appendingPathComponent(name + ".png"))
+            }
 
             for width in [600.0, 700.0, 1000.0] {
                 view.panel.setContentSize(NSSize(width: width, height: 560))
@@ -225,6 +240,7 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
             }
             try check(!allSubviews(view.view).compactMap { ($0 as? NSButton)?.title }.contains("Details"), "no Details buttons anywhere")
 
+            snapshot("signed-out")
             // A signed-out session owns one Sign In for all of its profiles.
             try check(headerText("aws-session-state") == "Signed out" && headerText("aws-session-detail").contains("Sign in to renew 3 profiles"), "signed-out session header")
             try check(headerButton()?.title == "Sign In" && headerButton()?.isEnabled == true, "sign in is a first-class header button")
@@ -254,6 +270,7 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
             try check(headerText("aws-session-detail") == "3 h left · renews 3 profiles", "signed-in header shows time left")
             try check(header().flatMap { descendant($0, "aws-session-state") as? NSTextField }?.textColor == .labelColor, "healthy session is not orange")
             try check(headerButton()?.title == "Extend…", "signed-in session offers Extend")
+            snapshot("signed-in")
             headerButton()?.performClick(nil)
             try check(restarts.last?.0 == sessionID && restarts.last?.1 == true, "Extend confirms an explicit session restart")
             try check(try statusText("production") == "Ready · Renews automatically", "healthy grouped source keeps Ready")
@@ -262,7 +279,7 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
                   let lengths = sessionMenu.items.first(where: { $0.title == "Session Length" })?.submenu else { return false }
             try check(lengths.items.first?.title == "Automatic (8 hours (AWS default))" && lengths.items.first?.state == .on, "automatic length is the default")
             try perform(lengths, "12 hours")
-            try check(requested.last?.0 == "aws.session.configure" && requested.last?.1["sessionId"] as? String == sessionID && requested.last?.1["duration"] as? Double == 43200, "custom session length routing")
+            try check(requested.last?.0 == "aws.session.configure" && requested.last?.1["ssoSessionId"] as? String == sessionID && requested.last?.1["duration"] as? Double == 43200, "custom session length routing")
             try perform(lengths, "Automatic (8 hours (AWS default))")
             try check(requested.last?.0 == "aws.session.configure" && requested.last?.1["duration"] == nil, "automatic length resets")
             try perform(sessionMenu, "Sign In Without Ending Session")
@@ -272,6 +289,7 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
             try check(customLengths?.items.first { $0.title == "8 hours" }?.state == .on && customLengths?.items.first?.state == .off, "custom length is checked")
             view.catalog["ssoSessions"] = session("signedIn", end: clock.timeIntervalSince1970 + 20 * 60); view.render()
             try check(header().flatMap { descendant($0, "aws-session-state") as? NSTextField }?.textColor == .systemOrange && headerText("aws-session-detail").hasPrefix("20 min left"), "ending soon is highlighted")
+            snapshot("ending-soon")
             view.catalog["ssoSessions"] = session("signedIn", end: clock.timeIntervalSince1970 - 60); view.render()
             try check(headerText("aws-session-state") == "Session may have ended" && headerButton()?.title == "Sign In", "passed estimate offers Sign In")
             view.catalog["ssoSessions"] = session("signedIn", restart: false); view.render()
@@ -1413,7 +1431,7 @@ public final class TDBAWSAccessPanel: NSObject, NSWindowDelegate, NSMenuDelegate
     }
 
     private func configureSession(_ id: String, duration: Double?) {
-        var payload: [String: Any] = ["sessionId": id]
+        var payload: [String: Any] = ["ssoSessionId": id]
         if let duration { payload["duration"] = duration }
         request("aws.session.configure", payload)
     }
