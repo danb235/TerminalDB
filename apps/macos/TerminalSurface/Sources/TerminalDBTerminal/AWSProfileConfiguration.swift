@@ -63,6 +63,16 @@ struct AWSProfileDescriptor: Codable, Equatable {
     }
 }
 
+// Metadata about one SSO session's AWS CLI token cache. No token value
+// ever leaves AWSProfileConfiguration.
+struct AWSSSOSessionCacheStatus: Equatable {
+    var present = false
+    var readable = false
+    var hasRefreshToken = false
+    var accessTokenCurrent = false
+    var modifiedAt: Double?
+}
+
 struct AWSProfileInstallation: Codable, Equatable {
     var descriptor: AWSProfileDescriptor
     var targetName: String
@@ -186,8 +196,7 @@ final class AWSProfileConfiguration {
         do {
             let session = try resolvedSSOSessionName(for: profile)
             if let session { result["sessionName"] = session }
-            let key = session ?? profile.ssoStartURL
-            let filename = Insecure.SHA1.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined() + ".json"
+            let filename = Self.ssoCacheFilename(session: session, startURL: profile.ssoStartURL)
             guard var bytes = try read(ssoCacheURL.appendingPathComponent(filename), missing: true, maximumBytes: 65_536) else {
                 result["state"] = "missing"; return result
             }
@@ -201,18 +210,88 @@ final class AWSProfileConfiguration {
         return result
     }
 
+    // AWS CLI names a session's token cache by the SHA-1 of the sso-session
+    // name, or of the start URL for legacy profiles without a named session.
+    private static func ssoCacheFilename(session: String?, startURL: String) -> String {
+        Insecure.SHA1.hash(data: Data((session ?? startURL).utf8)).map { String(format: "%02x", $0) }.joined() + ".json"
+    }
+
+    // The token cache file that belongs to this profile's SSO session.
+    func ssoSessionCacheFile(for profile: AWSProfileDescriptor) -> URL? {
+        guard profile.kind == "sso" else { return nil }
+        let session: String?
+        do { session = try resolvedSSOSessionName(for: profile) } catch { return nil }
+        return ssoCacheURL.appendingPathComponent(Self.ssoCacheFilename(session: session, startURL: profile.ssoStartURL))
+    }
+
+    // Presence and freshness flags only. Token values are decoded into
+    // booleans and the raw bytes are wiped before this returns.
+    func ssoSessionCacheStatus(for profile: AWSProfileDescriptor, now: Date = Date()) -> AWSSSOSessionCacheStatus {
+        var status = AWSSSOSessionCacheStatus()
+        guard let file = ssoSessionCacheFile(for: profile) else { return status }
+        do {
+            guard var bytes = try read(file, missing: true, maximumBytes: 65_536) else { return status }
+            defer { bytes.resetBytes(in: 0..<bytes.count) }
+            status.present = true
+            var st = stat()
+            if lstat(file.path, &st) == 0 {
+                status.modifiedAt = Double(st.st_mtimespec.tv_sec) + Double(st.st_mtimespec.tv_nsec) / 1_000_000_000
+            }
+            let metadata = try JSONDecoder().decode(SSOCacheMetadata.self, from: bytes)
+            guard metadata.startURL == profile.ssoStartURL, metadata.region == profile.ssoRegion else { return status }
+            status.readable = true
+            status.hasRefreshToken = metadata.hasRefreshToken
+            if metadata.hasAccessToken, let expiry = Self.ssoDate(metadata.expiresAt), expiry.timeIntervalSince1970.isFinite {
+                status.accessTokenCurrent = expiry > now
+            }
+        } catch { /* An unreadable or unsafe cache reports only its presence. */ }
+        return status
+    }
+
+    // Copies exactly this session's token cache into a private directory for
+    // a sandboxed AWS CLI run. Returns false when the session has no cache.
+    func copySSOSessionCache(for profile: AWSProfileDescriptor, into directory: URL) throws -> Bool {
+        guard let file = ssoSessionCacheFile(for: profile) else { throw PeerFailure("Choose an AWS SSO profile.") }
+        guard var bytes = try read(file, missing: true, maximumBytes: 65_536) else { return false }
+        defer { bytes.resetBytes(in: 0..<bytes.count) }
+        let metadata = try JSONDecoder().decode(SSOCacheMetadata.self, from: bytes)
+        guard metadata.startURL == profile.ssoStartURL, metadata.region == profile.ssoRegion else {
+            throw PeerFailure("The AWS session cache belongs to another portal.")
+        }
+        try self.directory(directory, create: false, privateMode: true)
+        try atomicWrite(bytes, to: directory.appendingPathComponent(file.lastPathComponent), mode: 0o600)
+        return true
+    }
+
+    // Removes only this session's token cache. Other sessions' caches and
+    // issued role credentials are never touched.
+    func removeSSOSessionCache(for profile: AWSProfileDescriptor) throws {
+        guard let file = ssoSessionCacheFile(for: profile) else { throw PeerFailure("Choose an AWS SSO profile.") }
+        guard FileManager.default.fileExists(atPath: file.deletingLastPathComponent().path) else { return }
+        let dir = try directoryFD(file.deletingLastPathComponent()); defer { Darwin.close(dir) }
+        var st = stat()
+        guard fstatat(dir, file.lastPathComponent, &st, AT_SYMLINK_NOFOLLOW) == 0 else {
+            if errno == ENOENT { return }
+            throw PeerFailure("The AWS session cache could not be inspected safely.")
+        }
+        guard (st.st_mode & S_IFMT) == S_IFREG, st.st_uid == getuid() else { throw PeerFailure("The AWS session cache is not a regular file.") }
+        guard unlinkat(dir, file.lastPathComponent, 0) == 0 || errno == ENOENT else { throw PeerFailure("The AWS session cache could not be removed.") }
+    }
+
     private struct SSOCacheMetadata: Decodable {
         var startURL: String
         var region: String
         var expiresAt: String
         var hasAccessToken: Bool
-        enum CodingKeys: String, CodingKey { case startUrl, region, expiresAt, accessToken }
+        var hasRefreshToken: Bool
+        enum CodingKeys: String, CodingKey { case startUrl, region, expiresAt, accessToken, refreshToken }
         init(from decoder: Decoder) throws {
             let fields = try decoder.container(keyedBy: CodingKeys.self)
             startURL = try fields.decode(String.self, forKey: .startUrl)
             region = try fields.decode(String.self, forKey: .region)
             expiresAt = try fields.decode(String.self, forKey: .expiresAt)
             hasAccessToken = !(try fields.decodeIfPresent(String.self, forKey: .accessToken) ?? "").isEmpty
+            hasRefreshToken = !(try fields.decodeIfPresent(String.self, forKey: .refreshToken) ?? "").isEmpty
         }
     }
     private static func ssoDate(_ text: String) -> Date? {

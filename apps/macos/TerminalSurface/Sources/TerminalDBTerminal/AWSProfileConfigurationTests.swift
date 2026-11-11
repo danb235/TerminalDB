@@ -229,6 +229,33 @@ enum AWSProfileConfigurationTests {
         try check(managed.authenticationStatus(for: login, now: now)["state"] as? String == "notApplicable")
         try check(try Data(contentsOf: config) == Data(original.utf8))
 
+        // Session cache metadata, sandbox copies and removal touch only the
+        // selected session's cache file, never sibling sessions.
+        let cacheStatus = managed.ssoSessionCacheStatus(for: source, now: now)
+        try check(cacheStatus.present && cacheStatus.readable && cacheStatus.hasRefreshToken && cacheStatus.accessTokenCurrent && cacheStatus.modifiedAt != nil)
+        try check(managed.ssoSessionCacheStatus(for: source, now: now.addingTimeInterval(7200)).accessTokenCurrent == false)
+        try check(managed.ssoSessionCacheStatus(for: login, now: now) == AWSSSOSessionCacheStatus())
+        try check(managed.ssoSessionCacheFile(for: source) == tokenFile && managed.ssoSessionCacheFile(for: login) == nil)
+        let sandbox = base.appendingPathComponent("restart-sandbox")
+        try FileManager.default.createDirectory(at: sandbox, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try check(try managed.copySSOSessionCache(for: source, into: sandbox))
+        try check(try FileManager.default.contentsOfDirectory(atPath: sandbox.path) == [tokenFile.lastPathComponent])
+        try check(try Data(contentsOf: sandbox.appendingPathComponent(tokenFile.lastPathComponent)) == Data(contentsOf: tokenFile))
+        try check((try FileManager.default.attributesOfItem(atPath: sandbox.appendingPathComponent(tokenFile.lastPathComponent).path)[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+        let sharedDirectory = base.appendingPathComponent("restart-shared")
+        try FileManager.default.createDirectory(at: sharedDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+        try check(rejected { _ = try managed.copySSOSessionCache(for: source, into: sharedDirectory) })
+        try managed.removeSSOSessionCache(for: source)
+        try check(!FileManager.default.fileExists(atPath: tokenFile.path))
+        try check(FileManager.default.fileExists(atPath: cachePath(legacy.ssoStartURL).path))
+        try check(!managed.ssoSessionCacheStatus(for: source, now: now).present)
+        try check(try managed.copySSOSessionCache(for: source, into: sandbox) == false)
+        try managed.removeSSOSessionCache(for: source)
+        metadata.removeValue(forKey: "refreshToken"); try saveMetadata()
+        let withoutRefresh = managed.ssoSessionCacheStatus(for: source, now: now)
+        try check(withoutRefresh.present && !withoutRefresh.hasRefreshToken && withoutRefresh.accessTokenCurrent)
+        try check(rejected { try managed.removeSSOSessionCache(for: login) })
+
         // Duplicate auth fields, malformed descriptors, links and oversized input
         // are rejected using only disposable files.
         try write("[profile duplicate]\nsso_start_url = https://example.awsapps.com/start\nsso_start_url = https://second.invalid/start\n")
