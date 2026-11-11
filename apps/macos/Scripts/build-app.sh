@@ -13,7 +13,10 @@ VERSION="${TERMINALDB_VERSION:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShor
 BUILD_NUMBER="${TERMINALDB_BUILD:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Info.plist)}"
 
 if [[ -d "${APP_DIR}" ]]; then
-  /bin/rm -r "${APP_DIR}"
+  # Copied license files and SwiftPM resources are read-only; make the tree
+  # writable so removal never prompts or leaves a half-deleted bundle.
+  /bin/chmod -R u+w "${APP_DIR}"
+  /bin/rm -rf "${APP_DIR}"
 fi
 
 mkdir -p \
